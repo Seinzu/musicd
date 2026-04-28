@@ -20,14 +20,27 @@ use rusqlite::{Connection, OptionalExtension, params};
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LibraryTrack {
     id: String,
+    album_id: String,
     title: String,
     artist: String,
     album: String,
+    disc_number: Option<u32>,
+    track_number: Option<u32>,
     relative_path: String,
     path: PathBuf,
     mime_type: String,
     file_size: u64,
     artwork: Option<TrackArtwork>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AlbumSummary {
+    id: String,
+    title: String,
+    artist: String,
+    track_count: usize,
+    artwork_track_id: Option<String>,
+    first_track_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +62,8 @@ struct ParsedTrackTags {
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
+    disc_number: Option<u32>,
+    track_number: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +396,16 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/api/albums") | ("HEAD", "/api/albums") => {
+            let body = render_albums_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         _ if request.path.starts_with("/api/tracks/") => {
             if request.method != "GET" && request.method != "HEAD" {
                 return respond_method_not_allowed(writer);
@@ -417,9 +442,25 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        _ if request.path.starts_with("/album/") => {
+            if request.method != "GET" && request.method != "HEAD" {
+                return respond_method_not_allowed(writer);
+            }
+            let body = render_album_detail_page(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "text/html; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         ("GET", "/play") => handle_play_request(writer, request, &state),
+        ("GET", "/play-album") => handle_play_album_request(writer, request, &state),
         ("GET", "/rescan") => handle_rescan_request(writer, request, &state),
-        ("HEAD", "/play") | ("HEAD", "/rescan") => respond_method_not_allowed(writer),
+        ("HEAD", "/play") | ("HEAD", "/play-album") | ("HEAD", "/rescan") => {
+            respond_method_not_allowed(writer)
+        }
         _ if request.path.starts_with("/stream/track/") => {
             if request.method != "GET" && request.method != "HEAD" {
                 return respond_method_not_allowed(writer);
@@ -507,6 +548,97 @@ fn handle_play_request(
         }
         Err(error) => redirect_home(
             writer,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Playback failed: {error}")),
+        ),
+    }
+}
+
+fn handle_play_album_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let Some(album_id) = request.query.get("album_id").map(String::as_str) else {
+        return redirect_home(
+            writer,
+            Some(&renderer_location),
+            None,
+            Some("Select an album before pressing play."),
+        );
+    };
+
+    let Some(album) = state.find_album(album_id) else {
+        return redirect_home(
+            writer,
+            Some(&renderer_location),
+            None,
+            Some("The selected album is no longer in the scanned library."),
+        );
+    };
+
+    if renderer_location.is_empty() {
+        return redirect_album(
+            writer,
+            &album.id,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before pressing play."),
+        );
+    }
+
+    let _ = state.remember_renderer_location(&renderer_location);
+
+    let Some(track) = state.first_track_for_album(&album.id) else {
+        return redirect_album(
+            writer,
+            &album.id,
+            Some(&renderer_location),
+            None,
+            Some("This album does not have any playable tracks."),
+        );
+    };
+
+    let stream_url = format!(
+        "{}/stream/track/{}",
+        state.config.base_url.trim_end_matches('/'),
+        track.id
+    );
+    let resource = StreamResource {
+        stream_url,
+        mime_type: track.mime_type.clone(),
+        title: track.title.clone(),
+    };
+
+    match play_stream(&renderer_location, &resource) {
+        Ok(renderer) => {
+            let _ = state.remember_renderer_details(
+                &renderer.location,
+                &renderer.friendly_name,
+                renderer.manufacturer.as_deref(),
+                renderer.model_name.as_deref(),
+                Some(&renderer.av_transport_control_url),
+            );
+            redirect_album(
+                writer,
+                &album.id,
+                Some(&renderer_location),
+                Some(&format!(
+                    "Started album '{}' from track '{}' on {}. Full continuous album playback comes next.",
+                    album.title, track.title, renderer.friendly_name
+                )),
+                None,
+            )
+        }
+        Err(error) => redirect_album(
+            writer,
+            &album.id,
             Some(&renderer_location),
             None,
             Some(&format!("Playback failed: {error}")),
@@ -773,6 +905,43 @@ fn redirect_home(
     )
 }
 
+fn redirect_album(
+    writer: &mut TcpStream,
+    album_id: &str,
+    renderer_location: Option<&str>,
+    message: Option<&str>,
+    error: Option<&str>,
+) -> io::Result<()> {
+    let mut params = Vec::new();
+    if let Some(renderer_location) = renderer_location {
+        if !renderer_location.is_empty() {
+            params.push(format!(
+                "renderer_location={}",
+                url_encode(renderer_location)
+            ));
+        }
+    }
+    if let Some(message) = message {
+        params.push(format!("message={}", url_encode(message)));
+    }
+    if let Some(error) = error {
+        params.push(format!("error={}", url_encode(error)));
+    }
+
+    let location = if params.is_empty() {
+        format!("/album/{}", url_encode(album_id))
+    } else {
+        format!("/album/{}?{}", url_encode(album_id), params.join("&"))
+    };
+
+    write_response_owned(
+        writer,
+        "303 See Other",
+        &[("Location".to_string(), location)],
+        None,
+    )
+}
+
 fn write_response_owned(
     writer: &mut TcpStream,
     status: &str,
@@ -857,12 +1026,46 @@ fn url_encode(value: &str) -> String {
 
 fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     let tracks = state.tracks_snapshot();
+    let albums = state.albums_snapshot();
     let library_path = state.config.library_path.display().to_string();
     let renderer_location = state
         .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
     let known_renderers = state.renderer_snapshot();
     let message = request.query.get("message").cloned().unwrap_or_default();
     let error = request.query.get("error").cloned().unwrap_or_default();
+
+    let mut album_rows = String::new();
+    for album in &albums {
+        let search_text = format!("{} {}", album.title, album.artist).to_ascii_lowercase();
+        let cover_html = album
+            .artwork_track_id
+            .as_ref()
+            .map(|track_id| {
+                format!(
+                    "<img class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
+                    html_escape(track_id),
+                    html_escape(&album.title)
+                )
+            })
+            .unwrap_or_else(|| "<div class=\"cover-thumb placeholder\">No Art</div>".to_string());
+        let album_url = format!(
+            "/album/{}?renderer_location={}",
+            url_encode(&album.id),
+            url_encode(&renderer_location)
+        );
+        album_rows.push_str(&format!(
+            "<tr data-search=\"{}\"><td>{}</td><td><a class=\"album-link\" href=\"{}\">{}</a></td><td>{}</td><td>{}</td><td><form class=\"inline-form\" action=\"/play-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Album</button></form> <span class=\"muted-sep\">|</span> <a href=\"{}\">View Album</a></td></tr>",
+            html_escape(&search_text),
+            cover_html,
+            html_escape(&album_url),
+            html_escape(&album.title),
+            html_escape(&album.artist),
+            album.track_count,
+            html_escape(&album.id),
+            html_escape(&renderer_location),
+            html_escape(&album_url),
+        ));
+    }
 
     let mut rows = String::new();
     for track in &tracks {
@@ -889,7 +1092,12 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
             cover_html,
             html_escape(&track.title),
             html_escape(&track.artist),
-            html_escape(&track.album),
+            format!(
+                "<a class=\"album-link\" href=\"/album/{}?renderer_location={}\">{}</a>",
+                url_encode(&track.album_id),
+                url_encode(&renderer_location),
+                html_escape(&track.album)
+            ),
             html_escape(&track.id),
             html_escape(&track.id),
         ));
@@ -910,6 +1118,11 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         String::new()
     } else {
         format!("<p class=\"banner error\">{}</p>", html_escape(&error))
+    };
+    let album_empty_state = if albums.is_empty() {
+        "<p class=\"empty\">No albums have been grouped yet. Add music or rescan the library.</p>"
+    } else {
+        ""
     };
     let renderer_options = if known_renderers.is_empty() {
         "<option value=\"\">Discovered renderers appear here</option>".to_string()
@@ -1052,6 +1265,17 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       padding: 0 1rem 1.5rem;
       overflow-x: auto;
     }}
+    .section-heading {{
+      margin: 0;
+      padding: 0 2rem 1rem;
+      font-size: 1.3rem;
+    }}
+    .section-note {{
+      margin: 0;
+      padding: 0 2rem 1rem;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }}
     table {{
       width: 100%;
       border-collapse: collapse;
@@ -1101,6 +1325,14 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }}
+    .album-link {{
+      color: inherit;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.15em;
+    }}
+    .inline-form {{
+      display: inline;
+    }}
     @media (max-width: 720px) {{
       main {{
         width: calc(100vw - 1rem);
@@ -1145,13 +1377,33 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         <button type="button" class="secondary" onclick="applySelectedRenderer()">Use Selected Renderer</button>
       </div>
       <form class="control-row" action="/rescan" method="get">
-        <input id="rescan_renderer_location" type="hidden" name="renderer_location" value="{}">
+        <input id="rescan_renderer_location" class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
         <label for="track_filter">Search Tracks</label>
         <input id="track_filter" type="text" placeholder="Filter by title, artist, album, or path" oninput="filterTracks()">
         <button type="submit" class="secondary">Rescan Library</button>
       </form>
     </section>
     {}
+    <h2 class="section-heading">Albums</h2>
+    <p class="section-note">Album playback currently starts with the first ordered track. Continuous queue playback is the next step.</p>
+    {}
+    <section class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Cover</th>
+            <th>Album</th>
+            <th>Artist</th>
+            <th>Tracks</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="album_table">
+          {}
+        </tbody>
+      </table>
+    </section>
+    <h2 class="section-heading">Tracks</h2>
     <section class="table-wrap">
       <table>
         <thead>
@@ -1207,12 +1459,20 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       if (hidden) {{
         hidden.value = value;
       }}
+      const proxies = document.querySelectorAll('.renderer-location-proxy');
+      for (const proxy of proxies) {{
+        proxy.value = value;
+      }}
     }}
 
     function filterTracks() {{
       const needle = document.getElementById('track_filter').value.trim().toLowerCase();
       const rows = document.querySelectorAll('#track_table tr');
       for (const row of rows) {{
+        row.style.display = !needle || row.dataset.search.includes(needle) ? '' : 'none';
+      }}
+      const albumRows = document.querySelectorAll('#album_table tr');
+      for (const row of albumRows) {{
         row.style.display = !needle || row.dataset.search.includes(needle) ? '' : 'none';
       }}
     }}
@@ -1228,7 +1488,254 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         renderer_options,
         html_escape(&renderer_location),
         empty_state,
+        album_empty_state,
+        album_rows,
         rows,
+    )
+}
+
+fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> String {
+    let album_id = request.path.trim_start_matches("/album/");
+    let renderer_location = state
+        .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
+    let message = request.query.get("message").cloned().unwrap_or_default();
+    let error = request.query.get("error").cloned().unwrap_or_default();
+
+    let Some(album) = state.find_album(album_id) else {
+        return render_detail_error_page("Album not found");
+    };
+
+    let tracks = state.tracks_for_album(&album.id);
+    let artwork_html = album
+        .artwork_track_id
+        .as_ref()
+        .map(|track_id| {
+            format!(
+                "<img class=\"detail-artwork\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
+                html_escape(track_id),
+                html_escape(&album.title)
+            )
+        })
+        .unwrap_or_else(|| {
+            "<div class=\"detail-artwork placeholder\">No album artwork found yet.</div>"
+                .to_string()
+        });
+    let message_html = if message.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"banner success\">{}</p>", html_escape(&message))
+    };
+    let error_html = if error.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"banner error\">{}</p>", html_escape(&error))
+    };
+    let track_rows = tracks
+        .iter()
+        .map(|track| {
+            let play_url = format!(
+                "/play?track_id={}&renderer_location={}",
+                url_encode(&track.id),
+                url_encode(&renderer_location)
+            );
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td><a href=\"{}\">Play Track</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}?renderer_location={}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
+                html_escape(&format_track_position(track.disc_number, track.track_number)),
+                html_escape(&track.title),
+                html_escape(&track.artist),
+                html_escape(&play_url),
+                html_escape(&track.id),
+                html_escape(&renderer_location),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{}</title>
+  <style>
+    :root {{
+      --bg: #f8f4eb;
+      --panel: #fffdf8;
+      --ink: #1f1a17;
+      --muted: #6f665f;
+      --line: rgba(31, 26, 23, 0.12);
+      --accent: #166534;
+      --danger: #991b1b;
+    }}
+    body {{
+      margin: 0;
+      font-family: Georgia, "Iowan Old Style", serif;
+      background: linear-gradient(180deg, #f7f0e2 0%, #fdfaf2 100%);
+      color: var(--ink);
+    }}
+    main {{
+      width: min(980px, calc(100vw - 2rem));
+      margin: 1.5rem auto 3rem;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 18px 42px rgba(31, 26, 23, 0.1);
+    }}
+    header, section {{
+      padding: 1.4rem 1.5rem;
+    }}
+    header {{
+      border-bottom: 1px solid var(--line);
+      background: rgba(22, 101, 52, 0.06);
+    }}
+    h1, h2 {{
+      margin: 0 0 0.6rem;
+    }}
+    p {{
+      margin: 0.25rem 0;
+      color: var(--muted);
+    }}
+    .layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 18rem) minmax(0, 1fr);
+      gap: 1.5rem;
+      align-items: start;
+    }}
+    .detail-artwork {{
+      width: 100%;
+      display: block;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      box-shadow: 0 14px 28px rgba(31, 26, 23, 0.12);
+      background: rgba(31, 26, 23, 0.05);
+      min-height: 18rem;
+      object-fit: cover;
+    }}
+    .detail-artwork.placeholder {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      text-align: center;
+    }}
+    .actions {{
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-top: 1rem;
+    }}
+    .actions a, .actions button {{
+      text-decoration: none;
+      color: white;
+      background: #1f1a17;
+      padding: 0.75rem 1rem;
+      border-radius: 999px;
+      border: 0;
+      font: inherit;
+      cursor: pointer;
+    }}
+    .actions a.secondary {{
+      color: #1f1a17;
+      background: #eadfce;
+    }}
+    input[type="text"] {{
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fffdfa;
+      border-radius: 12px;
+      padding: 0.8rem 0.9rem;
+      font: inherit;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    th, td {{
+      text-align: left;
+      vertical-align: top;
+      border-top: 1px solid var(--line);
+      padding: 0.85rem 0.9rem;
+    }}
+    th {{
+      color: var(--muted);
+      font-weight: 600;
+    }}
+    .banner {{
+      margin: 0 1.5rem 1rem;
+      padding: 0.9rem 1rem;
+      border-radius: 14px;
+    }}
+    .banner.success {{
+      background: rgba(22, 101, 52, 0.1);
+      color: var(--accent);
+    }}
+    .banner.error {{
+      background: rgba(153, 27, 27, 0.08);
+      color: var(--danger);
+    }}
+    @media (max-width: 760px) {{
+      .layout {{
+        grid-template-columns: 1fr;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>{}</h1>
+      <p>{} tracks • {}</p>
+      <div class="actions">
+        <a href="/">Back to Library</a>
+      </div>
+    </header>
+    {}{}
+    <section class="layout">
+      <div>{}</div>
+      <div>
+        <h2>Play Album</h2>
+        <p>For now this starts with the first ordered track. We can layer full continuous album playback on top of this next.</p>
+        <form action="/play-album" method="get">
+          <input type="hidden" name="album_id" value="{}">
+          <label for="renderer_location" style="display:block; font-weight:600; margin-bottom:0.5rem;">Renderer LOCATION</label>
+          <input id="renderer_location" name="renderer_location" type="text" value="{}" placeholder="http://192.168.1.55:49152/description.xml">
+          <div class="actions">
+            <button type="submit">Play Album</button>
+            <a class="secondary" href="/stream/track/{}" target="_blank" rel="noreferrer">Preview First Track</a>
+          </div>
+        </form>
+      </div>
+    </section>
+    <section>
+      <h2>Tracks</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Position</th>
+            <th>Title</th>
+            <th>Artist</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>{}</tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>"#,
+        html_escape(&album.title),
+        html_escape(&album.title),
+        album.track_count,
+        html_escape(&album.artist),
+        message_html,
+        error_html,
+        artwork_html,
+        html_escape(&album.id),
+        html_escape(&renderer_location),
+        html_escape(&album.first_track_id),
+        track_rows,
     )
 }
 
@@ -1258,9 +1765,14 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
 
     let inferred_rows = [
         ("Track ID", track.id.clone()),
+        ("Album ID", track.album_id.clone()),
         ("Title", track.title.clone()),
         ("Artist", track.artist.clone()),
         ("Album", track.album.clone()),
+        (
+            "Disc / Track",
+            format_track_position(track.disc_number, track.track_number),
+        ),
         ("Relative path", track.relative_path.clone()),
         ("Absolute path", track.path.display().to_string()),
         ("MIME type", track.mime_type.clone()),
@@ -1445,6 +1957,7 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
       <p>{} • {}</p>
       <div class="actions">
         <a href="/">Back to Library</a>
+        <a class="secondary" href="/album/{}?renderer_location={}">View Album</a>
         <a class="secondary" href="/stream/track/{}" target="_blank" rel="noreferrer">Preview Stream</a>
         <a href="{}">Play On Renderer</a>
       </div>
@@ -1467,6 +1980,8 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         html_escape(&track.title),
         html_escape(&track.artist),
         html_escape(&track.album),
+        html_escape(&track.album_id),
+        html_escape(&renderer_location),
         html_escape(&track.id),
         html_escape(&play_url),
         inferred_rows,
@@ -1522,11 +2037,14 @@ fn render_track_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
     );
 
     format!(
-        r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
+        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
         json_escape(&track.id),
+        json_escape(&track.album_id),
         json_escape(&track.title),
         json_escape(&track.artist),
         json_escape(&track.album),
+        option_u32_json(track.disc_number),
+        option_u32_json(track.track_number),
         json_escape(&track.relative_path),
         json_escape(&track.path.display().to_string()),
         json_escape(&track.mime_type),
@@ -1564,14 +2082,42 @@ fn render_tracks_json(state: &ServiceState) -> String {
                 .map(|_| format!("/artwork/track/{}", track.id))
                 .unwrap_or_default();
             format!(
-                r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","path":"{}","mime_type":"{}","size":{},"artwork_url":"{}"}}"#,
+                r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"path":"{}","mime_type":"{}","size":{},"artwork_url":"{}"}}"#,
                 json_escape(&track.id),
+                json_escape(&track.album_id),
                 json_escape(&track.title),
                 json_escape(&track.artist),
                 json_escape(&track.album),
+                option_u32_json(track.disc_number),
+                option_u32_json(track.track_number),
                 json_escape(&track.relative_path),
                 json_escape(&track.mime_type),
                 track.file_size,
+                json_escape(&artwork_url),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{entries}]")
+}
+
+fn render_albums_json(state: &ServiceState) -> String {
+    let albums = state.albums_snapshot();
+    let entries = albums
+        .into_iter()
+        .map(|album| {
+            let artwork_url = album
+                .artwork_track_id
+                .as_ref()
+                .map(|track_id| format!("/artwork/track/{track_id}"))
+                .unwrap_or_default();
+            format!(
+                r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}"}}"#,
+                json_escape(&album.id),
+                json_escape(&album.title),
+                json_escape(&album.artist),
+                album.track_count,
+                json_escape(&album.first_track_id),
                 json_escape(&artwork_url),
             )
         })
@@ -1654,9 +2200,12 @@ impl Database {
                 r#"
                 CREATE TABLE IF NOT EXISTS tracks (
                     id TEXT PRIMARY KEY,
+                    album_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     artist TEXT NOT NULL,
                     album TEXT NOT NULL,
+                    disc_number INTEGER,
+                    track_number INTEGER,
                     relative_path TEXT NOT NULL,
                     path TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
@@ -1682,6 +2231,9 @@ impl Database {
                 "#,
             )
             .map_err(db_error)?;
+        ensure_column(&connection, "tracks", "album_id", "TEXT")?;
+        ensure_column(&connection, "tracks", "disc_number", "INTEGER")?;
+        ensure_column(&connection, "tracks", "track_number", "INTEGER")?;
         ensure_column(&connection, "tracks", "artwork_cache_key", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_source", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_mime_type", "TEXT")?;
@@ -1696,27 +2248,35 @@ impl Database {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, title, artist, album, relative_path, path, mime_type, file_size,
-                        artwork_cache_key, artwork_source, artwork_mime_type
+                "SELECT id, album_id, title, artist, album, disc_number, track_number,
+                        relative_path, path, mime_type, file_size, artwork_cache_key,
+                        artwork_source, artwork_mime_type
                  FROM tracks
-                 ORDER BY artist, album, title, relative_path",
+                 ORDER BY artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
             )
             .map_err(db_error)?;
         let rows = statement
             .query_map([], |row| {
+                let artist: String = row.get(3)?;
+                let album: String = row.get(4)?;
                 Ok(LibraryTrack {
                     id: row.get(0)?,
-                    title: row.get(1)?,
-                    artist: row.get(2)?,
-                    album: row.get(3)?,
-                    relative_path: row.get(4)?,
-                    path: PathBuf::from(row.get::<_, String>(5)?),
-                    mime_type: row.get(6)?,
-                    file_size: row.get(7)?,
+                    album_id: row
+                        .get::<_, Option<String>>(1)?
+                        .unwrap_or_else(|| stable_album_id(&artist, &album)),
+                    title: row.get(2)?,
+                    artist,
+                    album,
+                    disc_number: row.get(5)?,
+                    track_number: row.get(6)?,
+                    relative_path: row.get(7)?,
+                    path: PathBuf::from(row.get::<_, String>(8)?),
+                    mime_type: row.get(9)?,
+                    file_size: row.get(10)?,
                     artwork: match (
-                        row.get::<_, Option<String>>(8)?,
-                        row.get::<_, Option<String>>(9)?,
-                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
+                        row.get::<_, Option<String>>(13)?,
                     ) {
                         (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
                             cache_key,
@@ -1747,9 +2307,10 @@ impl Database {
             let mut statement = transaction
                 .prepare(
                     "INSERT INTO tracks
-                     (id, title, artist, album, relative_path, path, mime_type, file_size,
-                      artwork_cache_key, artwork_source, artwork_mime_type)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (id, album_id, title, artist, album, disc_number, track_number,
+                      relative_path, path, mime_type, file_size, artwork_cache_key,
+                      artwork_source, artwork_mime_type)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
@@ -1766,9 +2327,12 @@ impl Database {
                 statement
                     .execute(params![
                         track.id,
+                        track.album_id,
                         track.title,
                         track.artist,
                         track.album,
+                        track.disc_number,
+                        track.track_number,
                         track.relative_path,
                         track.path.display().to_string(),
                         track.mime_type,
@@ -1909,6 +2473,13 @@ impl ServiceState {
             .unwrap_or_default()
     }
 
+    fn albums_snapshot(&self) -> Vec<AlbumSummary> {
+        self.library
+            .lock()
+            .map(|library| build_album_summaries(&library.tracks))
+            .unwrap_or_default()
+    }
+
     fn find_track(&self, track_id: &str) -> Option<LibraryTrack> {
         self.library.lock().ok().and_then(|library| {
             library
@@ -1917,6 +2488,32 @@ impl ServiceState {
                 .find(|track| track.id == track_id)
                 .cloned()
         })
+    }
+
+    fn find_album(&self, album_id: &str) -> Option<AlbumSummary> {
+        self.albums_snapshot()
+            .into_iter()
+            .find(|album| album.id == album_id)
+    }
+
+    fn tracks_for_album(&self, album_id: &str) -> Vec<LibraryTrack> {
+        self.library
+            .lock()
+            .map(|library| {
+                let mut tracks = library
+                    .tracks
+                    .iter()
+                    .filter(|track| track.album_id == album_id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                tracks.sort_by(compare_track_album_order);
+                tracks
+            })
+            .unwrap_or_default()
+    }
+
+    fn first_track_for_album(&self, album_id: &str) -> Option<LibraryTrack> {
+        self.tracks_for_album(album_id).into_iter().next()
     }
 
     fn rescan(&self) -> io::Result<usize> {
@@ -2008,25 +2605,91 @@ fn scan_library(root: &Path, config_path: &Path) -> io::Result<Library> {
     fs::create_dir_all(&artwork_cache_dir)?;
     let mut tracks = Vec::new();
     scan_dir(root, root, &artwork_cache_dir, &mut tracks)?;
-    tracks.sort_by(|left, right| {
-        (
-            left.artist.as_str(),
-            left.album.as_str(),
-            left.title.as_str(),
-            left.relative_path.as_str(),
-        )
-            .cmp(&(
-                right.artist.as_str(),
-                right.album.as_str(),
-                right.title.as_str(),
-                right.relative_path.as_str(),
-            ))
-    });
+    tracks.sort_by(compare_library_tracks);
 
     Ok(Library {
         scan_root: root.to_path_buf(),
         tracks,
     })
+}
+
+fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
+    let mut grouped = HashMap::<String, Vec<LibraryTrack>>::new();
+    for track in tracks {
+        grouped
+            .entry(track.album_id.clone())
+            .or_default()
+            .push(track.clone());
+    }
+
+    let mut albums = grouped
+        .into_iter()
+        .filter_map(|(album_id, mut album_tracks)| {
+            album_tracks.sort_by(compare_track_album_order);
+            let first_track = album_tracks.first()?.clone();
+            let artwork_track_id = album_tracks
+                .iter()
+                .find(|track| track.artwork.is_some())
+                .map(|track| track.id.clone());
+            Some(AlbumSummary {
+                id: album_id,
+                title: first_track.album.clone(),
+                artist: first_track.artist.clone(),
+                track_count: album_tracks.len(),
+                artwork_track_id,
+                first_track_id: first_track.id.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    albums.sort_by(compare_albums);
+    albums
+}
+
+fn compare_library_tracks(left: &LibraryTrack, right: &LibraryTrack) -> std::cmp::Ordering {
+    (
+        left.artist.as_str(),
+        left.album.as_str(),
+        numeric_sort_key(left.disc_number),
+        numeric_sort_key(left.track_number),
+        left.title.as_str(),
+        left.relative_path.as_str(),
+    )
+        .cmp(&(
+            right.artist.as_str(),
+            right.album.as_str(),
+            numeric_sort_key(right.disc_number),
+            numeric_sort_key(right.track_number),
+            right.title.as_str(),
+            right.relative_path.as_str(),
+        ))
+}
+
+fn compare_track_album_order(left: &LibraryTrack, right: &LibraryTrack) -> std::cmp::Ordering {
+    (
+        numeric_sort_key(left.disc_number),
+        numeric_sort_key(left.track_number),
+        left.title.as_str(),
+        left.relative_path.as_str(),
+    )
+        .cmp(&(
+            numeric_sort_key(right.disc_number),
+            numeric_sort_key(right.track_number),
+            right.title.as_str(),
+            right.relative_path.as_str(),
+        ))
+}
+
+fn compare_albums(left: &AlbumSummary, right: &AlbumSummary) -> std::cmp::Ordering {
+    (left.artist.as_str(), left.title.as_str(), left.id.as_str()).cmp(&(
+        right.artist.as_str(),
+        right.title.as_str(),
+        right.id.as_str(),
+    ))
+}
+
+fn numeric_sort_key(value: Option<u32>) -> (bool, u32) {
+    (value.is_none(), value.unwrap_or(u32::MAX))
 }
 
 fn scan_dir(
@@ -2081,16 +2744,24 @@ fn scan_dir(
             .clone()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(fallback_album);
+        let (fallback_disc_number, fallback_track_number) =
+            infer_disc_and_track_numbers(&relative_components);
+        let disc_number = parsed_tags.disc_number.or(fallback_disc_number);
+        let track_number = parsed_tags.track_number.or(fallback_track_number);
         let mime_type = infer_mime_type(&path).to_string();
         let id = stable_track_id(&relative_path);
+        let album_id = stable_album_id(&artist, &album);
         let artwork =
             resolve_track_artwork(root, &path, &relative_components, &id, artwork_cache_dir);
 
         tracks.push(LibraryTrack {
             id,
+            album_id,
             title,
             artist,
             album,
+            disc_number,
+            track_number,
             relative_path,
             path,
             mime_type,
@@ -2349,6 +3020,63 @@ fn stable_track_id(relative_path: &str) -> String {
     format!("{hash:016x}")
 }
 
+fn stable_album_id(artist: &str, album: &str) -> String {
+    stable_track_id(&format!(
+        "album:{}:{}",
+        artist.trim().to_ascii_lowercase(),
+        album.trim().to_ascii_lowercase()
+    ))
+}
+
+fn infer_disc_and_track_numbers(relative_components: &[String]) -> (Option<u32>, Option<u32>) {
+    let directories = relative_components
+        .iter()
+        .take(relative_components.len().saturating_sub(1))
+        .collect::<Vec<_>>();
+    let disc_number = directories.iter().rev().find_map(|value| {
+        if looks_like_disc_folder(value) {
+            trailing_number(value)
+        } else {
+            None
+        }
+    });
+    let track_number = relative_components
+        .last()
+        .and_then(|value| Path::new(value).file_stem().and_then(|stem| stem.to_str()))
+        .and_then(leading_number);
+
+    (disc_number, track_number)
+}
+
+fn leading_number(value: &str) -> Option<u32> {
+    let digits = value
+        .chars()
+        .skip_while(|character| character.is_whitespace())
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<u32>().ok()
+    }
+}
+
+fn trailing_number(value: &str) -> Option<u32> {
+    let digits = value
+        .chars()
+        .rev()
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<u32>().ok()
+    }
+}
+
 fn now_unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2433,6 +3161,8 @@ fn read_lofty_track_tags(path: &Path) -> ParsedTrackTags {
         title: tag.title().map(|value| value.into_owned()),
         artist: tag.artist().map(|value| value.into_owned()),
         album: tag.album().map(|value| value.into_owned()),
+        disc_number: tag.disk(),
+        track_number: tag.track(),
     }
 }
 
@@ -2873,6 +3603,21 @@ fn infer_mime_type(path: &Path) -> &'static str {
     }
 }
 
+fn format_track_position(disc_number: Option<u32>, track_number: Option<u32>) -> String {
+    match (disc_number, track_number) {
+        (Some(disc), Some(track)) => format!("Disc {disc} • Track {track}"),
+        (None, Some(track)) => format!("Track {track}"),
+        (Some(disc), None) => format!("Disc {disc}"),
+        (None, None) => "Unknown position".to_string(),
+    }
+}
+
+fn option_u32_json(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
 fn parse_range_header(value: &str, total_len: u64) -> Option<(u64, u64)> {
     let bytes = value.strip_prefix("bytes=")?;
     let (start_text, end_text) = bytes.split_once('-')?;
@@ -2921,10 +3666,12 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        artwork_name_priority, cleanup_track_label, decode_id3v1_text, infer_artist_and_album,
+        LibraryTrack, artwork_name_priority, cleanup_track_label, compare_track_album_order,
+        decode_id3v1_text, infer_artist_and_album, infer_disc_and_track_numbers,
         infer_image_mime_from_bytes, parse_query_string, parse_range_header,
-        parse_vorbis_comment_block, should_skip_entry, stable_track_id,
+        parse_vorbis_comment_block, should_skip_entry, stable_album_id, stable_track_id,
     };
+    use std::path::PathBuf;
 
     #[test]
     fn parses_standard_http_ranges() {
@@ -2989,6 +3736,25 @@ mod tests {
     }
 
     #[test]
+    fn infers_disc_and_track_numbers_from_paths() {
+        let (disc, track) = infer_disc_and_track_numbers(&[
+            "Biosphere".to_string(),
+            "Substrata".to_string(),
+            "Disc 2".to_string(),
+            "03 - Chukhung.flac".to_string(),
+        ]);
+        assert_eq!(disc, Some(2));
+        assert_eq!(track, Some(3));
+
+        let (disc, track) = infer_disc_and_track_numbers(&[
+            "Album".to_string(),
+            "Track Without Prefix.flac".to_string(),
+        ]);
+        assert_eq!(disc, None);
+        assert_eq!(track, None);
+    }
+
+    #[test]
     fn skips_hidden_metadata_entries() {
         assert!(should_skip_entry(".AppleDouble"));
         assert!(should_skip_entry("._Track.flac"));
@@ -3025,6 +3791,25 @@ mod tests {
     }
 
     #[test]
+    fn stable_album_ids_are_repeatable() {
+        let left = stable_album_id("Boards of Canada", "Music Has the Right to Children");
+        let right = stable_album_id("boards of canada", "music has the right to children");
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn track_album_order_prefers_numeric_positions() {
+        let mut tracks = vec![
+            sample_track("c", Some(1), Some(3), "Track 3"),
+            sample_track("a", Some(1), Some(1), "Track 1"),
+            sample_track("b", Some(1), Some(2), "Track 2"),
+        ];
+        tracks.sort_by(compare_track_album_order);
+        let ordered_ids = tracks.into_iter().map(|track| track.id).collect::<Vec<_>>();
+        assert_eq!(ordered_ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
     fn prioritizes_cover_art_names() {
         assert!(
             artwork_name_priority("cover.jpg") < artwork_name_priority("folder.jpg"),
@@ -3052,5 +3837,27 @@ mod tests {
             Some("image/webp")
         );
         assert_eq!(infer_image_mime_from_bytes(b"not an image"), None);
+    }
+
+    fn sample_track(
+        id: &str,
+        disc_number: Option<u32>,
+        track_number: Option<u32>,
+        title: &str,
+    ) -> LibraryTrack {
+        LibraryTrack {
+            id: id.to_string(),
+            album_id: "album".to_string(),
+            title: title.to_string(),
+            artist: "Artist".to_string(),
+            album: "Album".to_string(),
+            disc_number,
+            track_number,
+            relative_path: format!("{title}.flac"),
+            path: PathBuf::from(format!("/music/{title}.flac")),
+            mime_type: "audio/flac".to_string(),
+            file_size: 123,
+            artwork: None,
+        }
     }
 }
