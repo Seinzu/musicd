@@ -7,12 +7,14 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::read_from_path;
 use lofty::tag::Accessor;
 use musicd_core::AppConfig;
 use musicd_upnp::{StreamResource, discover_renderers, inspect_renderer, play_stream};
+use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LibraryTrack {
@@ -41,6 +43,21 @@ struct ParsedTrackTags {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct RendererRecord {
+    location: String,
+    name: String,
+    manufacturer: Option<String>,
+    model_name: Option<String>,
+    av_transport_control_url: Option<String>,
+    last_seen_unix: i64,
+}
+
+#[derive(Debug, Clone)]
+struct Database {
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Library {
     scan_root: PathBuf,
     tracks: Vec<LibraryTrack>,
@@ -49,6 +66,7 @@ struct Library {
 #[derive(Debug)]
 struct ServiceState {
     config: AppConfig,
+    database: Database,
     library: Mutex<Library>,
 }
 
@@ -140,6 +158,7 @@ fn run_serve() -> io::Result<()> {
 
     println!("musicd service");
     println!("Library path: {}", config.library_path.display());
+    println!("Config path: {}", config.config_path.display());
     println!("Bind address: {}", config.bind_address);
     println!("HTTP base URL: {}", config.base_url);
     println!("Indexed tracks: {track_count}");
@@ -367,7 +386,7 @@ fn handle_service_request(
             )
         }
         ("GET", "/api/renderers/discover") | ("HEAD", "/api/renderers/discover") => {
-            let body = render_discovery_json(&state.config);
+            let body = render_discovery_json(&state);
             respond_text(
                 writer,
                 "200 OK",
@@ -430,6 +449,8 @@ fn handle_play_request(
         );
     }
 
+    let _ = state.remember_renderer_location(&renderer_location);
+
     let Some(track) = state.find_track(track_id) else {
         return redirect_home(
             writer,
@@ -451,15 +472,24 @@ fn handle_play_request(
     };
 
     match play_stream(&renderer_location, &resource) {
-        Ok(renderer) => redirect_home(
-            writer,
-            Some(&renderer_location),
-            Some(&format!(
-                "Now playing '{}' on {}.",
-                track.title, renderer.friendly_name
-            )),
-            None,
-        ),
+        Ok(renderer) => {
+            let _ = state.remember_renderer_details(
+                &renderer.location,
+                &renderer.friendly_name,
+                renderer.manufacturer.as_deref(),
+                renderer.model_name.as_deref(),
+                Some(&renderer.av_transport_control_url),
+            );
+            redirect_home(
+                writer,
+                Some(&renderer_location),
+                Some(&format!(
+                    "Now playing '{}' on {}.",
+                    track.title, renderer.friendly_name
+                )),
+                None,
+            )
+        }
         Err(error) => redirect_home(
             writer,
             Some(&renderer_location),
@@ -792,12 +822,9 @@ fn url_encode(value: &str) -> String {
 fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     let tracks = state.tracks_snapshot();
     let library_path = state.config.library_path.display().to_string();
-    let renderer_location = request
-        .query
-        .get("renderer_location")
-        .cloned()
-        .or_else(|| state.config.default_renderer_location.clone())
-        .unwrap_or_default();
+    let renderer_location = state
+        .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
+    let known_renderers = state.renderer_snapshot();
     let message = request.query.get("message").cloned().unwrap_or_default();
     let error = request.query.get("error").cloned().unwrap_or_default();
 
@@ -835,6 +862,27 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         String::new()
     } else {
         format!("<p class=\"banner error\">{}</p>", html_escape(&error))
+    };
+    let renderer_options = if known_renderers.is_empty() {
+        "<option value=\"\">Discovered renderers appear here</option>".to_string()
+    } else {
+        known_renderers
+            .iter()
+            .map(|renderer| {
+                let selected = if renderer.location == renderer_location {
+                    " selected"
+                } else {
+                    ""
+                };
+                format!(
+                    "<option value=\"{}\"{}>{}</option>",
+                    html_escape(&renderer.location),
+                    selected,
+                    html_escape(&renderer.name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
     };
 
     format!(
@@ -1026,7 +1074,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       <div class="control-row">
         <button type="button" class="secondary" onclick="discoverRenderers()">Discover Renderers</button>
         <select id="renderer_discovery">
-          <option value="">Discovered renderers appear here</option>
+          {}
         </select>
         <button type="button" class="secondary" onclick="applySelectedRenderer()">Use Selected Renderer</button>
       </div>
@@ -1110,6 +1158,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         message_html,
         error_html,
         html_escape(&renderer_location),
+        renderer_options,
         html_escape(&renderer_location),
         empty_state,
         rows,
@@ -1395,34 +1444,56 @@ fn render_tracks_json(state: &ServiceState) -> String {
     format!("[{entries}]")
 }
 
-fn render_discovery_json(config: &AppConfig) -> String {
-    let renderers = match discover_renderers(Duration::from_millis(config.discovery_timeout_ms)) {
-        Ok(renderers) => renderers,
-        Err(error) => {
-            return format!(
-                r#"[{{"location":"","name":"Discovery failed","error":"{}"}}]"#,
-                json_escape(&error.to_string())
-            );
-        }
-    };
+fn render_discovery_json(state: &ServiceState) -> String {
+    let renderers =
+        match discover_renderers(Duration::from_millis(state.config.discovery_timeout_ms)) {
+            Ok(renderers) => renderers,
+            Err(error) => {
+                return format!(
+                    r#"[{{"location":"","name":"Discovery failed","error":"{}"}}]"#,
+                    json_escape(&error.to_string())
+                );
+            }
+        };
 
     let entries = renderers
         .into_iter()
-        .map(|renderer| match inspect_renderer(&renderer.location) {
-            Ok(details) => format!(
-                r#"{{"location":"{}","name":"{}","manufacturer":"{}","model":"{}","av_transport":"{}"}}"#,
-                json_escape(&details.location),
-                json_escape(&details.friendly_name),
-                json_escape(details.manufacturer.as_deref().unwrap_or("")),
-                json_escape(details.model_name.as_deref().unwrap_or("")),
-                json_escape(&details.av_transport_control_url),
-            ),
-            Err(error) => format!(
-                r#"{{"location":"{}","name":"{}","error":"{}"}}"#,
-                json_escape(&renderer.location),
-                json_escape(renderer.server.as_deref().unwrap_or("Unknown renderer")),
-                json_escape(&error.to_string()),
-            ),
+        .map(|renderer| {
+            match inspect_renderer(&renderer.location) {
+                Ok(details) => {
+                    let _ = state.remember_renderer_details(
+                        &details.location,
+                        &details.friendly_name,
+                        details.manufacturer.as_deref(),
+                        details.model_name.as_deref(),
+                        Some(&details.av_transport_control_url),
+                    );
+                    format!(
+                        r#"{{"location":"{}","name":"{}","manufacturer":"{}","model":"{}","av_transport":"{}"}}"#,
+                        json_escape(&details.location),
+                        json_escape(&details.friendly_name),
+                        json_escape(details.manufacturer.as_deref().unwrap_or("")),
+                        json_escape(details.model_name.as_deref().unwrap_or("")),
+                        json_escape(&details.av_transport_control_url),
+                    )
+                }
+                Err(error) => {
+                    let name = renderer.server.as_deref().unwrap_or("Unknown renderer");
+                    let _ = state.remember_renderer_details(
+                        &renderer.location,
+                        name,
+                        None,
+                        None,
+                        None,
+                    );
+                    format!(
+                        r#"{{"location":"{}","name":"{}","error":"{}"}}"#,
+                        json_escape(&renderer.location),
+                        json_escape(name),
+                        json_escape(&error.to_string()),
+                    )
+                }
+            }
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -1430,13 +1501,230 @@ fn render_discovery_json(config: &AppConfig) -> String {
     format!("[{entries}]")
 }
 
+impl Database {
+    fn open(config_path: &Path) -> io::Result<Self> {
+        fs::create_dir_all(config_path)?;
+        let database = Self {
+            path: config_path.join("musicd.db"),
+        };
+        database.initialize()?;
+        Ok(database)
+    }
+
+    fn initialize(&self) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS tracks (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    artist TEXT NOT NULL,
+                    album TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    file_size INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS renderers (
+                    location TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    manufacturer TEXT,
+                    model_name TEXT,
+                    av_transport_control_url TEXT,
+                    last_seen_unix INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS app_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                "#,
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn connection(&self) -> io::Result<Connection> {
+        Connection::open(&self.path).map_err(db_error)
+    }
+
+    fn load_library(&self, scan_root: PathBuf) -> io::Result<Library> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, title, artist, album, relative_path, path, mime_type, file_size
+                 FROM tracks
+                 ORDER BY artist, album, title, relative_path",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(LibraryTrack {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    artist: row.get(2)?,
+                    album: row.get(3)?,
+                    relative_path: row.get(4)?,
+                    path: PathBuf::from(row.get::<_, String>(5)?),
+                    mime_type: row.get(6)?,
+                    file_size: row.get(7)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        let mut tracks = Vec::new();
+        for row in rows {
+            tracks.push(row.map_err(db_error)?);
+        }
+
+        Ok(Library { scan_root, tracks })
+    }
+
+    fn save_library(&self, library: &Library) -> io::Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        transaction
+            .execute("DELETE FROM tracks", [])
+            .map_err(db_error)?;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO tracks
+                     (id, title, artist, album, relative_path, path, mime_type, file_size)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .map_err(db_error)?;
+
+            for track in &library.tracks {
+                statement
+                    .execute(params![
+                        track.id,
+                        track.title,
+                        track.artist,
+                        track.album,
+                        track.relative_path,
+                        track.path.display().to_string(),
+                        track.mime_type,
+                        track.file_size
+                    ])
+                    .map_err(db_error)?;
+            }
+        }
+        transaction.commit().map_err(db_error)?;
+        Ok(())
+    }
+
+    fn list_renderers(&self) -> io::Result<Vec<RendererRecord>> {
+        let connection = self.connection()?;
+        let selected = self.last_selected_renderer_location()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT location, name, manufacturer, model_name, av_transport_control_url, last_seen_unix
+                 FROM renderers
+                 ORDER BY last_seen_unix DESC, name ASC",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(RendererRecord {
+                    location: row.get(0)?,
+                    name: row.get(1)?,
+                    manufacturer: row.get(2)?,
+                    model_name: row.get(3)?,
+                    av_transport_control_url: row.get(4)?,
+                    last_seen_unix: row.get(5)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        let mut renderers = Vec::new();
+        for row in rows {
+            renderers.push(row.map_err(db_error)?);
+        }
+        if let Some(selected) = selected {
+            renderers.sort_by_key(|renderer| {
+                (
+                    renderer.location != selected,
+                    -renderer.last_seen_unix,
+                    renderer.name.clone(),
+                )
+            });
+        }
+        Ok(renderers)
+    }
+
+    fn upsert_renderer(&self, renderer: &RendererRecord) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO renderers
+                 (location, name, manufacturer, model_name, av_transport_control_url, last_seen_unix)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(location) DO UPDATE SET
+                    name = excluded.name,
+                    manufacturer = COALESCE(excluded.manufacturer, renderers.manufacturer),
+                    model_name = COALESCE(excluded.model_name, renderers.model_name),
+                    av_transport_control_url = COALESCE(excluded.av_transport_control_url, renderers.av_transport_control_url),
+                    last_seen_unix = excluded.last_seen_unix",
+                params![
+                    renderer.location,
+                    renderer.name,
+                    renderer.manufacturer,
+                    renderer.model_name,
+                    renderer.av_transport_control_url,
+                    renderer.last_seen_unix
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn set_last_selected_renderer_location(&self, location: &str) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO app_state (key, value) VALUES ('last_renderer_location', ?)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [location],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn last_selected_renderer_location(&self) -> io::Result<Option<String>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT value FROM app_state WHERE key = 'last_renderer_location'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(db_error)
+    }
+}
+
 impl ServiceState {
     fn load(config: AppConfig) -> io::Result<Self> {
-        let library = scan_library(&config.library_path)?;
-        Ok(Self {
+        let database = Database::open(&config.config_path)?;
+        let persisted_library = database.load_library(config.library_path.clone())?;
+        let state = Self {
             config,
-            library: Mutex::new(library),
-        })
+            database,
+            library: Mutex::new(persisted_library),
+        };
+
+        match scan_library(&state.config.library_path) {
+            Ok(library) => state.replace_library(library)?,
+            Err(error) if state.track_count() > 0 => {
+                eprintln!("library scan failed, continuing with persisted index: {error}");
+            }
+            Err(error) => return Err(error),
+        }
+
+        Ok(state)
     }
 
     fn track_count(&self) -> usize {
@@ -1466,12 +1754,70 @@ impl ServiceState {
     fn rescan(&self) -> io::Result<usize> {
         let library = scan_library(&self.config.library_path)?;
         let track_count = library.tracks.len();
+        self.replace_library(library)?;
+        Ok(track_count)
+    }
+
+    fn replace_library(&self, library: Library) -> io::Result<()> {
+        self.database.save_library(&library)?;
         let mut state = self
             .library
             .lock()
             .map_err(|_| io::Error::other("library state lock poisoned"))?;
         *state = library;
-        Ok(track_count)
+        Ok(())
+    }
+
+    fn renderer_snapshot(&self) -> Vec<RendererRecord> {
+        self.database.list_renderers().unwrap_or_default()
+    }
+
+    fn preferred_renderer_location(&self, requested: Option<&str>) -> String {
+        requested
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                self.database
+                    .last_selected_renderer_location()
+                    .ok()
+                    .flatten()
+            })
+            .or_else(|| self.config.default_renderer_location.clone())
+            .unwrap_or_default()
+    }
+
+    fn remember_renderer_location(&self, location: &str) -> io::Result<()> {
+        let renderer = RendererRecord {
+            location: location.to_string(),
+            name: location.to_string(),
+            manufacturer: None,
+            model_name: None,
+            av_transport_control_url: None,
+            last_seen_unix: now_unix_timestamp(),
+        };
+        self.database.upsert_renderer(&renderer)?;
+        self.database.set_last_selected_renderer_location(location)
+    }
+
+    fn remember_renderer_details(
+        &self,
+        location: &str,
+        name: &str,
+        manufacturer: Option<&str>,
+        model_name: Option<&str>,
+        av_transport_control_url: Option<&str>,
+    ) -> io::Result<()> {
+        let renderer = RendererRecord {
+            location: location.to_string(),
+            name: name.to_string(),
+            manufacturer: manufacturer.map(ToString::to_string),
+            model_name: model_name.map(ToString::to_string),
+            av_transport_control_url: av_transport_control_url.map(ToString::to_string),
+            last_seen_unix: now_unix_timestamp(),
+        };
+        self.database.upsert_renderer(&renderer)?;
+        self.database.set_last_selected_renderer_location(location)
     }
 }
 
@@ -1599,6 +1945,17 @@ fn stable_track_id(relative_path: &str) -> String {
         hash = hash.wrapping_mul(1099511628211);
     }
     format!("{hash:016x}")
+}
+
+fn now_unix_timestamp() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn db_error(error: rusqlite::Error) -> io::Error {
+    io::Error::other(format!("sqlite error: {error}"))
 }
 
 fn inspect_embedded_metadata(path: &Path) -> io::Result<EmbeddedMetadata> {
@@ -1953,6 +2310,7 @@ fn print_status() {
     println!("musicd service scaffold");
     println!();
     println!("Library path: {}", config.library_path.display());
+    println!("Config path: {}", config.config_path.display());
     println!("Bind address: {}", config.bind_address);
     println!("HTTP base URL: {}", config.base_url);
     println!("Discovery timeout: {}ms", config.discovery_timeout_ms);

@@ -51,6 +51,7 @@ pub struct Renderer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfig {
     pub library_path: PathBuf,
+    pub config_path: PathBuf,
     pub bind_address: String,
     pub base_url: String,
     pub discovery_timeout_ms: u64,
@@ -63,6 +64,9 @@ impl AppConfig {
             library_path: std::env::var("MUSICD_LIBRARY_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/music")),
+            config_path: std::env::var("MUSICD_CONFIG_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/config")),
             bind_address: std::env::var("MUSICD_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:7878".to_string()),
             base_url: std::env::var("MUSICD_PUBLIC_BASE_URL")

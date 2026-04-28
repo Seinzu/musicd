@@ -8,3 +8,4 @@ version.workspace = true
 lofty = "0.24"
 musicd-core = { path = "../../crates/musicd-core" }
 musicd-upnp = { path = "../../crates/musicd-upnp" }
+rusqlite = { version = "0.37", features = ["bundled"] }
