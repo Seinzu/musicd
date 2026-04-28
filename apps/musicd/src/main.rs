@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::read_from_path;
+use lofty::tag::Accessor;
 use musicd_core::AppConfig;
 use musicd_upnp::{StreamResource, discover_renderers, inspect_renderer, play_stream};
 
@@ -28,6 +31,13 @@ struct EmbeddedMetadata {
     format_name: String,
     fields: Vec<(String, String)>,
     notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ParsedTrackTags {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1526,8 +1536,23 @@ fn scan_dir(root: &Path, dir: &Path, tracks: &mut Vec<LibraryTrack>) -> io::Resu
             .filter_map(component_to_string)
             .collect::<Vec<_>>();
         let relative_path = relative_components.join("/");
-        let title = inferred_title(&path);
-        let (artist, album) = infer_artist_and_album(&relative_components);
+        let parsed_tags = read_lofty_track_tags(&path);
+        let title = parsed_tags
+            .title
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| inferred_title(&path));
+        let (fallback_artist, fallback_album) = infer_artist_and_album(&relative_components);
+        let artist = parsed_tags
+            .artist
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(fallback_artist);
+        let album = parsed_tags
+            .album
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(fallback_album);
         let mime_type = infer_mime_type(&path).to_string();
         let id = stable_track_id(&relative_path);
 
@@ -1577,6 +1602,10 @@ fn stable_track_id(relative_path: &str) -> String {
 }
 
 fn inspect_embedded_metadata(path: &Path) -> io::Result<EmbeddedMetadata> {
+    if let Ok(metadata) = inspect_with_lofty(path) {
+        return Ok(metadata);
+    }
+
     match file_extension(path).as_deref() {
         Some("flac") => inspect_flac_metadata(path),
         Some("mp3") => inspect_mp3_metadata(path),
@@ -1602,6 +1631,148 @@ fn inspect_embedded_metadata(path: &Path) -> io::Result<EmbeddedMetadata> {
             fields: Vec::new(),
             notes: vec!["Unknown file type.".to_string()],
         }),
+    }
+}
+
+fn read_lofty_track_tags(path: &Path) -> ParsedTrackTags {
+    let tagged_file = match read_from_path(path) {
+        Ok(tagged_file) => tagged_file,
+        Err(_) => return ParsedTrackTags::default(),
+    };
+
+    let Some(tag) = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())
+    else {
+        return ParsedTrackTags::default();
+    };
+
+    ParsedTrackTags {
+        title: tag.title().map(|value| value.into_owned()),
+        artist: tag.artist().map(|value| value.into_owned()),
+        album: tag.album().map(|value| value.into_owned()),
+    }
+}
+
+fn inspect_with_lofty(path: &Path) -> io::Result<EmbeddedMetadata> {
+    let tagged_file = read_from_path(path).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("lofty failed to read tags: {error}"),
+        )
+    })?;
+
+    let mut fields = Vec::new();
+    let mut notes = Vec::new();
+    let tag_types = tagged_file
+        .tags()
+        .iter()
+        .map(|tag| format!("{:?}", tag.tag_type()))
+        .collect::<Vec<_>>();
+    notes.push(format!("Lofty file type: {:?}", tagged_file.file_type()));
+    if tag_types.is_empty() {
+        notes.push("Lofty did not find any readable tags in this file.".to_string());
+    } else {
+        notes.push(format!("Readable tag types: {}", tag_types.join(", ")));
+    }
+
+    if let Some(tag) = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())
+    {
+        fields.push(("TAG_TYPE".to_string(), format!("{:?}", tag.tag_type())));
+        push_optional_field(
+            &mut fields,
+            "TITLE",
+            tag.title().map(|value| value.into_owned()),
+        );
+        push_optional_field(
+            &mut fields,
+            "ARTIST",
+            tag.artist().map(|value| value.into_owned()),
+        );
+        push_optional_field(
+            &mut fields,
+            "ALBUM",
+            tag.album().map(|value| value.into_owned()),
+        );
+        push_optional_field(
+            &mut fields,
+            "GENRE",
+            tag.genre().map(|value| value.into_owned()),
+        );
+        push_optional_field(
+            &mut fields,
+            "TRACKNUMBER",
+            tag.track().map(|value| value.to_string()),
+        );
+        push_optional_field(
+            &mut fields,
+            "TRACKTOTAL",
+            tag.track_total().map(|value| value.to_string()),
+        );
+        push_optional_field(
+            &mut fields,
+            "DISCNUMBER",
+            tag.disk().map(|value| value.to_string()),
+        );
+        push_optional_field(
+            &mut fields,
+            "DISCTOTAL",
+            tag.disk_total().map(|value| value.to_string()),
+        );
+        push_optional_field(
+            &mut fields,
+            "COMMENT",
+            tag.comment().map(|value| value.into_owned()),
+        );
+    }
+
+    let properties = tagged_file.properties();
+    push_optional_field(
+        &mut fields,
+        "DURATION_SECONDS",
+        Some(properties.duration().as_secs().to_string()),
+    );
+    push_optional_field(
+        &mut fields,
+        "CHANNELS",
+        properties.channels().map(|value| value.to_string()),
+    );
+    push_optional_field(
+        &mut fields,
+        "SAMPLE_RATE",
+        properties.sample_rate().map(|value| value.to_string()),
+    );
+    push_optional_field(
+        &mut fields,
+        "AUDIO_BITRATE_KBPS",
+        properties.audio_bitrate().map(|value| value.to_string()),
+    );
+    push_optional_field(
+        &mut fields,
+        "OVERALL_BITRATE_KBPS",
+        properties.overall_bitrate().map(|value| value.to_string()),
+    );
+    push_optional_field(
+        &mut fields,
+        "BIT_DEPTH",
+        properties.bit_depth().map(|value| value.to_string()),
+    );
+
+    Ok(EmbeddedMetadata {
+        format_name: "Lofty parsed metadata".to_string(),
+        fields,
+        notes,
+    })
+}
+
+fn push_optional_field(fields: &mut Vec<(String, String)>, key: &str, value: Option<String>) {
+    if let Some(value) = value {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            fields.push((key.to_string(), trimmed.to_string()));
+        }
     }
 }
 
