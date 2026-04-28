@@ -10,6 +10,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::picture::PictureType;
 use lofty::read_from_path;
 use lofty::tag::Accessor;
 use musicd_core::AppConfig;
@@ -26,6 +27,14 @@ struct LibraryTrack {
     path: PathBuf,
     mime_type: String,
     file_size: u64,
+    artwork: Option<TrackArtwork>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackArtwork {
+    cache_key: String,
+    source: String,
+    mime_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -417,6 +426,12 @@ fn handle_service_request(
             }
             handle_track_stream_request(writer, request, &state)
         }
+        _ if request.path.starts_with("/artwork/track/") => {
+            if request.method != "GET" && request.method != "HEAD" {
+                return respond_method_not_allowed(writer);
+            }
+            handle_track_artwork_request(writer, request, &state)
+        }
         _ => respond_not_found(writer, request.method == "HEAD"),
     }
 }
@@ -536,6 +551,27 @@ fn handle_track_stream_request(
     respond_with_file(
         writer,
         &track.path,
+        request.method == "HEAD",
+        request.range_header.clone(),
+    )
+}
+
+fn handle_track_artwork_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let track_id = request.path.trim_start_matches("/artwork/track/");
+    let Some(track) = state.find_track(track_id) else {
+        return respond_not_found(writer, request.method == "HEAD");
+    };
+    let Some(artwork_path) = state.track_artwork_path(&track) else {
+        return respond_not_found(writer, request.method == "HEAD");
+    };
+
+    respond_with_file(
+        writer,
+        &artwork_path,
         request.method == "HEAD",
         request.range_header.clone(),
     )
@@ -835,10 +871,22 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
             track.title, track.artist, track.album, track.relative_path
         )
         .to_ascii_lowercase();
+        let cover_html = track
+            .artwork
+            .as_ref()
+            .map(|_| {
+                format!(
+                    "<img class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
+                    html_escape(&track.id),
+                    html_escape(&track.album)
+                )
+            })
+            .unwrap_or_else(|| "<div class=\"cover-thumb placeholder\">No Art</div>".to_string());
         rows.push_str(&format!(
-            "<tr data-search=\"{}\"><td><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{}\"></td><td>{}</td><td>{}</td><td>{}</td><td><a href=\"/stream/track/{}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
+            "<tr data-search=\"{}\"><td><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{}\"></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><a href=\"/stream/track/{}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
             html_escape(&search_text),
             html_escape(&track.id),
+            cover_html,
             html_escape(&track.title),
             html_escape(&track.artist),
             html_escape(&track.album),
@@ -1035,6 +1083,24 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       color: var(--muted);
       margin: 0 0.2rem;
     }}
+    .cover-thumb {{
+      width: 3rem;
+      height: 3rem;
+      display: block;
+      border-radius: 12px;
+      object-fit: cover;
+      background: rgba(31, 26, 23, 0.08);
+      border: 1px solid var(--line);
+    }}
+    .cover-thumb.placeholder {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.68rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
     @media (max-width: 720px) {{
       main {{
         width: calc(100vw - 1rem);
@@ -1091,6 +1157,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         <thead>
           <tr>
             <th>Play</th>
+            <th>Cover</th>
             <th>Title</th>
             <th>Artist</th>
             <th>Album</th>
@@ -1184,6 +1251,10 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
             fields: Vec::new(),
             notes: vec![format!("Failed to inspect embedded metadata: {error}")],
         });
+    let artwork_url = track
+        .artwork
+        .as_ref()
+        .map(|_| format!("/artwork/track/{}", track.id));
 
     let inferred_rows = [
         ("Track ID", track.id.clone()),
@@ -1194,6 +1265,34 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         ("Absolute path", track.path.display().to_string()),
         ("MIME type", track.mime_type.clone()),
         ("File size", format!("{} bytes", track.file_size)),
+        (
+            "Artwork URL",
+            artwork_url.clone().unwrap_or_else(|| "None".to_string()),
+        ),
+        (
+            "Artwork source",
+            track
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork.source.clone())
+                .unwrap_or_else(|| "None".to_string()),
+        ),
+        (
+            "Artwork MIME type",
+            track
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork.mime_type.clone())
+                .unwrap_or_else(|| "None".to_string()),
+        ),
+        (
+            "Artwork cache key",
+            track
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork.cache_key.clone())
+                .unwrap_or_else(|| "None".to_string()),
+        ),
     ]
     .into_iter()
     .map(|(label, value)| {
@@ -1240,6 +1339,15 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         url_encode(&track.id),
         url_encode(&renderer_location)
     );
+    let artwork_html = artwork_url
+        .map(|url| {
+            format!(
+                "<section><h2>Artwork</h2><img class=\"detail-artwork\" src=\"{}\" alt=\"Artwork for {}\"></section>",
+                html_escape(&url),
+                html_escape(&track.album)
+            )
+        })
+        .unwrap_or_default();
 
     format!(
         r#"<!DOCTYPE html>
@@ -1321,6 +1429,13 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
       color: #1f1a17;
       background: #eadfce;
     }}
+    .detail-artwork {{
+      width: min(18rem, 100%);
+      display: block;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      box-shadow: 0 14px 28px rgba(31, 26, 23, 0.12);
+    }}
   </style>
 </head>
 <body>
@@ -1338,6 +1453,7 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
       <h2>Inferred Library Metadata</h2>
       <table>{}</table>
     </section>
+    {}
     <section>
       <h2>Embedded File Metadata</h2>
       <p>Parser: {}</p>
@@ -1354,6 +1470,7 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         html_escape(&track.id),
         html_escape(&play_url),
         inferred_rows,
+        artwork_html,
         html_escape(&metadata.format_name),
         embedded_rows,
         notes_html,
@@ -1391,9 +1508,21 @@ fn render_track_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
         .map(|note| format!(r#""{}""#, json_escape(note)))
         .collect::<Vec<_>>()
         .join(",");
+    let artwork_json = track.artwork.as_ref().map_or_else(
+        || "null".to_string(),
+        |artwork| {
+            format!(
+                r#"{{"url":"{}","source":"{}","mime_type":"{}","cache_key":"{}"}}"#,
+                json_escape(&format!("/artwork/track/{}", track.id)),
+                json_escape(&artwork.source),
+                json_escape(&artwork.mime_type),
+                json_escape(&artwork.cache_key),
+            )
+        },
+    );
 
     format!(
-        r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
+        r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
         json_escape(&track.id),
         json_escape(&track.title),
         json_escape(&track.artist),
@@ -1402,6 +1531,7 @@ fn render_track_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
         json_escape(&track.path.display().to_string()),
         json_escape(&track.mime_type),
         track.file_size,
+        artwork_json,
         json_escape(&metadata.format_name),
         fields,
         notes,
@@ -1428,8 +1558,13 @@ fn render_tracks_json(state: &ServiceState) -> String {
     let entries = tracks
         .into_iter()
         .map(|track| {
+            let artwork_url = track
+                .artwork
+                .as_ref()
+                .map(|_| format!("/artwork/track/{}", track.id))
+                .unwrap_or_default();
             format!(
-                r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","path":"{}","mime_type":"{}","size":{}}}"#,
+                r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","path":"{}","mime_type":"{}","size":{},"artwork_url":"{}"}}"#,
                 json_escape(&track.id),
                 json_escape(&track.title),
                 json_escape(&track.artist),
@@ -1437,6 +1572,7 @@ fn render_tracks_json(state: &ServiceState) -> String {
                 json_escape(&track.relative_path),
                 json_escape(&track.mime_type),
                 track.file_size,
+                json_escape(&artwork_url),
             )
         })
         .collect::<Vec<_>>()
@@ -1524,7 +1660,10 @@ impl Database {
                     relative_path TEXT NOT NULL,
                     path TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
-                    file_size INTEGER NOT NULL
+                    file_size INTEGER NOT NULL,
+                    artwork_cache_key TEXT,
+                    artwork_source TEXT,
+                    artwork_mime_type TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS renderers (
@@ -1543,6 +1682,9 @@ impl Database {
                 "#,
             )
             .map_err(db_error)?;
+        ensure_column(&connection, "tracks", "artwork_cache_key", "TEXT")?;
+        ensure_column(&connection, "tracks", "artwork_source", "TEXT")?;
+        ensure_column(&connection, "tracks", "artwork_mime_type", "TEXT")?;
         Ok(())
     }
 
@@ -1554,7 +1696,8 @@ impl Database {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, title, artist, album, relative_path, path, mime_type, file_size
+                "SELECT id, title, artist, album, relative_path, path, mime_type, file_size,
+                        artwork_cache_key, artwork_source, artwork_mime_type
                  FROM tracks
                  ORDER BY artist, album, title, relative_path",
             )
@@ -1570,6 +1713,18 @@ impl Database {
                     path: PathBuf::from(row.get::<_, String>(5)?),
                     mime_type: row.get(6)?,
                     file_size: row.get(7)?,
+                    artwork: match (
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                    ) {
+                        (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
+                            cache_key,
+                            source,
+                            mime_type,
+                        }),
+                        _ => None,
+                    },
                 })
             })
             .map_err(db_error)?;
@@ -1592,12 +1747,22 @@ impl Database {
             let mut statement = transaction
                 .prepare(
                     "INSERT INTO tracks
-                     (id, title, artist, album, relative_path, path, mime_type, file_size)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     (id, title, artist, album, relative_path, path, mime_type, file_size,
+                      artwork_cache_key, artwork_source, artwork_mime_type)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
             for track in &library.tracks {
+                let artwork_cache_key = track
+                    .artwork
+                    .as_ref()
+                    .map(|artwork| artwork.cache_key.clone());
+                let artwork_source = track.artwork.as_ref().map(|artwork| artwork.source.clone());
+                let artwork_mime_type = track
+                    .artwork
+                    .as_ref()
+                    .map(|artwork| artwork.mime_type.clone());
                 statement
                     .execute(params![
                         track.id,
@@ -1607,7 +1772,10 @@ impl Database {
                         track.relative_path,
                         track.path.display().to_string(),
                         track.mime_type,
-                        track.file_size
+                        track.file_size,
+                        artwork_cache_key,
+                        artwork_source,
+                        artwork_mime_type
                     ])
                     .map_err(db_error)?;
             }
@@ -1716,7 +1884,7 @@ impl ServiceState {
             library: Mutex::new(persisted_library),
         };
 
-        match scan_library(&state.config.library_path) {
+        match scan_library(&state.config.library_path, &state.config.config_path) {
             Ok(library) => state.replace_library(library)?,
             Err(error) if state.track_count() > 0 => {
                 eprintln!("library scan failed, continuing with persisted index: {error}");
@@ -1752,7 +1920,7 @@ impl ServiceState {
     }
 
     fn rescan(&self) -> io::Result<usize> {
-        let library = scan_library(&self.config.library_path)?;
+        let library = scan_library(&self.config.library_path, &self.config.config_path)?;
         let track_count = library.tracks.len();
         self.replace_library(library)?;
         Ok(track_count)
@@ -1819,9 +1987,16 @@ impl ServiceState {
         self.database.upsert_renderer(&renderer)?;
         self.database.set_last_selected_renderer_location(location)
     }
+
+    fn track_artwork_path(&self, track: &LibraryTrack) -> Option<PathBuf> {
+        track
+            .artwork
+            .as_ref()
+            .map(|artwork| artwork_cache_path(&self.config.config_path, &artwork.cache_key))
+    }
 }
 
-fn scan_library(root: &Path) -> io::Result<Library> {
+fn scan_library(root: &Path, config_path: &Path) -> io::Result<Library> {
     if !root.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -1829,8 +2004,10 @@ fn scan_library(root: &Path) -> io::Result<Library> {
         ));
     }
 
+    let artwork_cache_dir = config_path.join("artwork");
+    fs::create_dir_all(&artwork_cache_dir)?;
     let mut tracks = Vec::new();
-    scan_dir(root, root, &mut tracks)?;
+    scan_dir(root, root, &artwork_cache_dir, &mut tracks)?;
     tracks.sort_by(|left, right| {
         (
             left.artist.as_str(),
@@ -1852,7 +2029,12 @@ fn scan_library(root: &Path) -> io::Result<Library> {
     })
 }
 
-fn scan_dir(root: &Path, dir: &Path, tracks: &mut Vec<LibraryTrack>) -> io::Result<()> {
+fn scan_dir(
+    root: &Path,
+    dir: &Path,
+    artwork_cache_dir: &Path,
+    tracks: &mut Vec<LibraryTrack>,
+) -> io::Result<()> {
     let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
 
@@ -1867,7 +2049,7 @@ fn scan_dir(root: &Path, dir: &Path, tracks: &mut Vec<LibraryTrack>) -> io::Resu
         }
 
         if metadata.is_dir() {
-            scan_dir(root, &path, tracks)?;
+            scan_dir(root, &path, artwork_cache_dir, tracks)?;
             continue;
         }
 
@@ -1901,6 +2083,8 @@ fn scan_dir(root: &Path, dir: &Path, tracks: &mut Vec<LibraryTrack>) -> io::Resu
             .unwrap_or(fallback_album);
         let mime_type = infer_mime_type(&path).to_string();
         let id = stable_track_id(&relative_path);
+        let artwork =
+            resolve_track_artwork(root, &path, &relative_components, &id, artwork_cache_dir);
 
         tracks.push(LibraryTrack {
             id,
@@ -1911,10 +2095,228 @@ fn scan_dir(root: &Path, dir: &Path, tracks: &mut Vec<LibraryTrack>) -> io::Resu
             path,
             mime_type,
             file_size: metadata.len(),
+            artwork,
         });
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct ArtworkCandidate {
+    cache_key: String,
+    source: String,
+    mime_type: String,
+    extension: &'static str,
+    data: ArtworkData,
+}
+
+#[derive(Debug)]
+enum ArtworkData {
+    Bytes(Vec<u8>),
+    File(PathBuf),
+}
+
+fn resolve_track_artwork(
+    root: &Path,
+    track_path: &Path,
+    relative_components: &[String],
+    track_id: &str,
+    artwork_cache_dir: &Path,
+) -> Option<TrackArtwork> {
+    let candidate = read_embedded_artwork(track_path, track_id)
+        .or_else(|| find_sidecar_artwork(root, track_path, relative_components));
+    let Some(candidate) = candidate else {
+        return None;
+    };
+
+    let destination =
+        artwork_cache_dir.join(format!("{}.{}", candidate.cache_key, candidate.extension));
+    if persist_artwork_candidate(&candidate, &destination).is_err() {
+        return None;
+    }
+
+    Some(TrackArtwork {
+        cache_key: format!("{}.{}", candidate.cache_key, candidate.extension),
+        source: candidate.source,
+        mime_type: candidate.mime_type,
+    })
+}
+
+fn read_embedded_artwork(track_path: &Path, track_id: &str) -> Option<ArtworkCandidate> {
+    let tagged_file = read_from_path(track_path).ok()?;
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag())?;
+    let picture = tag
+        .get_picture_type(PictureType::CoverFront)
+        .or_else(|| tag.pictures().first())?;
+    let mime_type = picture
+        .mime_type()
+        .map(|value| value.as_str().to_string())
+        .or_else(|| infer_image_mime_from_bytes(picture.data()).map(ToString::to_string))?;
+    let extension = image_extension_for_mime(&mime_type)?;
+
+    Some(ArtworkCandidate {
+        cache_key: stable_track_id(&format!("embedded:{track_id}")),
+        source: format!("Embedded artwork ({:?})", picture.pic_type()),
+        mime_type,
+        extension,
+        data: ArtworkData::Bytes(picture.data().to_vec()),
+    })
+}
+
+fn find_sidecar_artwork(
+    root: &Path,
+    track_path: &Path,
+    relative_components: &[String],
+) -> Option<ArtworkCandidate> {
+    let search_dirs = artwork_search_dirs(track_path, relative_components);
+    for directory in search_dirs {
+        let mut entries = fs::read_dir(&directory)
+            .ok()?
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        entries.sort_by_key(|entry| entry.path());
+        let mut best_match: Option<(usize, PathBuf, String)> = None;
+
+        for entry in entries {
+            let path = entry.path();
+            let metadata = entry.metadata().ok()?;
+            if !metadata.is_file() {
+                continue;
+            }
+
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy().to_string();
+            let Some(priority) = artwork_name_priority(&file_name) else {
+                continue;
+            };
+            let should_replace = best_match
+                .as_ref()
+                .map(|(best_priority, best_path, _)| {
+                    priority < *best_priority || (priority == *best_priority && path < *best_path)
+                })
+                .unwrap_or(true);
+            if should_replace {
+                best_match = Some((priority, path, file_name));
+            }
+        }
+
+        if let Some((priority, path, _)) = best_match {
+            let mime_type = infer_image_mime_from_path(&path)?;
+            let extension = image_extension_for_mime(mime_type)?;
+            let relative_source = path
+                .strip_prefix(root)
+                .ok()
+                .map(|value| value.display().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            return Some(ArtworkCandidate {
+                cache_key: stable_track_id(&format!("sidecar:{relative_source}:{priority}")),
+                source: format!("Sidecar file: {relative_source}"),
+                mime_type: mime_type.to_string(),
+                extension,
+                data: ArtworkData::File(path),
+            });
+        }
+    }
+
+    None
+}
+
+fn artwork_search_dirs(track_path: &Path, relative_components: &[String]) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if let Some(directory) = track_path.parent() {
+        directories.push(directory.to_path_buf());
+        if relative_components.len() > 2 {
+            let parent_name = relative_components
+                .get(relative_components.len().saturating_sub(2))
+                .map(String::as_str)
+                .unwrap_or_default();
+            if looks_like_disc_folder(parent_name) {
+                if let Some(parent) = directory.parent() {
+                    if parent != directory {
+                        directories.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+    directories
+}
+
+fn artwork_name_priority(file_name: &str) -> Option<usize> {
+    let normalized = file_name.trim().to_ascii_lowercase();
+    let stem = Path::new(&normalized)
+        .file_stem()
+        .and_then(|value| value.to_str())?;
+
+    let stem_priority = match stem {
+        "cover" => 0,
+        "folder" => 1,
+        "front" => 2,
+        "album" => 3,
+        "artwork" => 4,
+        _ => return None,
+    };
+
+    let extension_priority = match Path::new(&normalized)
+        .extension()
+        .and_then(|value| value.to_str())?
+    {
+        "jpg" => 0,
+        "jpeg" => 1,
+        "png" => 2,
+        "webp" => 3,
+        _ => return None,
+    };
+
+    Some((stem_priority * 10) + extension_priority)
+}
+
+fn infer_image_mime_from_path(path: &Path) -> Option<&'static str> {
+    match file_extension(path).as_deref()? {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn infer_image_mime_from_bytes(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+fn image_extension_for_mime(mime_type: &str) -> Option<&'static str> {
+    match mime_type {
+        "image/jpeg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn persist_artwork_candidate(candidate: &ArtworkCandidate, destination: &Path) -> io::Result<()> {
+    match &candidate.data {
+        ArtworkData::Bytes(bytes) => fs::write(destination, bytes),
+        ArtworkData::File(source) => {
+            fs::copy(source, destination)?;
+            Ok(())
+        }
+    }
+}
+
+fn artwork_cache_path(config_path: &Path, cache_key: &str) -> PathBuf {
+    config_path.join("artwork").join(cache_key)
 }
 
 fn component_to_string(component: Component<'_>) -> Option<String> {
@@ -1952,6 +2354,29 @@ fn now_unix_timestamp() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> io::Result<()> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut statement = connection.prepare(&pragma).map_err(db_error)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?;
+
+    for row in rows {
+        if row.map_err(db_error)? == column {
+            return Ok(());
+        }
+    }
+
+    let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+    connection.execute(&alter, []).map_err(db_error)?;
+    Ok(())
 }
 
 fn db_error(error: rusqlite::Error) -> io::Error {
@@ -2496,8 +2921,9 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_track_label, decode_id3v1_text, infer_artist_and_album, parse_query_string,
-        parse_range_header, parse_vorbis_comment_block, should_skip_entry, stable_track_id,
+        artwork_name_priority, cleanup_track_label, decode_id3v1_text, infer_artist_and_album,
+        infer_image_mime_from_bytes, parse_query_string, parse_range_header,
+        parse_vorbis_comment_block, should_skip_entry, stable_track_id,
     };
 
     #[test]
@@ -2596,5 +3022,35 @@ mod tests {
     fn decodes_id3v1_text() {
         let bytes = b"Example Track\x00\x00\x00";
         assert_eq!(decode_id3v1_text(bytes), "Example Track");
+    }
+
+    #[test]
+    fn prioritizes_cover_art_names() {
+        assert!(
+            artwork_name_priority("cover.jpg") < artwork_name_priority("folder.jpg"),
+            "cover.jpg should outrank folder.jpg"
+        );
+        assert!(
+            artwork_name_priority("folder.jpg") < artwork_name_priority("front.png"),
+            "folder.jpg should outrank front.png"
+        );
+        assert_eq!(artwork_name_priority("booklet.jpg"), None);
+    }
+
+    #[test]
+    fn detects_common_artwork_signatures() {
+        assert_eq!(
+            infer_image_mime_from_bytes(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            infer_image_mime_from_bytes(b"\x89PNG\r\n\x1a\nrest"),
+            Some("image/png")
+        );
+        assert_eq!(
+            infer_image_mime_from_bytes(b"RIFFxxxxWEBPrest"),
+            Some("image/webp")
+        );
+        assert_eq!(infer_image_mime_from_bytes(b"not an image"), None);
     }
 }
