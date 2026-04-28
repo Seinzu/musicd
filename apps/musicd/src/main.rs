@@ -197,6 +197,7 @@ fn serve_single_file(file_path: Arc<PathBuf>, bind_address: &str) -> io::Result<
 }
 
 fn handle_client(stream: TcpStream, file_path: Arc<PathBuf>) -> io::Result<()> {
+    let peer = stream.peer_addr().ok();
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
 
@@ -208,6 +209,12 @@ fn handle_client(stream: TcpStream, file_path: Arc<PathBuf>) -> io::Result<()> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
+
+    if let Some(peer) = peer {
+        eprintln!("{peer} -> {method} {path}");
+    } else {
+        eprintln!("unknown-peer -> {method} {path}");
+    }
 
     let mut range_header = None;
     loop {

@@ -164,7 +164,12 @@ pub fn inspect_renderer(location: &str) -> io::Result<RendererDescription> {
 }
 
 pub fn set_av_transport_uri(control_url: &str, resource: &StreamResource) -> io::Result<()> {
-    let body = build_set_av_transport_uri_envelope(0, &resource.stream_url, Some(&resource.title));
+    let body = build_set_av_transport_uri_envelope(
+        0,
+        &resource.stream_url,
+        &resource.mime_type,
+        Some(&resource.title),
+    );
     let response = http_request(
         "POST",
         control_url,
@@ -212,9 +217,10 @@ pub fn play_stream(
 pub fn build_set_av_transport_uri_envelope(
     instance_id: u32,
     stream_url: &str,
+    mime_type: &str,
     title: Option<&str>,
 ) -> String {
-    let metadata = didl_lite_metadata(stream_url, title.unwrap_or("Unknown title"));
+    let metadata = didl_lite_metadata(stream_url, mime_type, title.unwrap_or("Unknown title"));
 
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID><CurrentURI>{}</CurrentURI><CurrentURIMetaData>{}</CurrentURIMetaData></u:SetAVTransportURI></s:Body></s:Envelope>"#,
@@ -577,10 +583,11 @@ fn resolve_url(base: &str, value: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), value)
 }
 
-fn didl_lite_metadata(stream_url: &str, title: &str) -> String {
+fn didl_lite_metadata(stream_url: &str, mime_type: &str, title: &str) -> String {
     format!(
-        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="track-0" parentID="library" restricted="1"><dc:title>{}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="http-get:*:audio/flac:*">{}</res></item></DIDL-Lite>"#,
+        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="track-0" parentID="library" restricted="1"><dc:title>{}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="http-get:*:{}:*">{}</res></item></DIDL-Lite>"#,
         xml_escape(title),
+        xml_escape(mime_type),
         xml_escape(stream_url),
     )
 }
@@ -660,6 +667,7 @@ mod tests {
         let body = build_set_av_transport_uri_envelope(
             0,
             "http://server.local/stream/this&that.flac",
+            "audio/flac",
             Some("Fish & Chips"),
         );
 
@@ -667,6 +675,7 @@ mod tests {
         assert!(body.contains("this&amp;that.flac"));
         assert!(body.contains("&lt;DIDL-Lite"));
         assert!(body.contains("Fish &amp;amp; Chips"));
+        assert!(body.contains("audio/flac"));
     }
 
     #[test]
