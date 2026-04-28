@@ -21,7 +21,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-ENV MUSICD_MODE=status
+ENV MUSICD_MODE=serve
 ENV MUSICD_BIND_ADDR=0.0.0.0:7878
 ENV MUSICD_LIBRARY_PATH=/music
 

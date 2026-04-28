@@ -1,9 +1,12 @@
 #!/bin/sh
 set -eu
 
-mode="${MUSICD_MODE:-status}"
+mode="${MUSICD_MODE:-serve}"
 
 case "$mode" in
+  serve)
+    exec /usr/local/bin/musicd serve
+    ;;
   status)
     exec /usr/local/bin/musicd status
     ;;

@@ -53,6 +53,8 @@ pub struct AppConfig {
     pub library_path: PathBuf,
     pub bind_address: String,
     pub base_url: String,
+    pub discovery_timeout_ms: u64,
+    pub default_renderer_location: Option<String>,
 }
 
 impl AppConfig {
@@ -65,6 +67,11 @@ impl AppConfig {
                 .unwrap_or_else(|_| "0.0.0.0:7878".to_string()),
             base_url: std::env::var("MUSICD_PUBLIC_BASE_URL")
                 .unwrap_or_else(|_| "http://192.168.1.10:7878".to_string()),
+            discovery_timeout_ms: std::env::var("MUSICD_DISCOVERY_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1500),
+            default_renderer_location: std::env::var("MUSICD_DEFAULT_RENDERER_LOCATION").ok(),
         }
     }
 
