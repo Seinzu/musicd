@@ -1,0 +1,9 @@
+[package]
+name = "musicd"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+musicd-core = { path = "../../crates/musicd-core" }
+musicd-upnp = { path = "../../crates/musicd-upnp" }
