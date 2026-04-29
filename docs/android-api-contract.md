@@ -1,0 +1,328 @@
+# Android API Contract
+
+This document describes the app-facing HTTP surface that `musicd` exposes for the planned Android controller.
+
+It is intentionally narrower and more action-oriented than the browser UI routes. The browser can keep using redirect-based endpoints; the Android app should use the routes below.
+
+## Base assumptions
+
+- Base URL example: `http://192.168.1.10:8787`
+- All responses are JSON
+- Read endpoints use `GET`
+- Mutation endpoints use `POST`
+- For now, `POST` bodies should be sent as `application/x-www-form-urlencoded`
+
+Example form body:
+
+```text
+renderer_location=http%3A%2F%2F192.168.1.55%3A49152%2Fdescription.xml&track_id=abc123
+```
+
+## Response conventions
+
+Successful mutation responses use this shape:
+
+```json
+{
+  "ok": true,
+  "message": "Human readable summary",
+  "renderer_location": "http://192.168.1.55:49152/description.xml",
+  "queue": {},
+  "session": {}
+}
+```
+
+Error responses use:
+
+```json
+{
+  "ok": false,
+  "error": "Problem description"
+}
+```
+
+## Library endpoints
+
+### `GET /api/tracks`
+
+Returns the full scanned track list.
+
+Each item includes:
+
+- `id`
+- `album_id`
+- `title`
+- `artist`
+- `album`
+- `disc_number`
+- `track_number`
+- `duration_seconds`
+- `path`
+- `mime_type`
+- `size`
+- `artwork_url`
+
+### `GET /api/tracks/<track_id>`
+
+Returns a single track plus embedded metadata details.
+
+Includes:
+
+- all basic track fields
+- `relative_path`
+- `absolute_path`
+- `artwork`
+- `embedded_metadata.parser`
+- `embedded_metadata.fields`
+- `embedded_metadata.notes`
+
+### `GET /api/albums`
+
+Returns album summaries.
+
+Each item includes:
+
+- `id`
+- `title`
+- `artist`
+- `track_count`
+- `first_track_id`
+- `artwork_url`
+
+### `GET /api/albums/<album_id>`
+
+Returns album detail plus ordered track list.
+
+Includes:
+
+- album summary fields
+- `tracks[]`
+
+Each track in `tracks[]` includes:
+
+- `id`
+- `title`
+- `artist`
+- `album`
+- `disc_number`
+- `track_number`
+- `duration_seconds`
+- `artwork_url`
+
+## Renderer endpoints
+
+### `GET /api/renderers`
+
+Returns persisted renderer history known to `musicd`.
+
+Each item includes:
+
+- `location`
+- `name`
+- `manufacturer`
+- `model_name`
+- `av_transport_control_url`
+- `last_seen_unix`
+- `selected`
+- `kind`
+
+### `GET /api/renderers/discover`
+
+Runs discovery and returns discovered renderers.
+
+### `POST /api/renderers/discover`
+
+Same behavior as the `GET` route, but easier for app-side “refresh” actions.
+
+## Queue and session endpoints
+
+### `GET /api/queue?renderer_location=<location>`
+
+Returns the queue for the selected renderer.
+
+Includes:
+
+- `renderer_location`
+- `name`
+- `status`
+- `version`
+- `updated_unix`
+- `current_entry_id`
+- `entries[]`
+- `session`
+
+### `GET /api/session?renderer_location=<location>`
+
+Returns a thin session wrapper:
+
+- `renderer_location`
+- `session`
+
+Session includes:
+
+- `transport_state`
+- `queue_entry_id`
+- `next_queue_entry_id`
+- `current_track_uri`
+- `position_seconds`
+- `duration_seconds`
+- `last_observed_unix`
+- `last_error`
+- `title`
+- `artist`
+- `album`
+
+### `GET /api/now-playing?renderer_location=<location>`
+
+Returns a lightweight home-screen payload for the selected renderer.
+
+Includes:
+
+- `renderer_location`
+- `renderer`
+- `current_track`
+- `session`
+- `queue_summary`
+
+`queue_summary` includes:
+
+- `status`
+- `name`
+- `entry_count`
+- `current_entry_id`
+- `updated_unix`
+- `version`
+
+## Playback endpoints
+
+### `POST /api/play`
+
+Fields:
+
+- `renderer_location`
+- `track_id`
+
+Behavior:
+
+- replaces the queue with the selected track
+- starts playback
+
+### `POST /api/play-album`
+
+Fields:
+
+- `renderer_location`
+- `album_id`
+
+Behavior:
+
+- replaces the queue with the album in playback order
+- starts playback from the first track
+
+## Queue mutation endpoints
+
+### `POST /api/queue/append-track`
+
+Fields:
+
+- `renderer_location`
+- `track_id`
+
+### `POST /api/queue/play-next-track`
+
+Fields:
+
+- `renderer_location`
+- `track_id`
+
+### `POST /api/queue/append-album`
+
+Fields:
+
+- `renderer_location`
+- `album_id`
+
+### `POST /api/queue/play-next-album`
+
+Fields:
+
+- `renderer_location`
+- `album_id`
+
+### `POST /api/queue/move`
+
+Fields:
+
+- `renderer_location`
+- `entry_id`
+- `direction`
+
+`direction` must be:
+
+- `up`
+- `down`
+
+### `POST /api/queue/remove`
+
+Fields:
+
+- `renderer_location`
+- `entry_id`
+
+### `POST /api/queue/clear`
+
+Fields:
+
+- `renderer_location`
+
+## Transport endpoints
+
+### `POST /api/transport/play`
+
+Fields:
+
+- `renderer_location`
+
+### `POST /api/transport/pause`
+
+Fields:
+
+- `renderer_location`
+
+### `POST /api/transport/stop`
+
+Fields:
+
+- `renderer_location`
+
+### `POST /api/transport/next`
+
+Fields:
+
+- `renderer_location`
+
+### `POST /api/transport/previous`
+
+Fields:
+
+- `renderer_location`
+
+## Artwork and stream endpoints
+
+### `GET /artwork/track/<track_id>`
+
+Returns track artwork bytes when available.
+
+### `GET /stream/track/<track_id>`
+
+Returns the streamable audio resource for a track.
+
+## Current gaps
+
+This contract is good enough to start Android implementation, but a few follow-on improvements are still desirable:
+
+- request/response DTO cleanup for stronger consistency
+- JSON request bodies instead of form-encoded mutation bodies
+- a proper `GET /api/now-playing` alias if we want a more focused home-screen endpoint
+- server-sent events for live queue/session updates
+- authentication if remote access becomes a goal

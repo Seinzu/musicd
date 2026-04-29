@@ -152,7 +152,10 @@ struct HttpRequest {
     target: String,
     path: String,
     query: HashMap<String, String>,
+    form: HashMap<String, String>,
     range_header: Option<String>,
+    content_type: Option<String>,
+    body: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -605,6 +608,36 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/api/renderers") | ("HEAD", "/api/renderers") => {
+            let body = render_renderers_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/api/session") | ("HEAD", "/api/session") => {
+            let body = render_session_json(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/api/now-playing") | ("HEAD", "/api/now-playing") => {
+            let body = render_now_playing_json(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         ("GET", "/api/queue") | ("HEAD", "/api/queue") => {
             let body = render_queue_json(&state, request);
             respond_text(
@@ -615,6 +648,41 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("POST", "/api/renderers/discover") => {
+            handle_api_renderer_discover_request(writer, request, &state)
+        }
+        ("POST", "/api/play") => handle_api_play_request(writer, request, &state),
+        ("POST", "/api/play-album") => handle_api_play_album_request(writer, request, &state),
+        ("POST", "/api/transport/play") => {
+            handle_api_transport_play_request(writer, request, &state)
+        }
+        ("POST", "/api/transport/pause") => {
+            handle_api_transport_pause_request(writer, request, &state)
+        }
+        ("POST", "/api/transport/stop") => {
+            handle_api_transport_stop_request(writer, request, &state)
+        }
+        ("POST", "/api/transport/next") => {
+            handle_api_transport_next_request(writer, request, &state)
+        }
+        ("POST", "/api/transport/previous") => {
+            handle_api_transport_previous_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/append-track") => {
+            handle_api_queue_append_track_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/append-album") => {
+            handle_api_queue_append_album_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/play-next-track") => {
+            handle_api_queue_play_next_track_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/play-next-album") => {
+            handle_api_queue_play_next_album_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/move") => handle_api_queue_move_request(writer, request, &state),
+        ("POST", "/api/queue/remove") => handle_api_queue_remove_request(writer, request, &state),
+        ("POST", "/api/queue/clear") => handle_api_queue_clear_request(writer, request, &state),
         ("GET", "/queue/panel") | ("HEAD", "/queue/panel") => {
             let body = render_queue_panel_html(&state, request);
             respond_text(
@@ -630,6 +698,19 @@ fn handle_service_request(
                 return respond_method_not_allowed(writer);
             }
             let body = render_track_detail_json(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        _ if request.path.starts_with("/api/albums/") => {
+            if request.method != "GET" && request.method != "HEAD" {
+                return respond_method_not_allowed(writer);
+            }
+            let body = render_album_detail_json(&state, request);
             respond_text(
                 writer,
                 "200 OK",
@@ -704,6 +785,20 @@ fn handle_service_request(
         ("GET", "/rescan") => handle_rescan_request(writer, request, &state),
         ("HEAD", "/play")
         | ("HEAD", "/play-album")
+        | ("HEAD", "/api/play")
+        | ("HEAD", "/api/play-album")
+        | ("HEAD", "/api/transport/play")
+        | ("HEAD", "/api/transport/pause")
+        | ("HEAD", "/api/transport/stop")
+        | ("HEAD", "/api/transport/next")
+        | ("HEAD", "/api/transport/previous")
+        | ("HEAD", "/api/queue/append-track")
+        | ("HEAD", "/api/queue/append-album")
+        | ("HEAD", "/api/queue/play-next-track")
+        | ("HEAD", "/api/queue/play-next-album")
+        | ("HEAD", "/api/queue/move")
+        | ("HEAD", "/api/queue/remove")
+        | ("HEAD", "/api/queue/clear")
         | ("HEAD", "/transport/play")
         | ("HEAD", "/transport/pause")
         | ("HEAD", "/transport/stop")
@@ -1524,6 +1619,449 @@ fn handle_rescan_request(
     }
 }
 
+fn handle_api_renderer_discover_request(
+    writer: &mut TcpStream,
+    _request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let body = format!(
+        r#"{{"ok":true,"renderers":{}}}"#,
+        render_discovery_json(state)
+    );
+    respond_json(writer, "200 OK", &body)
+}
+
+fn handle_api_play_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let track_id = match required_request_value(request, "track_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let Some(track) = state.find_track(&track_id) else {
+        return api_error(writer, "404 Not Found", "track not found");
+    };
+    let _ = state.remember_renderer_location(&renderer_location);
+    match state
+        .replace_queue_with_track(&renderer_location, &track)
+        .and_then(|_| state.start_current_queue_entry(&renderer_location))
+    {
+        Ok((started_track, _, renderer_name, _)) => api_renderer_state_response(
+            writer,
+            state,
+            &renderer_location,
+            &format!(
+                "Now playing '{}' on {}.",
+                started_track.title, renderer_name
+            ),
+        ),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("playback failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_play_album_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let album_id = match required_request_value(request, "album_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let Some(album) = state.find_album(&album_id) else {
+        return api_error(writer, "404 Not Found", "album not found");
+    };
+    let _ = state.remember_renderer_location(&renderer_location);
+    match state
+        .replace_queue_with_album(&renderer_location, &album)
+        .and_then(|_| state.start_current_queue_entry(&renderer_location))
+    {
+        Ok((started_track, _, renderer_name, _)) => api_renderer_state_response(
+            writer,
+            state,
+            &renderer_location,
+            &format!(
+                "Started album '{}' from track '{}' on {}.",
+                album.title, started_track.title, renderer_name
+            ),
+        ),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("playback failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_transport_play_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_transport_action(writer, request, state, |state, renderer| {
+        state.resume_renderer(renderer)
+    })
+}
+
+fn handle_api_transport_pause_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_transport_action(writer, request, state, |state, renderer| {
+        state.pause_renderer(renderer)
+    })
+}
+
+fn handle_api_transport_stop_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_transport_action(writer, request, state, |state, renderer| {
+        state.stop_renderer(renderer)
+    })
+}
+
+fn handle_api_transport_next_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_transport_action(writer, request, state, |state, renderer| {
+        state.skip_to_next(renderer)
+    })
+}
+
+fn handle_api_transport_previous_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_transport_action(writer, request, state, |state, renderer| {
+        state.skip_to_previous(renderer)
+    })
+}
+
+fn handle_api_transport_action(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+    apply: impl Fn(&ServiceState, &str) -> io::Result<String>,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    match apply(state, &renderer_location) {
+        Ok(message) => api_renderer_state_response(writer, state, &renderer_location, &message),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("transport action failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_queue_append_track_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_queue_track_action(
+        writer,
+        request,
+        state,
+        |state, renderer, track| state.append_track_to_queue(renderer, track),
+        |track, queue| {
+            format!(
+                "Queued '{}' for renderer. Queue length: {}.",
+                track.title,
+                queue.entries.len()
+            )
+        },
+    )
+}
+
+fn handle_api_queue_play_next_track_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_queue_track_action(
+        writer,
+        request,
+        state,
+        |state, renderer, track| state.play_next_track(renderer, track),
+        |track, queue| {
+            format!(
+                "'{}' will play next. Queue length: {}.",
+                track.title,
+                queue.entries.len()
+            )
+        },
+    )
+}
+
+fn handle_api_queue_append_album_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_queue_album_action(
+        writer,
+        request,
+        state,
+        |state, renderer, album| state.append_album_to_queue(renderer, album),
+        |album, queue| {
+            format!(
+                "Queued album '{}' for renderer. Queue length: {}.",
+                album.title,
+                queue.entries.len()
+            )
+        },
+    )
+}
+
+fn handle_api_queue_play_next_album_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_queue_album_action(
+        writer,
+        request,
+        state,
+        |state, renderer, album| state.play_next_album(renderer, album),
+        |album, queue| {
+            format!(
+                "Album '{}' will play next. Queue length: {}.",
+                album.title,
+                queue.entries.len()
+            )
+        },
+    )
+}
+
+fn handle_api_queue_track_action(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+    apply: impl Fn(&ServiceState, &str, &LibraryTrack) -> io::Result<PlaybackQueue>,
+    message: impl Fn(&LibraryTrack, &PlaybackQueue) -> String,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let track_id = match required_request_value(request, "track_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let Some(track) = state.find_track(&track_id) else {
+        return api_error(writer, "404 Not Found", "track not found");
+    };
+    match apply(state, &renderer_location, &track) {
+        Ok(queue) => {
+            api_queue_response(writer, state, &renderer_location, &message(&track, &queue))
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("queue update failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_queue_album_action(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+    apply: impl Fn(&ServiceState, &str, &AlbumSummary) -> io::Result<PlaybackQueue>,
+    message: impl Fn(&AlbumSummary, &PlaybackQueue) -> String,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let album_id = match required_request_value(request, "album_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let Some(album) = state.find_album(&album_id) else {
+        return api_error(writer, "404 Not Found", "album not found");
+    };
+    match apply(state, &renderer_location, &album) {
+        Ok(queue) => {
+            api_queue_response(writer, state, &renderer_location, &message(&album, &queue))
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("queue update failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_queue_move_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let entry_id =
+        match request_value(request, "entry_id").and_then(|value| value.parse::<i64>().ok()) {
+            Some(value) => value,
+            None => return api_error(writer, "400 Bad Request", "missing or invalid entry_id"),
+        };
+    let direction = match required_request_value(request, "direction") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let result = match direction.as_str() {
+        "up" => state.move_queue_entry_up(&renderer_location, entry_id),
+        "down" => state.move_queue_entry_down(&renderer_location, entry_id),
+        _ => {
+            return api_error(
+                writer,
+                "400 Bad Request",
+                "direction must be 'up' or 'down'",
+            );
+        }
+    };
+    match result {
+        Ok(queue) => api_queue_response(
+            writer,
+            state,
+            &renderer_location,
+            &format!(
+                "Queue updated after move {}. Queue length: {}.",
+                direction,
+                queue.entries.len()
+            ),
+        ),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("queue move failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_queue_remove_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let entry_id =
+        match request_value(request, "entry_id").and_then(|value| value.parse::<i64>().ok()) {
+            Some(value) => value,
+            None => return api_error(writer, "400 Bad Request", "missing or invalid entry_id"),
+        };
+    match state.remove_pending_queue_entry(&renderer_location, entry_id) {
+        Ok(queue) => api_queue_response(
+            writer,
+            state,
+            &renderer_location,
+            &format!(
+                "Queue entry removed. Queue length: {}.",
+                queue.entries.len()
+            ),
+        ),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("queue remove failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_queue_clear_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    match state.clear_queue(&renderer_location) {
+        Ok(()) => api_renderer_state_response(writer, state, &renderer_location, "Queue cleared."),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("queue clear failed: {error}"),
+        ),
+    }
+}
+
+fn required_request_value(request: &HttpRequest, key: &str) -> Result<String, &'static str> {
+    request_value(request, key)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .ok_or(match key {
+            "renderer_location" => "missing renderer_location",
+            "track_id" => "missing track_id",
+            "album_id" => "missing album_id",
+            "direction" => "missing direction",
+            _ => "missing required field",
+        })
+}
+
+fn api_queue_response(
+    writer: &mut TcpStream,
+    state: &ServiceState,
+    renderer_location: &str,
+    message: &str,
+) -> io::Result<()> {
+    let body = format!(
+        r#"{{"ok":true,"message":"{}","renderer_location":"{}","queue":{},"session":{}}}"#,
+        json_escape(message),
+        json_escape(renderer_location),
+        render_queue_json_for_renderer(state, renderer_location),
+        session_payload_json_for_renderer(state, renderer_location),
+    );
+    respond_json(writer, "200 OK", &body)
+}
+
+fn api_renderer_state_response(
+    writer: &mut TcpStream,
+    state: &ServiceState,
+    renderer_location: &str,
+    message: &str,
+) -> io::Result<()> {
+    let body = format!(
+        r#"{{"ok":true,"message":"{}","renderer_location":"{}","queue":{},"session":{}}}"#,
+        json_escape(message),
+        json_escape(renderer_location),
+        render_queue_json_for_renderer(state, renderer_location),
+        session_payload_json_for_renderer(state, renderer_location),
+    );
+    respond_json(writer, "200 OK", &body)
+}
+
 fn handle_track_stream_request(
     writer: &mut TcpStream,
     request: &HttpRequest,
@@ -1575,6 +2113,8 @@ fn read_http_request(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Htt
     let (path, query) = split_target_and_query(&target);
 
     let mut range_header = None;
+    let mut content_type = None;
+    let mut content_length = 0_usize;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -1587,16 +2127,29 @@ fn read_http_request(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Htt
         if let Some((name, value)) = trimmed.split_once(':') {
             if name.eq_ignore_ascii_case("Range") {
                 range_header = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("Content-Type") {
+                content_type = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("Content-Length") {
+                content_length = value.trim().parse::<usize>().unwrap_or(0);
             }
         }
     }
+
+    let mut body = vec![0_u8; content_length];
+    if content_length > 0 {
+        reader.read_exact(&mut body)?;
+    }
+    let form = parse_request_form(content_type.as_deref(), &body);
 
     Ok(Some(HttpRequest {
         method,
         target,
         path,
         query,
+        form,
         range_header,
+        content_type,
+        body,
     }))
 }
 
@@ -1700,6 +2253,24 @@ fn respond_text(
             ("Content-Length".to_string(), body.len().to_string()),
         ],
         if head_only { None } else { Some(body) },
+    )
+}
+
+fn respond_json(writer: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
+    respond_text(
+        writer,
+        status,
+        "application/json; charset=utf-8",
+        body.as_bytes(),
+        false,
+    )
+}
+
+fn api_error(writer: &mut TcpStream, status: &str, error: &str) -> io::Result<()> {
+    respond_json(
+        writer,
+        status,
+        &format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(error)),
     )
 }
 
@@ -1843,6 +2414,37 @@ fn parse_query_string(query: &str) -> HashMap<String, String> {
         values.insert(percent_decode(key), percent_decode(value));
     }
     values
+}
+
+fn parse_request_form(content_type: Option<&str>, body: &[u8]) -> HashMap<String, String> {
+    if body.is_empty() {
+        return HashMap::new();
+    }
+
+    let is_form = content_type
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        })
+        .unwrap_or(false);
+    if !is_form {
+        return HashMap::new();
+    }
+
+    let decoded = String::from_utf8_lossy(body);
+    parse_query_string(&decoded)
+}
+
+fn request_value<'a>(request: &'a HttpRequest, key: &str) -> Option<&'a str> {
+    request
+        .form
+        .get(key)
+        .or_else(|| request.query.get(key))
+        .map(String::as_str)
 }
 
 fn percent_decode(value: &str) -> String {
@@ -3694,35 +4296,109 @@ fn render_albums_json(state: &ServiceState) -> String {
     format!("[{entries}]")
 }
 
-fn render_queue_json(state: &ServiceState, request: &HttpRequest) -> String {
-    let renderer_location = state
-        .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
-    let session = state.playback_session(&renderer_location);
-    let session_json = |session: PlaybackSession| {
-        let current_track = session.queue_entry_id.and_then(|queue_entry_id| {
-            state.queue_snapshot(&renderer_location).and_then(|queue| {
-                queue
-                    .entries
-                    .into_iter()
-                    .find(|entry| entry.id == queue_entry_id)
-                    .and_then(|entry| state.find_track(&entry.track_id))
-            })
-        });
-        format!(
-            r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{},"title":{},"artist":{},"album":{}}}"#,
-            json_escape(&session.transport_state),
-            option_i64_json(session.queue_entry_id),
-            option_i64_json(session.next_queue_entry_id),
-            option_string_json(session.current_track_uri.as_deref()),
-            option_u64_json(session.position_seconds),
-            option_u64_json(session.duration_seconds),
-            session.last_observed_unix,
-            option_string_json(session.last_error.as_deref()),
-            option_string_json(current_track.as_ref().map(|track| track.title.as_str())),
-            option_string_json(current_track.as_ref().map(|track| track.artist.as_str())),
-            option_string_json(current_track.as_ref().map(|track| track.album.as_str())),
-        )
+fn render_album_detail_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let album_id = request.path.trim_start_matches("/api/albums/");
+    let Some(album) = state.find_album(album_id) else {
+        return r#"{"error":"album not found"}"#.to_string();
     };
+    let tracks = state.tracks_for_album(&album.id);
+    let artwork_url = album
+        .artwork_track_id
+        .as_ref()
+        .map(|track_id| format!("/artwork/track/{track_id}"))
+        .unwrap_or_default();
+    let tracks_json = tracks
+        .into_iter()
+        .map(|track| {
+            let artwork_url = track
+                .artwork
+                .as_ref()
+                .map(|_| format!("/artwork/track/{}", track.id));
+            format!(
+                r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{}}}"#,
+                json_escape(&track.id),
+                json_escape(&track.title),
+                json_escape(&track.artist),
+                json_escape(&track.album),
+                option_u32_json(track.disc_number),
+                option_u32_json(track.track_number),
+                option_u64_json(track.duration_seconds),
+                option_string_json(artwork_url.as_deref()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","tracks":[{}]}}"#,
+        json_escape(&album.id),
+        json_escape(&album.title),
+        json_escape(&album.artist),
+        album.track_count,
+        json_escape(&album.first_track_id),
+        json_escape(&artwork_url),
+        tracks_json,
+    )
+}
+
+fn render_renderers_json(state: &ServiceState) -> String {
+    let renderers = state.renderer_snapshot();
+    let selected = state
+        .database
+        .last_selected_renderer_location()
+        .ok()
+        .flatten();
+    let entries = renderers
+        .into_iter()
+        .map(|renderer| {
+            renderer_record_json(
+                &renderer,
+                selected.as_deref() == Some(renderer.location.as_str()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{entries}]")
+}
+
+fn render_now_playing_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let renderer_location =
+        state.preferred_renderer_location(request_value(request, "renderer_location"));
+    let renderer_json = state
+        .database
+        .load_renderer(&renderer_location)
+        .ok()
+        .flatten()
+        .map(|renderer| renderer_record_json(&renderer, true))
+        .unwrap_or_else(|| "null".to_string());
+    let current_track_json = current_track_json_for_renderer(state, &renderer_location);
+    let session_json = session_payload_json_for_renderer(state, &renderer_location);
+    let queue_summary_json = queue_summary_json_for_renderer(state, &renderer_location);
+    format!(
+        r#"{{"renderer_location":"{}","renderer":{},"current_track":{},"session":{},"queue_summary":{}}}"#,
+        json_escape(&renderer_location),
+        renderer_json,
+        current_track_json,
+        session_json,
+        queue_summary_json,
+    )
+}
+
+fn render_queue_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let renderer_location =
+        state.preferred_renderer_location(request_value(request, "renderer_location"));
+    render_queue_json_for_renderer(state, &renderer_location)
+}
+
+fn render_session_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let renderer_location =
+        state.preferred_renderer_location(request_value(request, "renderer_location"));
+    render_session_json_for_renderer(state, &renderer_location)
+}
+
+fn render_queue_json_for_renderer(state: &ServiceState, renderer_location: &str) -> String {
+    let session = state.playback_session(&renderer_location);
+    let session_json =
+        |session: PlaybackSession| render_session_payload_json(state, renderer_location, session);
     let Some(queue) = state.queue_snapshot(&renderer_location) else {
         let session_json = session.map_or_else(|| "null".to_string(), session_json);
         return format!(
@@ -3771,6 +4447,44 @@ fn render_queue_json(state: &ServiceState, request: &HttpRequest) -> String {
     )
 }
 
+fn render_session_json_for_renderer(state: &ServiceState, renderer_location: &str) -> String {
+    let session_json = session_payload_json_for_renderer(state, renderer_location);
+    format!(
+        r#"{{"renderer_location":"{}","session":{}}}"#,
+        json_escape(renderer_location),
+        session_json,
+    )
+}
+
+fn session_payload_json_for_renderer(state: &ServiceState, renderer_location: &str) -> String {
+    state
+        .playback_session(renderer_location)
+        .map(|session| render_session_payload_json(state, renderer_location, session))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn render_session_payload_json(
+    state: &ServiceState,
+    renderer_location: &str,
+    session: PlaybackSession,
+) -> String {
+    let current_track = current_track_for_renderer(state, renderer_location);
+    format!(
+        r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{},"title":{},"artist":{},"album":{}}}"#,
+        json_escape(&session.transport_state),
+        option_i64_json(session.queue_entry_id),
+        option_i64_json(session.next_queue_entry_id),
+        option_string_json(session.current_track_uri.as_deref()),
+        option_u64_json(session.position_seconds),
+        option_u64_json(session.duration_seconds),
+        session.last_observed_unix,
+        option_string_json(session.last_error.as_deref()),
+        option_string_json(current_track.as_ref().map(|track| track.title.as_str())),
+        option_string_json(current_track.as_ref().map(|track| track.artist.as_str())),
+        option_string_json(current_track.as_ref().map(|track| track.album.as_str())),
+    )
+}
+
 fn render_discovery_json(state: &ServiceState) -> String {
     let renderers =
         match discover_renderers(Duration::from_millis(state.config.discovery_timeout_ms)) {
@@ -3785,47 +4499,118 @@ fn render_discovery_json(state: &ServiceState) -> String {
 
     let entries = renderers
         .into_iter()
-        .map(|renderer| {
-            match inspect_renderer(&renderer.location) {
-                Ok(details) => {
-                    let _ = state.remember_renderer_details(
-                        &details.location,
-                        &details.friendly_name,
-                        details.manufacturer.as_deref(),
-                        details.model_name.as_deref(),
-                        Some(&details.av_transport_control_url),
-                    );
-                    format!(
-                        r#"{{"location":"{}","name":"{}","manufacturer":"{}","model":"{}","av_transport":"{}"}}"#,
-                        json_escape(&details.location),
-                        json_escape(&details.friendly_name),
-                        json_escape(details.manufacturer.as_deref().unwrap_or("")),
-                        json_escape(details.model_name.as_deref().unwrap_or("")),
-                        json_escape(&details.av_transport_control_url),
-                    )
-                }
-                Err(error) => {
-                    let name = renderer.server.as_deref().unwrap_or("Unknown renderer");
-                    let _ = state.remember_renderer_details(
-                        &renderer.location,
-                        name,
-                        None,
-                        None,
-                        None,
-                    );
-                    format!(
-                        r#"{{"location":"{}","name":"{}","error":"{}"}}"#,
-                        json_escape(&renderer.location),
-                        json_escape(name),
-                        json_escape(&error.to_string()),
-                    )
-                }
+        .map(|renderer| match inspect_renderer(&renderer.location) {
+            Ok(details) => {
+                let _ = state.remember_renderer_details(
+                    &details.location,
+                    &details.friendly_name,
+                    details.manufacturer.as_deref(),
+                    details.model_name.as_deref(),
+                    Some(&details.av_transport_control_url),
+                );
+                renderer_record_json(
+                    &RendererRecord {
+                        location: details.location,
+                        name: details.friendly_name,
+                        manufacturer: details.manufacturer,
+                        model_name: details.model_name,
+                        av_transport_control_url: Some(details.av_transport_control_url),
+                        last_seen_unix: now_unix_timestamp(),
+                    },
+                    false,
+                )
+            }
+            Err(error) => {
+                let name = renderer.server.as_deref().unwrap_or("Unknown renderer");
+                let _ = state.remember_renderer_details(&renderer.location, name, None, None, None);
+                format!(
+                    r#"{{"location":"{}","name":"{}","kind":"{}","error":"{}"}}"#,
+                    json_escape(&renderer.location),
+                    json_escape(name),
+                    renderer_kind_name(renderer_kind_for_location(&renderer.location)),
+                    json_escape(&error.to_string()),
+                )
             }
         })
         .collect::<Vec<_>>()
         .join(",");
 
     format!("[{entries}]")
+}
+
+fn current_track_for_renderer(
+    state: &ServiceState,
+    renderer_location: &str,
+) -> Option<LibraryTrack> {
+    let queue = state.queue_snapshot(renderer_location)?;
+    let queue_entry_id = queue.current_entry_id?;
+    let entry = queue
+        .entries
+        .into_iter()
+        .find(|entry| entry.id == queue_entry_id)?;
+    state.find_track(&entry.track_id)
+}
+
+fn current_track_json_for_renderer(state: &ServiceState, renderer_location: &str) -> String {
+    current_track_for_renderer(state, renderer_location)
+        .map(|track| track_summary_json(&track))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn queue_summary_json_for_renderer(state: &ServiceState, renderer_location: &str) -> String {
+    match state.queue_snapshot(renderer_location) {
+        Some(queue) => format!(
+            r#"{{"status":"{}","name":"{}","entry_count":{},"current_entry_id":{},"updated_unix":{},"version":{}}}"#,
+            json_escape(&queue.status),
+            json_escape(&queue.name),
+            queue.entries.len(),
+            option_i64_json(queue.current_entry_id),
+            queue.updated_unix,
+            queue.version,
+        ),
+        None => r#"{"status":"empty","name":"","entry_count":0,"current_entry_id":null,"updated_unix":0,"version":0}"#.to_string(),
+    }
+}
+
+fn track_summary_json(track: &LibraryTrack) -> String {
+    let artwork_url = track
+        .artwork
+        .as_ref()
+        .map(|_| format!("/artwork/track/{}", track.id));
+    format!(
+        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{},"mime_type":"{}"}}"#,
+        json_escape(&track.id),
+        json_escape(&track.album_id),
+        json_escape(&track.title),
+        json_escape(&track.artist),
+        json_escape(&track.album),
+        option_u32_json(track.disc_number),
+        option_u32_json(track.track_number),
+        option_u64_json(track.duration_seconds),
+        option_string_json(artwork_url.as_deref()),
+        json_escape(&track.mime_type),
+    )
+}
+
+fn renderer_record_json(renderer: &RendererRecord, selected: bool) -> String {
+    format!(
+        r#"{{"location":"{}","name":"{}","manufacturer":{},"model_name":{},"av_transport_control_url":{},"last_seen_unix":{},"selected":{},"kind":"{}"}}"#,
+        json_escape(&renderer.location),
+        json_escape(&renderer.name),
+        option_string_json(renderer.manufacturer.as_deref()),
+        option_string_json(renderer.model_name.as_deref()),
+        option_string_json(renderer.av_transport_control_url.as_deref()),
+        renderer.last_seen_unix,
+        bool_json(selected),
+        renderer_kind_name(renderer_kind_for_location(&renderer.location)),
+    )
+}
+
+fn renderer_kind_name(kind: RendererKind) -> &'static str {
+    match kind {
+        RendererKind::Upnp => "upnp",
+        RendererKind::Sonos => "sonos",
+    }
 }
 
 impl Database {
@@ -7176,6 +7961,14 @@ fn option_i64_json(value: Option<i64>) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+fn bool_json(value: bool) -> String {
+    if value {
+        "true".to_string()
+    } else {
+        "false".to_string()
+    }
+}
+
 fn option_string_json(value: Option<&str>) -> String {
     value
         .map(|value| format!(r#""{}""#, json_escape(value)))
@@ -7361,7 +8154,7 @@ mod tests {
         RendererBackends, RendererKind, ServiceState, artwork_name_priority, cleanup_track_label,
         compare_track_album_order, decode_id3v1_text, infer_artist_and_album,
         infer_disc_and_track_numbers, infer_image_mime_from_bytes, next_queue_entry_after,
-        parse_query_string, parse_range_header, parse_vorbis_comment_block,
+        parse_query_string, parse_range_header, parse_request_form, parse_vorbis_comment_block,
         previous_queue_entry_before, queue_status_for_transport, renderer_kind_for_location,
         should_adopt_preloaded_next_entry, should_auto_advance, should_skip_entry, stable_album_id,
         stable_track_id,
@@ -7398,6 +8191,19 @@ mod tests {
             parsed.get("message").map(String::as_str),
             Some("Now playing")
         );
+    }
+
+    #[test]
+    fn form_parser_decodes_urlencoded_bodies() {
+        let parsed = parse_request_form(
+            Some("application/x-www-form-urlencoded; charset=utf-8"),
+            b"renderer_location=http%3A%2F%2F192.168.1.55%3A49152%2Fdescription.xml&track_id=abc123",
+        );
+        assert_eq!(
+            parsed.get("renderer_location").map(String::as_str),
+            Some("http://192.168.1.55:49152/description.xml")
+        );
+        assert_eq!(parsed.get("track_id").map(String::as_str), Some("abc123"));
     }
 
     #[test]
