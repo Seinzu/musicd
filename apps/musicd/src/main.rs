@@ -16,7 +16,8 @@ use lofty::tag::Accessor;
 use musicd_core::AppConfig;
 use musicd_upnp::{
     StreamResource, TransportSnapshot, discover_renderers, get_transport_snapshot,
-    inspect_renderer, next, pause, play, play_stream, previous, set_next_av_transport_uri, stop,
+    inspect_renderer, next, pause, play, play_stream, previous, set_av_transport_uri,
+    set_next_av_transport_uri, stop,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -142,6 +143,7 @@ struct ServiceState {
     config: AppConfig,
     database: Database,
     library: Mutex<Library>,
+    renderer_backends: RendererBackends,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +159,130 @@ struct HttpRequest {
 enum ServerMode {
     SingleFile(Arc<PathBuf>),
     Service(Arc<ServiceState>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RendererKind {
+    Upnp,
+    Sonos,
+}
+
+#[derive(Debug, Default)]
+struct RendererBackends {
+    upnp: UpnpRendererBackend,
+}
+
+#[derive(Debug, Default)]
+struct UpnpRendererBackend;
+
+trait RendererBackend: Send + Sync {
+    fn resolve_renderer(
+        &self,
+        cached: Option<&RendererRecord>,
+        renderer_location: &str,
+    ) -> io::Result<RendererRecord>;
+
+    fn play_stream(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()>;
+
+    fn preload_next(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()>;
+
+    fn play(&self, renderer: &RendererRecord) -> io::Result<()>;
+
+    fn pause(&self, renderer: &RendererRecord) -> io::Result<()>;
+
+    fn stop(&self, renderer: &RendererRecord) -> io::Result<()>;
+
+    fn next(&self, renderer: &RendererRecord) -> io::Result<()>;
+
+    fn previous(&self, renderer: &RendererRecord) -> io::Result<()>;
+
+    fn transport_snapshot(&self, renderer: &RendererRecord) -> io::Result<TransportSnapshot>;
+}
+
+impl RendererBackends {
+    fn backend_for_location(&self, renderer_location: &str) -> io::Result<&dyn RendererBackend> {
+        match renderer_kind_for_location(renderer_location) {
+            RendererKind::Upnp => Ok(&self.upnp),
+            RendererKind::Sonos => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Sonos renderer support has not been implemented yet",
+            )),
+        }
+    }
+}
+
+impl RendererBackend for UpnpRendererBackend {
+    fn resolve_renderer(
+        &self,
+        cached: Option<&RendererRecord>,
+        renderer_location: &str,
+    ) -> io::Result<RendererRecord> {
+        if let Some(renderer) =
+            cached.filter(|renderer| renderer.av_transport_control_url.is_some())
+        {
+            return Ok(renderer.clone());
+        }
+
+        let renderer = inspect_renderer(renderer_location)?;
+        Ok(RendererRecord {
+            location: renderer_location.to_string(),
+            name: renderer.friendly_name,
+            manufacturer: renderer.manufacturer,
+            model_name: renderer.model_name,
+            av_transport_control_url: Some(renderer.av_transport_control_url),
+            last_seen_unix: now_unix_timestamp(),
+        })
+    }
+
+    fn play_stream(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()> {
+        let control_url = upnp_control_url(renderer)?;
+        set_av_transport_uri(control_url, resource)?;
+        play(control_url)
+    }
+
+    fn preload_next(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()> {
+        let control_url = upnp_control_url(renderer)?;
+        set_next_av_transport_uri(control_url, resource)
+    }
+
+    fn play(&self, renderer: &RendererRecord) -> io::Result<()> {
+        play(upnp_control_url(renderer)?)
+    }
+
+    fn pause(&self, renderer: &RendererRecord) -> io::Result<()> {
+        pause(upnp_control_url(renderer)?)
+    }
+
+    fn stop(&self, renderer: &RendererRecord) -> io::Result<()> {
+        stop(upnp_control_url(renderer)?)
+    }
+
+    fn next(&self, renderer: &RendererRecord) -> io::Result<()> {
+        next(upnp_control_url(renderer)?)
+    }
+
+    fn previous(&self, renderer: &RendererRecord) -> io::Result<()> {
+        previous(upnp_control_url(renderer)?)
+    }
+
+    fn transport_snapshot(&self, renderer: &RendererRecord) -> io::Result<TransportSnapshot> {
+        get_transport_snapshot(upnp_control_url(renderer)?)
+    }
+}
+
+fn renderer_kind_for_location(renderer_location: &str) -> RendererKind {
+    if renderer_location.starts_with("sonos:") {
+        RendererKind::Sonos
+    } else {
+        RendererKind::Upnp
+    }
+}
+
+fn upnp_control_url(renderer: &RendererRecord) -> io::Result<&str> {
+    renderer
+        .av_transport_control_url
+        .as_deref()
+        .ok_or_else(|| io::Error::other("renderer is missing an AVTransport control URL"))
 }
 
 fn main() {
@@ -4952,6 +5078,7 @@ impl ServiceState {
             config,
             database,
             library: Mutex::new(persisted_library),
+            renderer_backends: RendererBackends::default(),
         };
 
         match scan_library(&state.config.library_path, &state.config.config_path) {
@@ -5115,6 +5242,12 @@ impl ServiceState {
         self.database.set_last_selected_renderer_location(location)
     }
 
+    fn remember_renderer_record(&self, renderer: &RendererRecord) -> io::Result<()> {
+        self.database.upsert_renderer(renderer)?;
+        self.database
+            .set_last_selected_renderer_location(&renderer.location)
+    }
+
     fn track_artwork_path(&self, track: &LibraryTrack) -> Option<PathBuf> {
         track
             .artwork
@@ -5122,22 +5255,20 @@ impl ServiceState {
             .map(|artwork| artwork_cache_path(&self.config.config_path, &artwork.cache_key))
     }
 
-    fn av_transport_control_url(&self, renderer_location: &str) -> io::Result<String> {
-        if let Some(renderer) = self.database.load_renderer(renderer_location)? {
-            if let Some(control_url) = renderer.av_transport_control_url {
-                return Ok(control_url);
-            }
-        }
+    fn renderer_backend(&self, renderer_location: &str) -> io::Result<&dyn RendererBackend> {
+        self.renderer_backends
+            .backend_for_location(renderer_location)
+    }
 
-        let renderer = inspect_renderer(renderer_location)?;
-        let _ = self.remember_renderer_details(
-            &renderer.location,
-            &renderer.friendly_name,
-            renderer.manufacturer.as_deref(),
-            renderer.model_name.as_deref(),
-            Some(&renderer.av_transport_control_url),
-        );
-        Ok(renderer.av_transport_control_url)
+    fn resolve_renderer(&self, renderer_location: &str) -> io::Result<RendererRecord> {
+        let cached = self.database.load_renderer(renderer_location)?;
+        let renderer = self
+            .renderer_backend(renderer_location)?
+            .resolve_renderer(cached.as_ref(), renderer_location)?;
+        if cached.as_ref() != Some(&renderer) {
+            let _ = self.remember_renderer_record(&renderer);
+        }
+        Ok(renderer)
     }
 
     fn replace_queue_with_track(
@@ -5292,8 +5423,10 @@ impl ServiceState {
     }
 
     fn refresh_transport_state(&self, renderer_location: &str) -> io::Result<TransportSnapshot> {
-        let control_url = self.av_transport_control_url(renderer_location)?;
-        let snapshot = get_transport_snapshot(&control_url)?;
+        let renderer = self.resolve_renderer(renderer_location)?;
+        let snapshot = self
+            .renderer_backend(renderer_location)?
+            .transport_snapshot(&renderer)?;
         self.database.record_transport_snapshot(
             renderer_location,
             &snapshot.transport_info.transport_state,
@@ -5374,8 +5507,8 @@ impl ServiceState {
             }
         }
 
-        let control_url = self.av_transport_control_url(renderer_location)?;
-        play(&control_url)?;
+        let renderer = self.resolve_renderer(renderer_location)?;
+        self.renderer_backend(renderer_location)?.play(&renderer)?;
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database.set_queue_status(
             renderer_location,
@@ -5386,9 +5519,9 @@ impl ServiceState {
     }
 
     fn pause_renderer(&self, renderer_location: &str) -> io::Result<String> {
-        let control_url = self.av_transport_control_url(renderer_location)?;
+        let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("pause-request", format!("renderer={renderer_location}"));
-        pause(&control_url)?;
+        self.renderer_backend(renderer_location)?.pause(&renderer)?;
         let snapshot = self.wait_for_transport_state(
             renderer_location,
             &["PAUSED_PLAYBACK", "STOPPED", "NO_MEDIA_PRESENT"],
@@ -5423,9 +5556,9 @@ impl ServiceState {
     }
 
     fn stop_renderer(&self, renderer_location: &str) -> io::Result<String> {
-        let control_url = self.av_transport_control_url(renderer_location)?;
+        let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("stop-request", format!("renderer={renderer_location}"));
-        stop(&control_url)?;
+        self.renderer_backend(renderer_location)?.stop(&renderer)?;
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database
             .mark_next_queue_entry_preloaded(renderer_location, None)?;
@@ -5454,8 +5587,8 @@ impl ServiceState {
             }
         }
 
-        let control_url = self.av_transport_control_url(renderer_location)?;
-        next(&control_url)?;
+        let renderer = self.resolve_renderer(renderer_location)?;
+        self.renderer_backend(renderer_location)?.next(&renderer)?;
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database.set_queue_status(
             renderer_location,
@@ -5483,8 +5616,9 @@ impl ServiceState {
             }
         }
 
-        let control_url = self.av_transport_control_url(renderer_location)?;
-        previous(&control_url)?;
+        let renderer = self.resolve_renderer(renderer_location)?;
+        self.renderer_backend(renderer_location)?
+            .previous(&renderer)?;
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database.set_queue_status(
             renderer_location,
@@ -5497,6 +5631,7 @@ impl ServiceState {
     fn preload_next_queue_entry(
         &self,
         renderer_location: &str,
+        renderer: &RendererRecord,
         queue: &PlaybackQueue,
         current_entry_id: i64,
     ) -> io::Result<()> {
@@ -5519,8 +5654,8 @@ impl ServiceState {
             io::Error::new(io::ErrorKind::NotFound, "queued next track not found")
         })?;
         let resource = self.stream_resource_for_track(&track);
-        let control_url = self.av_transport_control_url(renderer_location)?;
-        set_next_av_transport_uri(&control_url, &resource)?;
+        self.renderer_backend(renderer_location)?
+            .preload_next(renderer, &resource)?;
         self.database
             .mark_next_queue_entry_preloaded(renderer_location, Some(next_entry.id))?;
         self.debug_log(
@@ -5600,32 +5735,33 @@ impl ServiceState {
                 renderer_location, current_entry.id, track.title, stream_url
             ),
         );
+        let renderer = self.resolve_renderer(renderer_location)?;
 
-        match play_stream(renderer_location, &resource) {
-            Ok(renderer) => {
-                let _ = self.remember_renderer_details(
-                    &renderer.location,
-                    &renderer.friendly_name,
-                    renderer.manufacturer.as_deref(),
-                    renderer.model_name.as_deref(),
-                    Some(&renderer.av_transport_control_url),
-                );
+        match self
+            .renderer_backend(renderer_location)?
+            .play_stream(&renderer, &resource)
+        {
+            Ok(()) => {
+                let _ = self.remember_renderer_record(&renderer);
                 self.database.mark_queue_play_started(
                     renderer_location,
                     current_entry.id,
                     &stream_url,
                     track.duration_seconds,
                 )?;
-                if let Err(error) =
-                    self.preload_next_queue_entry(renderer_location, &queue, current_entry.id)
-                {
+                if let Err(error) = self.preload_next_queue_entry(
+                    renderer_location,
+                    &renderer,
+                    &queue,
+                    current_entry.id,
+                ) {
                     eprintln!("next-track preload failed for {renderer_location}: {error}");
                 }
                 Ok((
                     track,
                     current_entry.id,
-                    renderer.friendly_name,
-                    renderer.location,
+                    renderer.name.clone(),
+                    renderer.location.clone(),
                 ))
             }
             Err(error) => {
@@ -5656,8 +5792,11 @@ impl ServiceState {
         };
         let session = self.playback_session(renderer_location);
         let previous_queue_status = queue.status.clone();
-        let control_url = self.av_transport_control_url(renderer_location)?;
-        let snapshot = match get_transport_snapshot(&control_url) {
+        let renderer = self.resolve_renderer(renderer_location)?;
+        let snapshot = match self
+            .renderer_backend(renderer_location)?
+            .transport_snapshot(&renderer)
+        {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 let _ = self
@@ -5715,9 +5854,12 @@ impl ServiceState {
                 "PLAYING" | "TRANSITIONING"
             )
         }) {
-            if let Err(error) =
-                self.preload_next_queue_entry(renderer_location, &queue, current_entry_id)
-            {
+            if let Err(error) = self.preload_next_queue_entry(
+                renderer_location,
+                &renderer,
+                &queue,
+                current_entry_id,
+            ) {
                 eprintln!("next-track preload refresh failed for {renderer_location}: {error}");
             }
         }
@@ -6997,12 +7139,13 @@ fn json_escape(value: &str) -> String {
 mod tests {
     use super::{
         Database, LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
-        ServiceState, artwork_name_priority, cleanup_track_label, compare_track_album_order,
-        decode_id3v1_text, infer_artist_and_album, infer_disc_and_track_numbers,
-        infer_image_mime_from_bytes, next_queue_entry_after, parse_query_string,
-        parse_range_header, parse_vorbis_comment_block, previous_queue_entry_before,
-        queue_status_for_transport, should_adopt_preloaded_next_entry, should_auto_advance,
-        should_skip_entry, stable_album_id, stable_track_id,
+        RendererBackends, RendererKind, ServiceState, artwork_name_priority, cleanup_track_label,
+        compare_track_album_order, decode_id3v1_text, infer_artist_and_album,
+        infer_disc_and_track_numbers, infer_image_mime_from_bytes, next_queue_entry_after,
+        parse_query_string, parse_range_header, parse_vorbis_comment_block,
+        previous_queue_entry_before, queue_status_for_transport, renderer_kind_for_location,
+        should_adopt_preloaded_next_entry, should_auto_advance, should_skip_entry, stable_album_id,
+        stable_track_id,
     };
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, TransportInfo, TransportSnapshot};
@@ -7035,6 +7178,18 @@ mod tests {
         assert_eq!(
             parsed.get("message").map(String::as_str),
             Some("Now playing")
+        );
+    }
+
+    #[test]
+    fn infers_renderer_kind_from_location() {
+        assert_eq!(
+            renderer_kind_for_location("http://192.168.1.55:49152/description.xml"),
+            RendererKind::Upnp
+        );
+        assert_eq!(
+            renderer_kind_for_location("sonos:RINCON_1234567890"),
+            RendererKind::Sonos
         );
     }
 
@@ -7558,6 +7713,7 @@ mod tests {
                 scan_root: PathBuf::from("/music"),
                 tracks,
             }),
+            renderer_backends: RendererBackends::default(),
         }
     }
 
