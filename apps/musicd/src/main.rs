@@ -16,7 +16,7 @@ use lofty::tag::Accessor;
 use musicd_core::AppConfig;
 use musicd_upnp::{
     StreamResource, TransportSnapshot, discover_renderers, get_transport_snapshot,
-    inspect_renderer, play_stream,
+    inspect_renderer, play_stream, set_next_av_transport_uri,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -109,6 +109,7 @@ struct QueueEntry {
 struct PlaybackSession {
     renderer_location: String,
     queue_entry_id: Option<i64>,
+    next_queue_entry_id: Option<i64>,
     transport_state: String,
     current_track_uri: Option<String>,
     position_seconds: Option<u64>,
@@ -2699,6 +2700,7 @@ impl Database {
                 CREATE TABLE IF NOT EXISTS playback_sessions (
                     renderer_location TEXT PRIMARY KEY,
                     queue_entry_id INTEGER,
+                    next_queue_entry_id INTEGER,
                     transport_state TEXT NOT NULL,
                     current_track_uri TEXT,
                     position_seconds INTEGER,
@@ -2716,6 +2718,12 @@ impl Database {
         ensure_column(&connection, "tracks", "artwork_cache_key", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_source", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_mime_type", "TEXT")?;
+        ensure_column(
+            &connection,
+            "playback_sessions",
+            "next_queue_entry_id",
+            "INTEGER",
+        )?;
         Ok(())
     }
 
@@ -3007,7 +3015,7 @@ impl Database {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT renderer_location, queue_entry_id, transport_state, current_track_uri,
+                "SELECT renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
                         position_seconds, duration_seconds, last_observed_unix, last_error
                  FROM playback_sessions
                  WHERE renderer_location = ?",
@@ -3016,12 +3024,13 @@ impl Database {
                     Ok(PlaybackSession {
                         renderer_location: row.get(0)?,
                         queue_entry_id: row.get(1)?,
-                        transport_state: row.get(2)?,
-                        current_track_uri: row.get(3)?,
-                        position_seconds: row.get::<_, Option<u64>>(4)?,
-                        duration_seconds: row.get::<_, Option<u64>>(5)?,
-                        last_observed_unix: row.get(6)?,
-                        last_error: row.get(7)?,
+                        next_queue_entry_id: row.get(2)?,
+                        transport_state: row.get(3)?,
+                        current_track_uri: row.get(4)?,
+                        position_seconds: row.get::<_, Option<u64>>(5)?,
+                        duration_seconds: row.get::<_, Option<u64>>(6)?,
+                        last_observed_unix: row.get(7)?,
+                        last_error: row.get(8)?,
                     })
                 },
             )
@@ -3275,11 +3284,12 @@ impl Database {
         transaction
             .execute(
                 "INSERT INTO playback_sessions
-                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
                   position_seconds, duration_seconds, last_observed_unix, last_error)
-                 VALUES (?, ?, 'PLAYING', ?, 0, ?, ?, NULL)
+                 VALUES (?, ?, NULL, 'PLAYING', ?, 0, ?, ?, NULL)
                  ON CONFLICT(renderer_location) DO UPDATE SET
                     queue_entry_id = excluded.queue_entry_id,
+                    next_queue_entry_id = excluded.next_queue_entry_id,
                     transport_state = excluded.transport_state,
                     current_track_uri = excluded.current_track_uri,
                     position_seconds = excluded.position_seconds,
@@ -3309,11 +3319,12 @@ impl Database {
         connection
             .execute(
                 "INSERT INTO playback_sessions
-                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
                   position_seconds, duration_seconds, last_observed_unix, last_error)
-                 VALUES (?, ?, 'ERROR', NULL, NULL, NULL, ?, ?)
+                 VALUES (?, ?, NULL, 'ERROR', NULL, NULL, NULL, ?, ?)
                  ON CONFLICT(renderer_location) DO UPDATE SET
                     queue_entry_id = excluded.queue_entry_id,
+                    next_queue_entry_id = excluded.next_queue_entry_id,
                     transport_state = excluded.transport_state,
                     current_track_uri = excluded.current_track_uri,
                     position_seconds = excluded.position_seconds,
@@ -3351,11 +3362,12 @@ impl Database {
         connection
             .execute(
                 "INSERT INTO playback_sessions
-                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
                   position_seconds, duration_seconds, last_observed_unix, last_error)
                  VALUES (
                     ?,
                     (SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?),
+                    (SELECT next_queue_entry_id FROM playback_sessions WHERE renderer_location = ?),
                     ?, ?, ?, ?, ?, NULL
                  )
                  ON CONFLICT(renderer_location) DO UPDATE SET
@@ -3366,6 +3378,7 @@ impl Database {
                     last_observed_unix = excluded.last_observed_unix,
                     last_error = excluded.last_error",
                 params![
+                    renderer_location,
                     renderer_location,
                     renderer_location,
                     transport_state,
@@ -3384,11 +3397,12 @@ impl Database {
         connection
             .execute(
                 "INSERT INTO playback_sessions
-                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
                   position_seconds, duration_seconds, last_observed_unix, last_error)
                  VALUES (
                     ?,
                     (SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?),
+                    (SELECT next_queue_entry_id FROM playback_sessions WHERE renderer_location = ?),
                     'ERROR', NULL, NULL, NULL, ?, ?
                  )
                  ON CONFLICT(renderer_location) DO UPDATE SET
@@ -3398,8 +3412,50 @@ impl Database {
                 params![
                     renderer_location,
                     renderer_location,
+                    renderer_location,
                     now_unix_timestamp(),
                     error
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn mark_next_queue_entry_preloaded(
+        &self,
+        renderer_location: &str,
+        next_queue_entry_id: Option<i64>,
+    ) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (
+                    ?,
+                    (SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?),
+                    ?,
+                    COALESCE((SELECT transport_state FROM playback_sessions WHERE renderer_location = ?), 'READY'),
+                    (SELECT current_track_uri FROM playback_sessions WHERE renderer_location = ?),
+                    (SELECT position_seconds FROM playback_sessions WHERE renderer_location = ?),
+                    (SELECT duration_seconds FROM playback_sessions WHERE renderer_location = ?),
+                    ?,
+                    (SELECT last_error FROM playback_sessions WHERE renderer_location = ?)
+                 )
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    next_queue_entry_id = excluded.next_queue_entry_id,
+                    last_observed_unix = excluded.last_observed_unix",
+                params![
+                    renderer_location,
+                    renderer_location,
+                    next_queue_entry_id,
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    now_unix_timestamp(),
+                    renderer_location,
                 ],
             )
             .map_err(db_error)?;
@@ -3470,7 +3526,7 @@ impl Database {
         transaction
             .execute(
                 "UPDATE playback_sessions
-                 SET queue_entry_id = ?, transport_state = ?, current_track_uri = NULL,
+                 SET queue_entry_id = ?, next_queue_entry_id = NULL, transport_state = ?, current_track_uri = NULL,
                      position_seconds = NULL, duration_seconds = NULL, last_observed_unix = ?, last_error = NULL
                  WHERE renderer_location = ?",
                 params![
@@ -3765,8 +3821,52 @@ impl ServiceState {
             .append_queue_entries(renderer_location, &album.title, &entries)
     }
 
+    fn stream_resource_for_track(&self, track: &LibraryTrack) -> StreamResource {
+        StreamResource {
+            stream_url: format!(
+                "{}/stream/track/{}",
+                self.config.base_url.trim_end_matches('/'),
+                track.id
+            ),
+            mime_type: track.mime_type.clone(),
+            title: track.title.clone(),
+        }
+    }
+
     fn clear_queue(&self, renderer_location: &str) -> io::Result<()> {
         self.database.clear_queue(renderer_location)
+    }
+
+    fn preload_next_queue_entry(
+        &self,
+        renderer_location: &str,
+        queue: &PlaybackQueue,
+        current_entry_id: i64,
+    ) -> io::Result<()> {
+        let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
+            self.database
+                .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            return Ok(());
+        };
+
+        let session = self.playback_session(renderer_location);
+        if session
+            .as_ref()
+            .and_then(|session| session.next_queue_entry_id)
+            == Some(next_entry.id)
+        {
+            return Ok(());
+        }
+
+        let track = self.find_track(&next_entry.track_id).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "queued next track not found")
+        })?;
+        let resource = self.stream_resource_for_track(&track);
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        set_next_av_transport_uri(&control_url, &resource)?;
+        self.database
+            .mark_next_queue_entry_preloaded(renderer_location, Some(next_entry.id))?;
+        Ok(())
     }
 
     fn start_current_queue_entry(
@@ -3787,16 +3887,8 @@ impl ServiceState {
         let track = self
             .find_track(&current_entry.track_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queued track not found"))?;
-        let stream_url = format!(
-            "{}/stream/track/{}",
-            self.config.base_url.trim_end_matches('/'),
-            track.id
-        );
-        let resource = StreamResource {
-            stream_url: stream_url.clone(),
-            mime_type: track.mime_type.clone(),
-            title: track.title.clone(),
-        };
+        let resource = self.stream_resource_for_track(&track);
+        let stream_url = resource.stream_url.clone();
 
         match play_stream(renderer_location, &resource) {
             Ok(renderer) => {
@@ -3813,6 +3905,11 @@ impl ServiceState {
                     &stream_url,
                     track.duration_seconds,
                 )?;
+                if let Err(error) =
+                    self.preload_next_queue_entry(renderer_location, &queue, current_entry.id)
+                {
+                    eprintln!("next-track preload failed for {renderer_location}: {error}");
+                }
                 Ok((
                     track,
                     current_entry.id,
@@ -3864,6 +3961,19 @@ impl ServiceState {
             snapshot.position_info.rel_time_seconds,
             snapshot.position_info.track_duration_seconds,
         )?;
+
+        if let Some(current_entry_id) = queue.current_entry_id.filter(|_| {
+            matches!(
+                snapshot.transport_info.transport_state.as_str(),
+                "PLAYING" | "TRANSITIONING" | "PAUSED_PLAYBACK"
+            )
+        }) {
+            if let Err(error) =
+                self.preload_next_queue_entry(renderer_location, &queue, current_entry_id)
+            {
+                eprintln!("next-track preload refresh failed for {renderer_location}: {error}");
+            }
+        }
 
         if should_auto_advance(&queue, session.as_ref(), &snapshot, self) {
             let next_entry_id = self
@@ -4937,6 +5047,19 @@ fn format_duration_seconds(seconds: u64) -> String {
     }
 }
 
+fn next_queue_entry_after(queue: &PlaybackQueue, current_entry_id: i64) -> Option<&QueueEntry> {
+    let current_position = queue
+        .entries
+        .iter()
+        .find(|entry| entry.id == current_entry_id)
+        .map(|entry| entry.position)?;
+
+    queue
+        .entries
+        .iter()
+        .find(|entry| entry.position > current_position)
+}
+
 fn should_auto_advance(
     queue: &PlaybackQueue,
     session: Option<&PlaybackSession>,
@@ -5042,9 +5165,9 @@ mod tests {
         Database, LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
         ServiceState, artwork_name_priority, cleanup_track_label, compare_track_album_order,
         decode_id3v1_text, infer_artist_and_album, infer_disc_and_track_numbers,
-        infer_image_mime_from_bytes, parse_query_string, parse_range_header,
-        parse_vorbis_comment_block, should_auto_advance, should_skip_entry, stable_album_id,
-        stable_track_id,
+        infer_image_mime_from_bytes, next_queue_entry_after, parse_query_string,
+        parse_range_header, parse_vorbis_comment_block, should_auto_advance, should_skip_entry,
+        stable_album_id, stable_track_id,
     };
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, TransportInfo, TransportSnapshot};
@@ -5251,6 +5374,7 @@ mod tests {
         let session = PlaybackSession {
             renderer_location: queue.renderer_location.clone(),
             queue_entry_id: Some(1),
+            next_queue_entry_id: None,
             transport_state: "PLAYING".to_string(),
             current_track_uri: Some("http://musicd.local/stream/track/track-1".to_string()),
             position_seconds: Some(179),
@@ -5295,6 +5419,57 @@ mod tests {
             &early_snapshot,
             &state
         ));
+    }
+
+    #[test]
+    fn next_queue_entry_uses_queue_order() {
+        let queue = PlaybackQueue {
+            renderer_location: "http://renderer.local/description.xml".to_string(),
+            name: "Queue".to_string(),
+            current_entry_id: Some(2),
+            status: "playing".to_string(),
+            version: 1,
+            updated_unix: 0,
+            entries: vec![
+                QueueEntry {
+                    id: 10,
+                    position: 1,
+                    track_id: "track-1".to_string(),
+                    album_id: Some("album".to_string()),
+                    source_kind: "album".to_string(),
+                    source_ref: Some("album".to_string()),
+                    entry_status: "completed".to_string(),
+                    started_unix: Some(1),
+                    completed_unix: Some(2),
+                },
+                QueueEntry {
+                    id: 20,
+                    position: 2,
+                    track_id: "track-2".to_string(),
+                    album_id: Some("album".to_string()),
+                    source_kind: "album".to_string(),
+                    source_ref: Some("album".to_string()),
+                    entry_status: "playing".to_string(),
+                    started_unix: Some(3),
+                    completed_unix: None,
+                },
+                QueueEntry {
+                    id: 30,
+                    position: 3,
+                    track_id: "track-3".to_string(),
+                    album_id: Some("album".to_string()),
+                    source_kind: "album".to_string(),
+                    source_ref: Some("album".to_string()),
+                    entry_status: "pending".to_string(),
+                    started_unix: None,
+                    completed_unix: None,
+                },
+            ],
+        };
+
+        let next = next_queue_entry_after(&queue, 20).expect("next queue entry should exist");
+        assert_eq!(next.id, 30);
+        assert!(next_queue_entry_after(&queue, 30).is_none());
     }
 
     #[test]

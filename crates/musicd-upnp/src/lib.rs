@@ -206,6 +206,29 @@ pub fn set_av_transport_uri(control_url: &str, resource: &StreamResource) -> io:
     expect_successful_soap("SetAVTransportURI", response)
 }
 
+pub fn set_next_av_transport_uri(control_url: &str, resource: &StreamResource) -> io::Result<()> {
+    let body = build_set_next_av_transport_uri_envelope(
+        0,
+        &resource.stream_url,
+        &resource.mime_type,
+        Some(&resource.title),
+    );
+    let response = http_request(
+        "POST",
+        control_url,
+        &[
+            ("Content-Type", "text/xml; charset=\"utf-8\""),
+            (
+                "SOAPACTION",
+                "\"urn:schemas-upnp-org:service:AVTransport:1#SetNextAVTransportURI\"",
+            ),
+        ],
+        Some(body.as_bytes()),
+    )?;
+
+    expect_successful_soap("SetNextAVTransportURI", response)
+}
+
 pub fn play(control_url: &str) -> io::Result<()> {
     let body = build_play_envelope(0, 1);
     let response = http_request(
@@ -287,6 +310,20 @@ pub fn build_set_av_transport_uri_envelope(
 
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID><CurrentURI>{}</CurrentURI><CurrentURIMetaData>{}</CurrentURIMetaData></u:SetAVTransportURI></s:Body></s:Envelope>"#,
+        xml_escape(stream_url),
+        xml_escape(&metadata),
+    )
+}
+
+pub fn build_set_next_av_transport_uri_envelope(
+    instance_id: u32,
+    stream_url: &str,
+    mime_type: &str,
+    title: Option<&str>,
+) -> String {
+    let metadata = didl_lite_metadata(stream_url, mime_type, title.unwrap_or("Unknown title"));
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:SetNextAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID><NextURI>{}</NextURI><NextURIMetaData>{}</NextURIMetaData></u:SetNextAVTransportURI></s:Body></s:Envelope>"#,
         xml_escape(stream_url),
         xml_escape(&metadata),
     )
@@ -802,9 +839,10 @@ impl fmt::Display for RendererDescription {
 mod tests {
     use super::{
         build_get_position_info_envelope, build_get_transport_info_envelope, build_play_envelope,
-        build_set_av_transport_uri_envelope, decode_chunked_body, parse_device_description,
-        parse_http_response, parse_http_url, parse_position_info_response, parse_ssdp_response,
-        parse_transport_info_response, resolve_url,
+        build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
+        decode_chunked_body, parse_device_description, parse_http_response, parse_http_url,
+        parse_position_info_response, parse_ssdp_response, parse_transport_info_response,
+        resolve_url,
     };
 
     #[test]
@@ -828,6 +866,22 @@ mod tests {
         let body = build_play_envelope(0, 1);
 
         assert!(body.contains("<Speed>1</Speed>"));
+    }
+
+    #[test]
+    fn set_next_transport_uri_contains_escaped_values() {
+        let body = build_set_next_av_transport_uri_envelope(
+            0,
+            "http://server.local/stream/next&track.flac",
+            "audio/flac",
+            Some("Next & Best"),
+        );
+
+        assert!(body.contains("SetNextAVTransportURI"));
+        assert!(body.contains("next&amp;track.flac"));
+        assert!(body.contains("&lt;DIDL-Lite"));
+        assert!(body.contains("Next &amp;amp; Best"));
+        assert!(body.contains("audio/flac"));
     }
 
     #[test]
