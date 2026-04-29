@@ -231,18 +231,7 @@ pub fn set_next_av_transport_uri(control_url: &str, resource: &StreamResource) -
 
 pub fn play(control_url: &str) -> io::Result<()> {
     let body = build_play_envelope(0, 1);
-    let response = http_request(
-        "POST",
-        control_url,
-        &[
-            ("Content-Type", "text/xml; charset=\"utf-8\""),
-            (
-                "SOAPACTION",
-                "\"urn:schemas-upnp-org:service:AVTransport:1#Play\"",
-            ),
-        ],
-        Some(body.as_bytes()),
-    )?;
+    let response = av_transport_action(control_url, "Play", body.as_bytes())?;
 
     if expect_successful_soap("Play", response.clone()).is_ok() {
         return Ok(());
@@ -277,6 +266,30 @@ pub fn play(control_url: &str) -> io::Result<()> {
     }
 
     expect_successful_soap("Play", response)
+}
+
+pub fn pause(control_url: &str) -> io::Result<()> {
+    let body = build_pause_envelope(0);
+    let response = av_transport_action(control_url, "Pause", body.as_bytes())?;
+    expect_successful_soap("Pause", response)
+}
+
+pub fn stop(control_url: &str) -> io::Result<()> {
+    let body = build_stop_envelope(0);
+    let response = av_transport_action(control_url, "Stop", body.as_bytes())?;
+    expect_successful_soap("Stop", response)
+}
+
+pub fn next(control_url: &str) -> io::Result<()> {
+    let body = build_next_envelope(0);
+    let response = av_transport_action(control_url, "Next", body.as_bytes())?;
+    expect_successful_soap("Next", response)
+}
+
+pub fn previous(control_url: &str) -> io::Result<()> {
+    let body = build_previous_envelope(0);
+    let response = av_transport_action(control_url, "Previous", body.as_bytes())?;
+    expect_successful_soap("Previous", response)
 }
 
 pub fn get_transport_info(control_url: &str) -> io::Result<TransportInfo> {
@@ -367,6 +380,30 @@ pub fn build_play_envelope(instance_id: u32, speed: u8) -> String {
     )
 }
 
+pub fn build_pause_envelope(instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Pause xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:Pause></s:Body></s:Envelope>"#
+    )
+}
+
+pub fn build_stop_envelope(instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Stop xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:Stop></s:Body></s:Envelope>"#
+    )
+}
+
+pub fn build_next_envelope(instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Next xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:Next></s:Body></s:Envelope>"#
+    )
+}
+
+pub fn build_previous_envelope(instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Previous xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:Previous></s:Body></s:Envelope>"#
+    )
+}
+
 pub fn build_get_transport_info_envelope(instance_id: u32) -> String {
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:GetTransportInfo></s:Body></s:Envelope>"#
@@ -394,6 +431,19 @@ fn expect_successful_soap(action: &str, response: HttpResponse) -> io::Result<()
             preview.trim()
         ),
     ))
+}
+
+fn av_transport_action(control_url: &str, action: &str, body: &[u8]) -> io::Result<HttpResponse> {
+    let soap_action = format!("\"urn:schemas-upnp-org:service:AVTransport:1#{action}\"");
+    http_request(
+        "POST",
+        control_url,
+        &[
+            ("Content-Type", "text/xml; charset=\"utf-8\""),
+            ("SOAPACTION", soap_action.as_str()),
+        ],
+        Some(body),
+    )
 }
 
 fn transport_is_starting_or_playing(control_url: &str) -> bool {
@@ -897,11 +947,13 @@ impl fmt::Display for RendererDescription {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_get_position_info_envelope, build_get_transport_info_envelope, build_play_envelope,
+        build_get_position_info_envelope, build_get_transport_info_envelope, build_next_envelope,
+        build_pause_envelope, build_play_envelope, build_previous_envelope,
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
-        decode_chunked_body, is_transition_not_available_fault, parse_device_description,
-        parse_http_response, parse_http_url, parse_position_info_response, parse_ssdp_response,
-        parse_transport_info_response, resolve_url,
+        build_stop_envelope, decode_chunked_body, is_transition_not_available_fault,
+        parse_device_description, parse_http_response, parse_http_url,
+        parse_position_info_response, parse_ssdp_response, parse_transport_info_response,
+        resolve_url,
     };
     use std::collections::HashMap;
 
@@ -926,6 +978,14 @@ mod tests {
         let body = build_play_envelope(0, 1);
 
         assert!(body.contains("<Speed>1</Speed>"));
+    }
+
+    #[test]
+    fn pause_stop_next_previous_envelopes_contain_actions() {
+        assert!(build_pause_envelope(0).contains("Pause"));
+        assert!(build_stop_envelope(0).contains("Stop"));
+        assert!(build_next_envelope(0).contains("Next"));
+        assert!(build_previous_envelope(0).contains("Previous"));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use lofty::tag::Accessor;
 use musicd_core::AppConfig;
 use musicd_upnp::{
     StreamResource, TransportSnapshot, discover_renderers, get_transport_snapshot,
-    inspect_renderer, play_stream, set_next_av_transport_uri,
+    inspect_renderer, next, pause, play, play_stream, previous, set_next_av_transport_uri, stop,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -530,6 +530,13 @@ fn handle_service_request(
         }
         ("GET", "/play") => handle_play_request(writer, request, &state),
         ("GET", "/play-album") => handle_play_album_request(writer, request, &state),
+        ("GET", "/transport/play") => handle_transport_play_request(writer, request, &state),
+        ("GET", "/transport/pause") => handle_transport_pause_request(writer, request, &state),
+        ("GET", "/transport/stop") => handle_transport_stop_request(writer, request, &state),
+        ("GET", "/transport/next") => handle_transport_next_request(writer, request, &state),
+        ("GET", "/transport/previous") => {
+            handle_transport_previous_request(writer, request, &state)
+        }
         ("GET", "/queue/append-track") => {
             handle_queue_append_track_request(writer, request, &state)
         }
@@ -540,6 +547,11 @@ fn handle_service_request(
         ("GET", "/rescan") => handle_rescan_request(writer, request, &state),
         ("HEAD", "/play")
         | ("HEAD", "/play-album")
+        | ("HEAD", "/transport/play")
+        | ("HEAD", "/transport/pause")
+        | ("HEAD", "/transport/stop")
+        | ("HEAD", "/transport/next")
+        | ("HEAD", "/transport/previous")
         | ("HEAD", "/queue/append-track")
         | ("HEAD", "/queue/append-album")
         | ("HEAD", "/queue/clear")
@@ -680,7 +692,7 @@ fn handle_play_album_request(
             &album.id,
             Some(&renderer_location),
             Some(&format!(
-                "Started album '{}' from track '{}' on {}. The queue now contains the album, and automatic advancement is the next phase.",
+                "Started album '{}' from track '{}' on {}. The queue now contains the album and will advance automatically.",
                 album.title, started_track.title, renderer_name
             )),
             None,
@@ -759,6 +771,226 @@ fn handle_queue_append_track_request(
             Some(&renderer_location),
             None,
             Some(&format!("Queue update failed: {error}")),
+        ),
+    }
+}
+
+fn handle_transport_play_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before pressing play."),
+        );
+    }
+
+    match state.resume_renderer(&renderer_location) {
+        Ok(message) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some(&message),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Play failed: {error}")),
+        ),
+    }
+}
+
+fn handle_transport_pause_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before pausing playback."),
+        );
+    }
+
+    match state.pause_renderer(&renderer_location) {
+        Ok(message) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some(&message),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Pause failed: {error}")),
+        ),
+    }
+}
+
+fn handle_transport_stop_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before stopping playback."),
+        );
+    }
+
+    match state.stop_renderer(&renderer_location) {
+        Ok(message) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some(&message),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Stop failed: {error}")),
+        ),
+    }
+}
+
+fn handle_transport_next_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before skipping to the next track."),
+        );
+    }
+
+    match state.skip_to_next(&renderer_location) {
+        Ok(message) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some(&message),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Next failed: {error}")),
+        ),
+    }
+}
+
+fn handle_transport_previous_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before going to the previous track."),
+        );
+    }
+
+    match state.skip_to_previous(&renderer_location) {
+        Ok(message) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some(&message),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Previous failed: {error}")),
         ),
     }
 }
@@ -1630,7 +1862,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     {}
     {}
     <h2 class="section-heading">Albums</h2>
-    <p class="section-note">Album playback currently starts with the first ordered track. Continuous queue playback is the next step.</p>
+    <p class="section-note">Album playback fills the queue in disc/track order and will advance automatically. Use the queue controls to pause, stop, or skip.</p>
     {}
     <section class="table-wrap">
       <table>
@@ -1751,18 +1983,53 @@ fn render_queue_panel(
 
     let queue = state.queue_snapshot(renderer_location);
     let session = state.playback_session(renderer_location);
+    let current_track = queue.as_ref().and_then(|queue| {
+        queue.current_entry_id.and_then(|current_entry_id| {
+            queue
+                .entries
+                .iter()
+                .find(|entry| entry.id == current_entry_id)
+                .and_then(|entry| tracks.iter().find(|track| track.id == entry.track_id))
+        })
+    });
+    let progress_note = session
+        .as_ref()
+        .and_then(|session| {
+            session.position_seconds.map(|position| {
+                let duration = session
+                    .duration_seconds
+                    .map(format_duration_seconds)
+                    .unwrap_or_else(|| "Unknown".to_string());
+                format!("{} / {}", format_duration_seconds(position), duration)
+            })
+        })
+        .unwrap_or_else(|| "Unknown progress".to_string());
 
     let session_meta = session
+        .as_ref()
         .map(|session| {
             let error_note = session
                 .last_error
-                .map(|error| format!(" Error: {}.", html_escape(&error)))
+                .as_ref()
+                .map(|error| format!(" Error: {}.", html_escape(error)))
+                .unwrap_or_default();
+            let current_note = current_track
+                .map(|track| {
+                    format!(
+                        " Current track: '{}' by {} from {}.",
+                        html_escape(&track.title),
+                        html_escape(&track.artist),
+                        html_escape(&track.album)
+                    )
+                })
                 .unwrap_or_default();
             format!(
-                "<p class=\"section-note\">Renderer session: {}. Last observed: {}.{} </p>",
+                "<p class=\"section-note\">Renderer session: {}. Progress: {}. Last observed: {}.{}{} </p>",
                 html_escape(&session.transport_state),
+                html_escape(&progress_note),
                 session.last_observed_unix,
-                error_note
+                error_note,
+                current_note
             )
         })
         .unwrap_or_else(|| {
@@ -1814,6 +2081,31 @@ fn render_queue_panel(
 <p class="section-note">Renderer: {}. Status: {}. Queue version: {}.</p>
 <section class="table-wrap">
   <div class="control-row" style="padding: 0 0 1rem;">
+    <form class="inline-form" action="/transport/previous" method="get">
+      <input class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
+      <input type="hidden" name="return_to" value="/">
+      <button type="submit" class="secondary">Previous</button>
+    </form>
+    <form class="inline-form" action="/transport/play" method="get">
+      <input class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
+      <input type="hidden" name="return_to" value="/">
+      <button type="submit">Play</button>
+    </form>
+    <form class="inline-form" action="/transport/pause" method="get">
+      <input class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
+      <input type="hidden" name="return_to" value="/">
+      <button type="submit" class="secondary">Pause</button>
+    </form>
+    <form class="inline-form" action="/transport/stop" method="get">
+      <input class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
+      <input type="hidden" name="return_to" value="/">
+      <button type="submit" class="secondary">Stop</button>
+    </form>
+    <form class="inline-form" action="/transport/next" method="get">
+      <input class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
+      <input type="hidden" name="return_to" value="/">
+      <button type="submit" class="secondary">Next</button>
+    </form>
     <form class="inline-form" action="/queue/clear" method="get">
       <input class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
       <input type="hidden" name="return_to" value="/">
@@ -1836,6 +2128,11 @@ fn render_queue_panel(
         html_escape(renderer_location),
         html_escape(&queue.status),
         queue.version,
+        html_escape(renderer_location),
+        html_escape(renderer_location),
+        html_escape(renderer_location),
+        html_escape(renderer_location),
+        html_escape(renderer_location),
         html_escape(renderer_location),
         rows,
     )
@@ -2497,21 +2794,33 @@ fn render_queue_json(state: &ServiceState, request: &HttpRequest) -> String {
     let renderer_location = state
         .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
     let session = state.playback_session(&renderer_location);
+    let session_json = |session: PlaybackSession| {
+        let current_track = session.queue_entry_id.and_then(|queue_entry_id| {
+            state.queue_snapshot(&renderer_location).and_then(|queue| {
+                queue
+                    .entries
+                    .into_iter()
+                    .find(|entry| entry.id == queue_entry_id)
+                    .and_then(|entry| state.find_track(&entry.track_id))
+            })
+        });
+        format!(
+            r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{},"title":{},"artist":{},"album":{}}}"#,
+            json_escape(&session.transport_state),
+            option_i64_json(session.queue_entry_id),
+            option_i64_json(session.next_queue_entry_id),
+            option_string_json(session.current_track_uri.as_deref()),
+            option_u64_json(session.position_seconds),
+            option_u64_json(session.duration_seconds),
+            session.last_observed_unix,
+            option_string_json(session.last_error.as_deref()),
+            option_string_json(current_track.as_ref().map(|track| track.title.as_str())),
+            option_string_json(current_track.as_ref().map(|track| track.artist.as_str())),
+            option_string_json(current_track.as_ref().map(|track| track.album.as_str())),
+        )
+    };
     let Some(queue) = state.queue_snapshot(&renderer_location) else {
-        let session_json = session.map_or_else(
-            || "null".to_string(),
-            |session| {
-                format!(
-                    r#"{{"transport_state":"{}","queue_entry_id":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{}}}"#,
-                    json_escape(&session.transport_state),
-                    option_i64_json(session.queue_entry_id),
-                    option_u64_json(session.position_seconds),
-                    option_u64_json(session.duration_seconds),
-                    session.last_observed_unix,
-                    option_string_json(session.last_error.as_deref()),
-                )
-            },
-        );
+        let session_json = session.map_or_else(|| "null".to_string(), session_json);
         return format!(
             r#"{{"renderer_location":"{}","status":"empty","entries":[],"session":{}}}"#,
             json_escape(&renderer_location),
@@ -2543,20 +2852,7 @@ fn render_queue_json(state: &ServiceState, request: &HttpRequest) -> String {
         })
         .collect::<Vec<_>>()
         .join(",");
-    let session_json = session.map_or_else(
-        || "null".to_string(),
-        |session| {
-            format!(
-                r#"{{"transport_state":"{}","queue_entry_id":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{}}}"#,
-                json_escape(&session.transport_state),
-                option_i64_json(session.queue_entry_id),
-                option_u64_json(session.position_seconds),
-                option_u64_json(session.duration_seconds),
-                session.last_observed_unix,
-                option_string_json(session.last_error.as_deref()),
-            )
-        },
-    );
+    let session_json = session.map_or_else(|| "null".to_string(), session_json);
 
     format!(
         r#"{{"renderer_location":"{}","name":"{}","status":"{}","version":{},"updated_unix":{},"current_entry_id":{},"entries":[{}],"session":{}}}"#,
@@ -3462,6 +3758,101 @@ impl Database {
         Ok(())
     }
 
+    fn set_queue_status(
+        &self,
+        renderer_location: &str,
+        queue_status: &str,
+        transport_state: &str,
+    ) -> io::Result<()> {
+        let connection = self.connection()?;
+        let now = now_unix_timestamp();
+        connection
+            .execute(
+                "UPDATE playback_queues
+                 SET status = ?, updated_unix = ?, version = version + 1
+                 WHERE renderer_location = ?",
+                params![queue_status, now, renderer_location],
+            )
+            .map_err(db_error)?;
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (
+                    ?,
+                    (SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?),
+                    (SELECT next_queue_entry_id FROM playback_sessions WHERE renderer_location = ?),
+                    ?,
+                    (SELECT current_track_uri FROM playback_sessions WHERE renderer_location = ?),
+                    (SELECT position_seconds FROM playback_sessions WHERE renderer_location = ?),
+                    (SELECT duration_seconds FROM playback_sessions WHERE renderer_location = ?),
+                    ?,
+                    NULL
+                 )
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    transport_state = excluded.transport_state,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    transport_state,
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    now,
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn select_queue_entry(&self, renderer_location: &str, queue_entry_id: i64) -> io::Result<()> {
+        let connection = self.connection()?;
+        let now = now_unix_timestamp();
+        connection
+            .execute(
+                "UPDATE playback_queues
+                 SET current_entry_id = ?, status = 'ready', updated_unix = ?, version = version + 1
+                 WHERE renderer_location = ?",
+                params![queue_entry_id, now, renderer_location],
+            )
+            .map_err(db_error)?;
+        connection
+            .execute(
+                "UPDATE queue_entries
+                 SET entry_status = CASE
+                    WHEN id = ? THEN 'pending'
+                    WHEN completed_unix IS NOT NULL THEN 'completed'
+                    ELSE 'pending'
+                 END
+                 WHERE renderer_location = ?",
+                params![queue_entry_id, renderer_location],
+            )
+            .map_err(db_error)?;
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (?, ?, NULL, 'READY', NULL, NULL, NULL, ?, NULL)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    queue_entry_id = excluded.queue_entry_id,
+                    next_queue_entry_id = excluded.next_queue_entry_id,
+                    transport_state = excluded.transport_state,
+                    current_track_uri = excluded.current_track_uri,
+                    position_seconds = excluded.position_seconds,
+                    duration_seconds = excluded.duration_seconds,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![renderer_location, queue_entry_id, now],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
     fn advance_queue_after_completion(&self, renderer_location: &str) -> io::Result<Option<i64>> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(db_error)?;
@@ -3835,6 +4226,137 @@ impl ServiceState {
 
     fn clear_queue(&self, renderer_location: &str) -> io::Result<()> {
         self.database.clear_queue(renderer_location)
+    }
+
+    fn refresh_transport_state(&self, renderer_location: &str) -> io::Result<TransportSnapshot> {
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        let snapshot = get_transport_snapshot(&control_url)?;
+        self.database.record_transport_snapshot(
+            renderer_location,
+            &snapshot.transport_info.transport_state,
+            snapshot.position_info.track_uri.as_deref(),
+            snapshot.position_info.rel_time_seconds,
+            snapshot.position_info.track_duration_seconds,
+        )?;
+        Ok(snapshot)
+    }
+
+    fn resume_renderer(&self, renderer_location: &str) -> io::Result<String> {
+        let _ = self.remember_renderer_location(renderer_location);
+        let queue = self.queue_snapshot(renderer_location);
+        let session = self.playback_session(renderer_location);
+
+        if let Some(queue) = queue.as_ref() {
+            if session
+                .as_ref()
+                .map(|session| {
+                    matches!(
+                        session.transport_state.as_str(),
+                        "STOPPED" | "NO_MEDIA_PRESENT" | "READY" | "COMPLETED"
+                    )
+                })
+                .unwrap_or(true)
+                && queue.current_entry_id.is_some()
+            {
+                let (track, _, renderer_name, _) =
+                    self.start_current_queue_entry(renderer_location)?;
+                return Ok(format!(
+                    "Now playing '{}' on {}.",
+                    track.title, renderer_name
+                ));
+            }
+        }
+
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        play(&control_url)?;
+        let snapshot = self.refresh_transport_state(renderer_location)?;
+        self.database.set_queue_status(
+            renderer_location,
+            queue_status_for_transport(&snapshot.transport_info.transport_state),
+            &snapshot.transport_info.transport_state,
+        )?;
+        Ok("Playback resumed.".to_string())
+    }
+
+    fn pause_renderer(&self, renderer_location: &str) -> io::Result<String> {
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        pause(&control_url)?;
+        let snapshot = self.refresh_transport_state(renderer_location)?;
+        self.database.set_queue_status(
+            renderer_location,
+            queue_status_for_transport(&snapshot.transport_info.transport_state),
+            &snapshot.transport_info.transport_state,
+        )?;
+        Ok("Playback paused.".to_string())
+    }
+
+    fn stop_renderer(&self, renderer_location: &str) -> io::Result<String> {
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        stop(&control_url)?;
+        let snapshot = self.refresh_transport_state(renderer_location)?;
+        self.database
+            .mark_next_queue_entry_preloaded(renderer_location, None)?;
+        self.database.set_queue_status(
+            renderer_location,
+            queue_status_for_transport(&snapshot.transport_info.transport_state),
+            &snapshot.transport_info.transport_state,
+        )?;
+        Ok("Playback stopped.".to_string())
+    }
+
+    fn skip_to_next(&self, renderer_location: &str) -> io::Result<String> {
+        if let Some(queue) = self.queue_snapshot(renderer_location) {
+            if let Some(current_entry_id) = queue.current_entry_id {
+                if let Some(next_entry) = next_queue_entry_after(&queue, current_entry_id) {
+                    self.database
+                        .select_queue_entry(renderer_location, next_entry.id)?;
+                    let (track, _, renderer_name, _) =
+                        self.start_current_queue_entry(renderer_location)?;
+                    return Ok(format!(
+                        "Skipped to '{}' on {}.",
+                        track.title, renderer_name
+                    ));
+                }
+            }
+        }
+
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        next(&control_url)?;
+        let snapshot = self.refresh_transport_state(renderer_location)?;
+        self.database.set_queue_status(
+            renderer_location,
+            queue_status_for_transport(&snapshot.transport_info.transport_state),
+            &snapshot.transport_info.transport_state,
+        )?;
+        Ok("Skipped to the next track.".to_string())
+    }
+
+    fn skip_to_previous(&self, renderer_location: &str) -> io::Result<String> {
+        if let Some(queue) = self.queue_snapshot(renderer_location) {
+            if let Some(current_entry_id) = queue.current_entry_id {
+                if let Some(previous_entry) = previous_queue_entry_before(&queue, current_entry_id)
+                {
+                    self.database
+                        .select_queue_entry(renderer_location, previous_entry.id)?;
+                    let (track, _, renderer_name, _) =
+                        self.start_current_queue_entry(renderer_location)?;
+                    return Ok(format!(
+                        "Went back to '{}' on {}.",
+                        track.title, renderer_name
+                    ));
+                }
+            }
+        }
+
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        previous(&control_url)?;
+        let snapshot = self.refresh_transport_state(renderer_location)?;
+        self.database.set_queue_status(
+            renderer_location,
+            queue_status_for_transport(&snapshot.transport_info.transport_state),
+            &snapshot.transport_info.transport_state,
+        )?;
+        Ok("Moved to the previous track.".to_string())
     }
 
     fn preload_next_queue_entry(
@@ -5047,6 +5569,18 @@ fn format_duration_seconds(seconds: u64) -> String {
     }
 }
 
+fn queue_status_for_transport(transport_state: &str) -> &'static str {
+    match transport_state {
+        "PLAYING" | "TRANSITIONING" => "playing",
+        "PAUSED_PLAYBACK" => "paused",
+        "STOPPED" | "NO_MEDIA_PRESENT" => "stopped",
+        "READY" => "ready",
+        "COMPLETED" => "completed",
+        "ERROR" => "error",
+        _ => "ready",
+    }
+}
+
 fn next_queue_entry_after(queue: &PlaybackQueue, current_entry_id: i64) -> Option<&QueueEntry> {
     let current_position = queue
         .entries
@@ -5058,6 +5592,23 @@ fn next_queue_entry_after(queue: &PlaybackQueue, current_entry_id: i64) -> Optio
         .entries
         .iter()
         .find(|entry| entry.position > current_position)
+}
+
+fn previous_queue_entry_before(
+    queue: &PlaybackQueue,
+    current_entry_id: i64,
+) -> Option<&QueueEntry> {
+    let current_position = queue
+        .entries
+        .iter()
+        .find(|entry| entry.id == current_entry_id)
+        .map(|entry| entry.position)?;
+
+    queue
+        .entries
+        .iter()
+        .rev()
+        .find(|entry| entry.position < current_position)
 }
 
 fn should_auto_advance(
@@ -5166,8 +5717,9 @@ mod tests {
         ServiceState, artwork_name_priority, cleanup_track_label, compare_track_album_order,
         decode_id3v1_text, infer_artist_and_album, infer_disc_and_track_numbers,
         infer_image_mime_from_bytes, next_queue_entry_after, parse_query_string,
-        parse_range_header, parse_vorbis_comment_block, should_auto_advance, should_skip_entry,
-        stable_album_id, stable_track_id,
+        parse_range_header, parse_vorbis_comment_block, previous_queue_entry_before,
+        queue_status_for_transport, should_auto_advance, should_skip_entry, stable_album_id,
+        stable_track_id,
     };
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, TransportInfo, TransportSnapshot};
@@ -5470,6 +6022,18 @@ mod tests {
         let next = next_queue_entry_after(&queue, 20).expect("next queue entry should exist");
         assert_eq!(next.id, 30);
         assert!(next_queue_entry_after(&queue, 30).is_none());
+        let previous =
+            previous_queue_entry_before(&queue, 20).expect("previous queue entry should exist");
+        assert_eq!(previous.id, 10);
+        assert!(previous_queue_entry_before(&queue, 10).is_none());
+    }
+
+    #[test]
+    fn queue_status_follows_transport_state() {
+        assert_eq!(queue_status_for_transport("PLAYING"), "playing");
+        assert_eq!(queue_status_for_transport("TRANSITIONING"), "playing");
+        assert_eq!(queue_status_for_transport("PAUSED_PLAYBACK"), "paused");
+        assert_eq!(queue_status_for_transport("STOPPED"), "stopped");
     }
 
     #[test]

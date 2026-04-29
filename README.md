@@ -21,6 +21,7 @@ That is much more realistic than trying to recreate all of Roon's RAAT-like beha
 
 - `docs/architecture.md`: system design and protocol choices
 - `docs/mvp-plan.md`: phased implementation plan
+- `docs/queue-plan.md`: queue and transport progression plan
 - `docs/unraid.md`: Docker packaging and Unraid deployment notes
 - `apps/musicd`: starter service binary
 - `crates/musicd-core`: domain models and shared config
@@ -31,22 +32,63 @@ That is much more realistic than trying to recreate all of Roon's RAAT-like beha
 The Rust workspace currently provides:
 
 - domain types for tracks, albums, renderers, and app config
+- a long-running library service that scans a mounted music share
+- SQLite-backed persistence for the scanned library and renderer history
+- first-pass local artwork extraction from embedded tags and common sidecar files
+- album grouping with stable IDs plus disc/track ordering
 - SSDP discovery for UPnP media renderers
 - device-description parsing and AVTransport endpoint inspection
 - UPnP SOAP calls for `SetAVTransportURI` and `Play`
-- a one-file HTTP stream server with basic byte-range support
-- a CLI for discovery, inspection, URL playback, and file playback
+- HTTP track streaming with basic byte-range support
+- a browser UI plus JSON endpoints for browse, discovery, rescan, and playback
+- album pages and a first-pass `Play Album` flow that starts from the first ordered track
+- queue persistence in SQLite with renderer-specific queue state and session snapshots
+- UPnP transport polling with first-pass automatic queue advancement
+- CLI commands for service mode, discovery, inspection, URL playback, and file playback
 - a Docker image definition and env-driven entrypoint suitable for Unraid packaging
 
 ## Suggested next steps
 
-1. test `discover`, `inspect`, and `play-file` against a real CXN V2 on your LAN
-2. add a filesystem scanner that walks a mounted NAS path
-3. store library metadata in SQLite
-4. replace the one-file server with a library-backed stream endpoint
-5. add a controller UI for search, browse, queue, and device selection
+1. normalize artwork and library data into album/artist tables instead of track-level fallbacks
+2. add queue state and transport status polling under `/config`
+3. persist richer renderer capabilities and connection health
+4. add MusicBrainz and Cover Art Archive enrichment on top of the local index
+5. expand the controller UI beyond the single-page MVP
 
-## Phase 1 commands
+## Service mode
+
+Run the long-lived service:
+
+```bash
+cargo run -p musicd -- serve
+```
+
+Then open `http://<host>:<port>/` in a browser. The page lets you:
+
+- browse the scanned library
+- browse grouped albums and open album detail pages
+- filter tracks client-side
+- discover UPnP renderers
+- paste or reuse a renderer `LOCATION` URL
+- play a selected track to that renderer
+- start album playback from the first ordered track
+- queue tracks and albums for a selected renderer
+- continue through a queued album automatically when track-end detection is confident
+- preview a track directly from the service
+- inspect inferred metadata, embedded tags, and the artwork source for a track
+
+The service also exposes:
+
+- `GET /health`
+- `GET /api/albums`
+- `GET /api/queue?renderer_location=<location>`
+- `GET /api/tracks`
+- `GET /api/tracks/<track_id>`
+- `GET /artwork/track/<track_id>`
+- `GET /api/renderers/discover`
+- `GET /stream/track/<track_id>`
+
+## Utility commands
 
 Discover renderers:
 
