@@ -56,6 +56,7 @@ pub struct AppConfig {
     pub base_url: String,
     pub discovery_timeout_ms: u64,
     pub default_renderer_location: Option<String>,
+    pub debug_mode: bool,
 }
 
 impl AppConfig {
@@ -76,6 +77,7 @@ impl AppConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(1500),
             default_renderer_location: std::env::var("MUSICD_DEFAULT_RENDERER_LOCATION").ok(),
+            debug_mode: parse_bool_env("MUSICD_DEBUG"),
         }
     }
 
@@ -88,4 +90,16 @@ impl AppConfig {
             "UPnP renderer adapter",
         ]
     }
+}
+
+fn parse_bool_env(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }

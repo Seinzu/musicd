@@ -242,6 +242,14 @@ fn run_serve() -> io::Result<()> {
         println!("Default renderer: {renderer}");
     }
     println!(
+        "Debug mode: {}",
+        if config.debug_mode {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
         "Open {}/ in a browser to browse and play music.",
         config.base_url
     );
@@ -4542,6 +4550,25 @@ impl Database {
         Ok(())
     }
 
+    fn sync_queue_status(&self, renderer_location: &str, queue_status: &str) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "UPDATE playback_queues
+                 SET status = ?, updated_unix = ?
+                 WHERE renderer_location = ?
+                   AND status != ?",
+                params![
+                    queue_status,
+                    now_unix_timestamp(),
+                    renderer_location,
+                    queue_status
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
     fn set_queue_status(
         &self,
         renderer_location: &str,
@@ -4742,6 +4769,21 @@ impl Database {
 }
 
 impl ServiceState {
+    fn debug_enabled(&self) -> bool {
+        self.config.debug_mode
+    }
+
+    fn debug_log(&self, event: &str, details: impl AsRef<str>) {
+        if self.debug_enabled() {
+            eprintln!(
+                "[musicd-debug][{}][{}] {}",
+                now_unix_timestamp(),
+                event,
+                details.as_ref()
+            );
+        }
+    }
+
     fn load(config: AppConfig) -> io::Result<Self> {
         let database = Database::open(&config.config_path)?;
         let persisted_library = database.load_library(config.library_path.clone())?;
@@ -4758,6 +4800,19 @@ impl ServiceState {
             }
             Err(error) => return Err(error),
         }
+
+        state.debug_log(
+            "service-load",
+            format!(
+                "tracks={} default_renderer={}",
+                state.track_count(),
+                state
+                    .config
+                    .default_renderer_location
+                    .as_deref()
+                    .unwrap_or("<none>")
+            ),
+        );
 
         Ok(state)
     }
@@ -5088,10 +5143,54 @@ impl ServiceState {
         Ok(snapshot)
     }
 
+    fn wait_for_transport_state(
+        &self,
+        renderer_location: &str,
+        stable_states: &[&str],
+        attempts: usize,
+        delay: Duration,
+    ) -> io::Result<TransportSnapshot> {
+        let mut last_snapshot = self.refresh_transport_state(renderer_location)?;
+        self.debug_log(
+            "transport-wait",
+            format!(
+                "renderer={} initial_state={} stable={:?}",
+                renderer_location, last_snapshot.transport_info.transport_state, stable_states
+            ),
+        );
+        for _ in 0..attempts {
+            if stable_states.contains(&last_snapshot.transport_info.transport_state.as_str()) {
+                return Ok(last_snapshot);
+            }
+            thread::sleep(delay);
+            last_snapshot = self.refresh_transport_state(renderer_location)?;
+            self.debug_log(
+                "transport-wait",
+                format!(
+                    "renderer={} observed_state={}",
+                    renderer_location, last_snapshot.transport_info.transport_state
+                ),
+            );
+        }
+        Ok(last_snapshot)
+    }
+
     fn resume_renderer(&self, renderer_location: &str) -> io::Result<String> {
         let _ = self.remember_renderer_location(renderer_location);
         let queue = self.queue_snapshot(renderer_location);
         let session = self.playback_session(renderer_location);
+        self.debug_log(
+            "resume-request",
+            format!(
+                "renderer={} queue_current={:?} session_state={}",
+                renderer_location,
+                queue.as_ref().and_then(|queue| queue.current_entry_id),
+                session
+                    .as_ref()
+                    .map(|session| session.transport_state.as_str())
+                    .unwrap_or("<none>")
+            ),
+        );
 
         if let Some(queue) = queue.as_ref() {
             if session
@@ -5127,18 +5226,44 @@ impl ServiceState {
 
     fn pause_renderer(&self, renderer_location: &str) -> io::Result<String> {
         let control_url = self.av_transport_control_url(renderer_location)?;
+        self.debug_log("pause-request", format!("renderer={renderer_location}"));
         pause(&control_url)?;
-        let snapshot = self.refresh_transport_state(renderer_location)?;
+        let snapshot = self.wait_for_transport_state(
+            renderer_location,
+            &["PAUSED_PLAYBACK", "STOPPED", "NO_MEDIA_PRESENT"],
+            6,
+            Duration::from_millis(250),
+        )?;
+        self.database
+            .mark_next_queue_entry_preloaded(renderer_location, None)?;
         self.database.set_queue_status(
             renderer_location,
             queue_status_for_transport(&snapshot.transport_info.transport_state),
             &snapshot.transport_info.transport_state,
         )?;
-        Ok("Playback paused.".to_string())
+        self.debug_log(
+            "pause-settled",
+            format!(
+                "renderer={} state={} position={:?} duration={:?}",
+                renderer_location,
+                snapshot.transport_info.transport_state,
+                snapshot.position_info.rel_time_seconds,
+                snapshot.position_info.track_duration_seconds
+            ),
+        );
+        if snapshot.transport_info.transport_state == "PAUSED_PLAYBACK" {
+            Ok("Playback paused.".to_string())
+        } else {
+            Ok(format!(
+                "Pause requested. Renderer now reports {}.",
+                snapshot.transport_info.transport_state
+            ))
+        }
     }
 
     fn stop_renderer(&self, renderer_location: &str) -> io::Result<String> {
         let control_url = self.av_transport_control_url(renderer_location)?;
+        self.debug_log("stop-request", format!("renderer={renderer_location}"));
         stop(&control_url)?;
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database
@@ -5152,6 +5277,7 @@ impl ServiceState {
     }
 
     fn skip_to_next(&self, renderer_location: &str) -> io::Result<String> {
+        self.debug_log("next-request", format!("renderer={renderer_location}"));
         if let Some(queue) = self.queue_snapshot(renderer_location) {
             if let Some(current_entry_id) = queue.current_entry_id {
                 if let Some(next_entry) = next_queue_entry_after(&queue, current_entry_id) {
@@ -5179,6 +5305,7 @@ impl ServiceState {
     }
 
     fn skip_to_previous(&self, renderer_location: &str) -> io::Result<String> {
+        self.debug_log("previous-request", format!("renderer={renderer_location}"));
         if let Some(queue) = self.queue_snapshot(renderer_location) {
             if let Some(current_entry_id) = queue.current_entry_id {
                 if let Some(previous_entry) = previous_queue_entry_before(&queue, current_entry_id)
@@ -5235,6 +5362,13 @@ impl ServiceState {
         set_next_av_transport_uri(&control_url, &resource)?;
         self.database
             .mark_next_queue_entry_preloaded(renderer_location, Some(next_entry.id))?;
+        self.debug_log(
+            "preload-next",
+            format!(
+                "renderer={} current_entry={} next_entry={} next_track={}",
+                renderer_location, current_entry_id, next_entry.id, track.title
+            ),
+        );
         Ok(())
     }
 
@@ -5258,6 +5392,13 @@ impl ServiceState {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queued track not found"))?;
         let resource = self.stream_resource_for_track(&track);
         let stream_url = resource.stream_url.clone();
+        self.debug_log(
+            "queue-start",
+            format!(
+                "renderer={} entry={} track={} uri={}",
+                renderer_location, current_entry.id, track.title, stream_url
+            ),
+        );
 
         match play_stream(renderer_location, &resource) {
             Ok(renderer) => {
@@ -5299,6 +5440,7 @@ impl ServiceState {
 
     fn poll_active_queues(&self) -> io::Result<()> {
         for renderer_location in self.database.list_playing_queue_renderers()? {
+            self.debug_log("queue-poll", format!("renderer={renderer_location}"));
             if let Err(error) = self.poll_renderer_queue(&renderer_location) {
                 eprintln!("queue poll failed for {renderer_location}: {error}");
             }
@@ -5312,6 +5454,7 @@ impl ServiceState {
             None => return Ok(()),
         };
         let session = self.playback_session(renderer_location);
+        let previous_queue_status = queue.status.clone();
         let control_url = self.av_transport_control_url(renderer_location)?;
         let snapshot = match get_transport_snapshot(&control_url) {
             Ok(snapshot) => snapshot,
@@ -5330,11 +5473,39 @@ impl ServiceState {
             snapshot.position_info.rel_time_seconds,
             snapshot.position_info.track_duration_seconds,
         )?;
+        self.database.sync_queue_status(
+            renderer_location,
+            queue_status_for_transport(&snapshot.transport_info.transport_state),
+        )?;
+        if self.debug_enabled() {
+            let previous_state = session
+                .as_ref()
+                .map(|session| session.transport_state.as_str())
+                .unwrap_or("<none>");
+            if previous_state != snapshot.transport_info.transport_state
+                || previous_queue_status
+                    != queue_status_for_transport(&snapshot.transport_info.transport_state)
+            {
+                self.debug_log(
+                    "transport-transition",
+                    format!(
+                        "renderer={} session_state={} -> {} queue_status={} -> {} position={:?} duration={:?}",
+                        renderer_location,
+                        previous_state,
+                        snapshot.transport_info.transport_state,
+                        previous_queue_status,
+                        queue_status_for_transport(&snapshot.transport_info.transport_state),
+                        snapshot.position_info.rel_time_seconds,
+                        snapshot.position_info.track_duration_seconds
+                    ),
+                );
+            }
+        }
 
         if let Some(current_entry_id) = queue.current_entry_id.filter(|_| {
             matches!(
                 snapshot.transport_info.transport_state.as_str(),
-                "PLAYING" | "TRANSITIONING" | "PAUSED_PLAYBACK"
+                "PLAYING" | "TRANSITIONING"
             )
         }) {
             if let Err(error) =
@@ -5344,7 +5515,37 @@ impl ServiceState {
             }
         }
 
+        if matches!(
+            snapshot.transport_info.transport_state.as_str(),
+            "STOPPED" | "NO_MEDIA_PRESENT"
+        ) && matches!(
+            session
+                .as_ref()
+                .map(|session| session.transport_state.as_str()),
+            Some("PAUSED_PLAYBACK")
+        ) {
+            self.debug_log(
+                "auto-advance-suppressed",
+                format!(
+                    "renderer={} stopped_after_pause position={:?} duration={:?}",
+                    renderer_location,
+                    snapshot.position_info.rel_time_seconds,
+                    snapshot.position_info.track_duration_seconds
+                ),
+            );
+        }
+
         if should_auto_advance(&queue, session.as_ref(), &snapshot, self) {
+            self.debug_log(
+                "auto-advance",
+                format!(
+                    "renderer={} current_entry={:?} position={:?} duration={:?}",
+                    renderer_location,
+                    queue.current_entry_id,
+                    snapshot.position_info.rel_time_seconds,
+                    snapshot.position_info.track_duration_seconds
+                ),
+            );
             let next_entry_id = self
                 .database
                 .advance_queue_after_completion(renderer_location)?;
@@ -6238,6 +6439,14 @@ fn print_status() {
     println!("Bind address: {}", config.bind_address);
     println!("HTTP base URL: {}", config.base_url);
     println!("Discovery timeout: {}ms", config.discovery_timeout_ms);
+    println!(
+        "Debug mode: {}",
+        if config.debug_mode {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
     if let Some(renderer) = config.default_renderer_location {
         println!("Default renderer: {renderer}");
     }
@@ -6475,6 +6684,9 @@ fn should_auto_advance(
         Some(session) => session,
         None => return false,
     };
+    if session.transport_state == "PAUSED_PLAYBACK" {
+        return false;
+    }
     let current_entry_id = match queue.current_entry_id {
         Some(current_entry_id) => current_entry_id,
         None => return false,
@@ -6903,6 +7115,30 @@ mod tests {
             &early_snapshot,
             &state
         ));
+
+        let paused_session = PlaybackSession {
+            transport_state: "PAUSED_PLAYBACK".to_string(),
+            position_seconds: Some(179),
+            ..early_session
+        };
+        let stopped_snapshot = TransportSnapshot {
+            transport_info: TransportInfo {
+                transport_state: "STOPPED".to_string(),
+                transport_status: Some("OK".to_string()),
+                current_speed: Some("1".to_string()),
+            },
+            position_info: PositionInfo {
+                track_uri: Some("http://musicd.local/stream/track/track-1".to_string()),
+                rel_time_seconds: Some(179),
+                track_duration_seconds: Some(180),
+            },
+        };
+        assert!(!should_auto_advance(
+            &queue,
+            Some(&paused_session),
+            &stopped_snapshot,
+            &state
+        ));
     }
 
     #[test]
@@ -7032,6 +7268,7 @@ mod tests {
                 base_url: "http://192.168.1.10:7878".to_string(),
                 discovery_timeout_ms: 1500,
                 default_renderer_location: None,
+                debug_mode: false,
             },
             database,
             library: std::sync::Mutex::new(super::Library {
