@@ -54,6 +54,26 @@ pub struct RendererDescription {
     pub rendering_control_url: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportInfo {
+    pub transport_state: String,
+    pub transport_status: Option<String>,
+    pub current_speed: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionInfo {
+    pub track_uri: Option<String>,
+    pub rel_time_seconds: Option<u64>,
+    pub track_duration_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportSnapshot {
+    pub transport_info: TransportInfo,
+    pub position_info: PositionInfo,
+}
+
 impl DeviceDescription {
     pub fn find_service(&self, service_type: &str) -> Option<&UpnpService> {
         self.services
@@ -204,6 +224,49 @@ pub fn play(control_url: &str) -> io::Result<()> {
     expect_successful_soap("Play", response)
 }
 
+pub fn get_transport_info(control_url: &str) -> io::Result<TransportInfo> {
+    let body = build_get_transport_info_envelope(0);
+    let response = http_request(
+        "POST",
+        control_url,
+        &[
+            ("Content-Type", "text/xml; charset=\"utf-8\""),
+            (
+                "SOAPACTION",
+                "\"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo\"",
+            ),
+        ],
+        Some(body.as_bytes()),
+    )?;
+    expect_successful_soap("GetTransportInfo", response.clone())?;
+    parse_transport_info_response(&response.body)
+}
+
+pub fn get_position_info(control_url: &str) -> io::Result<PositionInfo> {
+    let body = build_get_position_info_envelope(0);
+    let response = http_request(
+        "POST",
+        control_url,
+        &[
+            ("Content-Type", "text/xml; charset=\"utf-8\""),
+            (
+                "SOAPACTION",
+                "\"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo\"",
+            ),
+        ],
+        Some(body.as_bytes()),
+    )?;
+    expect_successful_soap("GetPositionInfo", response.clone())?;
+    parse_position_info_response(&response.body)
+}
+
+pub fn get_transport_snapshot(control_url: &str) -> io::Result<TransportSnapshot> {
+    Ok(TransportSnapshot {
+        transport_info: get_transport_info(control_url)?,
+        position_info: get_position_info(control_url)?,
+    })
+}
+
 pub fn play_stream(
     renderer_location: &str,
     resource: &StreamResource,
@@ -232,6 +295,18 @@ pub fn build_set_av_transport_uri_envelope(
 pub fn build_play_envelope(instance_id: u32, speed: u8) -> String {
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID><Speed>{speed}</Speed></u:Play></s:Body></s:Envelope>"#
+    )
+}
+
+pub fn build_get_transport_info_envelope(instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:GetTransportInfo></s:Body></s:Envelope>"#
+    )
+}
+
+pub fn build_get_position_info_envelope(instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetPositionInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:GetPositionInfo></s:Body></s:Envelope>"#
     )
 }
 
@@ -267,6 +342,58 @@ fn parse_ssdp_response(response: &str) -> Option<DiscoveryResponse> {
         server: headers.get("server").cloned(),
         search_target: headers.get("st").cloned(),
         usn: headers.get("usn").cloned(),
+    })
+}
+
+fn parse_transport_info_response(body: &[u8]) -> io::Result<TransportInfo> {
+    let xml = String::from_utf8(body.to_vec()).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("transport info body was not valid UTF-8: {error}"),
+        )
+    })?;
+    let transport_state = extract_first_tag(&xml, "CurrentTransportState")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "transport info response was missing CurrentTransportState",
+            )
+        })?
+        .trim()
+        .to_string();
+    let transport_status = extract_first_tag(&xml, "CurrentTransportStatus")
+        .map(str::trim)
+        .map(str::to_string);
+    let current_speed = extract_first_tag(&xml, "CurrentSpeed")
+        .map(str::trim)
+        .map(str::to_string);
+
+    Ok(TransportInfo {
+        transport_state,
+        transport_status,
+        current_speed,
+    })
+}
+
+fn parse_position_info_response(body: &[u8]) -> io::Result<PositionInfo> {
+    let xml = String::from_utf8(body.to_vec()).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("position info body was not valid UTF-8: {error}"),
+        )
+    })?;
+
+    let track_uri = extract_first_tag(&xml, "TrackURI")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let rel_time_seconds = extract_first_tag(&xml, "RelTime").and_then(parse_upnp_time);
+    let track_duration_seconds = extract_first_tag(&xml, "TrackDuration").and_then(parse_upnp_time);
+
+    Ok(PositionInfo {
+        track_uri,
+        rel_time_seconds,
+        track_duration_seconds,
     })
 }
 
@@ -635,6 +762,23 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn parse_upnp_time(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || value == "NOT_IMPLEMENTED" {
+        return None;
+    }
+
+    let mut parts = value.split(':');
+    let hours = parts.next()?.parse::<u64>().ok()?;
+    let minutes = parts.next()?.parse::<u64>().ok()?;
+    let seconds = parts.next()?.parse::<u64>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some((hours * 3600) + (minutes * 60) + seconds)
+}
+
 impl fmt::Display for RendererDescription {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(formatter, "Renderer: {}", self.friendly_name)?;
@@ -657,9 +801,10 @@ impl fmt::Display for RendererDescription {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_play_envelope, build_set_av_transport_uri_envelope, decode_chunked_body,
-        parse_device_description, parse_http_response, parse_http_url, parse_ssdp_response,
-        resolve_url,
+        build_get_position_info_envelope, build_get_transport_info_envelope, build_play_envelope,
+        build_set_av_transport_uri_envelope, decode_chunked_body, parse_device_description,
+        parse_http_response, parse_http_url, parse_position_info_response, parse_ssdp_response,
+        parse_transport_info_response, resolve_url,
     };
 
     #[test]
@@ -683,6 +828,18 @@ mod tests {
         let body = build_play_envelope(0, 1);
 
         assert!(body.contains("<Speed>1</Speed>"));
+    }
+
+    #[test]
+    fn transport_info_envelope_contains_action() {
+        let body = build_get_transport_info_envelope(0);
+        assert!(body.contains("GetTransportInfo"));
+    }
+
+    #[test]
+    fn position_info_envelope_contains_action() {
+        let body = build_get_position_info_envelope(0);
+        assert!(body.contains("GetPositionInfo"));
     }
 
     #[test]
@@ -759,6 +916,47 @@ mod tests {
         .unwrap();
         assert_eq!(response.status_code, 200);
         assert_eq!(response.body, b"test");
+    }
+
+    #[test]
+    fn parses_transport_info_response() {
+        let body = br#"
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetTransportInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <CurrentTransportState>PLAYING</CurrentTransportState>
+      <CurrentTransportStatus>OK</CurrentTransportStatus>
+      <CurrentSpeed>1</CurrentSpeed>
+    </u:GetTransportInfoResponse>
+  </s:Body>
+</s:Envelope>"#;
+
+        let parsed = parse_transport_info_response(body).unwrap();
+        assert_eq!(parsed.transport_state, "PLAYING");
+        assert_eq!(parsed.transport_status.as_deref(), Some("OK"));
+        assert_eq!(parsed.current_speed.as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn parses_position_info_response() {
+        let body = br#"
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:GetPositionInfoResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <TrackURI>http://musicd.local/stream/track/abc</TrackURI>
+      <TrackDuration>00:03:42</TrackDuration>
+      <RelTime>00:01:11</RelTime>
+    </u:GetPositionInfoResponse>
+  </s:Body>
+</s:Envelope>"#;
+
+        let parsed = parse_position_info_response(body).unwrap();
+        assert_eq!(
+            parsed.track_uri.as_deref(),
+            Some("http://musicd.local/stream/track/abc")
+        );
+        assert_eq!(parsed.track_duration_seconds, Some(222));
+        assert_eq!(parsed.rel_time_seconds, Some(71));
     }
 
     #[test]

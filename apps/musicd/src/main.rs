@@ -14,7 +14,10 @@ use lofty::picture::PictureType;
 use lofty::read_from_path;
 use lofty::tag::Accessor;
 use musicd_core::AppConfig;
-use musicd_upnp::{StreamResource, discover_renderers, inspect_renderer, play_stream};
+use musicd_upnp::{
+    StreamResource, TransportSnapshot, discover_renderers, get_transport_snapshot,
+    inspect_renderer, play_stream,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +29,7 @@ struct LibraryTrack {
     album: String,
     disc_number: Option<u32>,
     track_number: Option<u32>,
+    duration_seconds: Option<u64>,
     relative_path: String,
     path: PathBuf,
     mime_type: String,
@@ -64,6 +68,7 @@ struct ParsedTrackTags {
     album: Option<String>,
     disc_number: Option<u32>,
     track_number: Option<u32>,
+    duration_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +79,50 @@ struct RendererRecord {
     model_name: Option<String>,
     av_transport_control_url: Option<String>,
     last_seen_unix: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlaybackQueue {
+    renderer_location: String,
+    name: String,
+    current_entry_id: Option<i64>,
+    status: String,
+    version: i64,
+    updated_unix: i64,
+    entries: Vec<QueueEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueueEntry {
+    id: i64,
+    position: i64,
+    track_id: String,
+    album_id: Option<String>,
+    source_kind: String,
+    source_ref: Option<String>,
+    entry_status: String,
+    started_unix: Option<i64>,
+    completed_unix: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlaybackSession {
+    renderer_location: String,
+    queue_entry_id: Option<i64>,
+    transport_state: String,
+    current_track_uri: Option<String>,
+    position_seconds: Option<u64>,
+    duration_seconds: Option<u64>,
+    last_observed_unix: i64,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueueMutationEntry {
+    track_id: String,
+    album_id: Option<String>,
+    source_kind: String,
+    source_ref: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +229,8 @@ fn run_serve() -> io::Result<()> {
     let state = Arc::new(ServiceState::load(config.clone())?);
     let track_count = state.track_count();
 
+    spawn_queue_worker(Arc::clone(&state));
+
     println!("musicd service");
     println!("Library path: {}", config.library_path.display());
     println!("Config path: {}", config.config_path.display());
@@ -195,6 +246,17 @@ fn run_serve() -> io::Result<()> {
     );
 
     serve_tcp(&config.bind_address, ServerMode::Service(state))
+}
+
+fn spawn_queue_worker(state: Arc<ServiceState>) {
+    thread::spawn(move || {
+        loop {
+            if let Err(error) = state.poll_active_queues() {
+                eprintln!("queue worker error: {error}");
+            }
+            thread::sleep(Duration::from_secs(2));
+        }
+    });
 }
 
 fn run_discover(timeout: Duration) -> io::Result<()> {
@@ -406,6 +468,16 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/api/queue") | ("HEAD", "/api/queue") => {
+            let body = render_queue_json(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         _ if request.path.starts_with("/api/tracks/") => {
             if request.method != "GET" && request.method != "HEAD" {
                 return respond_method_not_allowed(writer);
@@ -457,10 +529,20 @@ fn handle_service_request(
         }
         ("GET", "/play") => handle_play_request(writer, request, &state),
         ("GET", "/play-album") => handle_play_album_request(writer, request, &state),
-        ("GET", "/rescan") => handle_rescan_request(writer, request, &state),
-        ("HEAD", "/play") | ("HEAD", "/play-album") | ("HEAD", "/rescan") => {
-            respond_method_not_allowed(writer)
+        ("GET", "/queue/append-track") => {
+            handle_queue_append_track_request(writer, request, &state)
         }
+        ("GET", "/queue/append-album") => {
+            handle_queue_append_album_request(writer, request, &state)
+        }
+        ("GET", "/queue/clear") => handle_queue_clear_request(writer, request, &state),
+        ("GET", "/rescan") => handle_rescan_request(writer, request, &state),
+        ("HEAD", "/play")
+        | ("HEAD", "/play-album")
+        | ("HEAD", "/queue/append-track")
+        | ("HEAD", "/queue/append-album")
+        | ("HEAD", "/queue/clear")
+        | ("HEAD", "/rescan") => respond_method_not_allowed(writer),
         _ if request.path.starts_with("/stream/track/") => {
             if request.method != "GET" && request.method != "HEAD" {
                 return respond_method_not_allowed(writer);
@@ -516,36 +598,19 @@ fn handle_play_request(
         );
     };
 
-    let stream_url = format!(
-        "{}/stream/track/{}",
-        state.config.base_url.trim_end_matches('/'),
-        track.id
-    );
-    let resource = StreamResource {
-        stream_url,
-        mime_type: track.mime_type.clone(),
-        title: track.title.clone(),
-    };
-
-    match play_stream(&renderer_location, &resource) {
-        Ok(renderer) => {
-            let _ = state.remember_renderer_details(
-                &renderer.location,
-                &renderer.friendly_name,
-                renderer.manufacturer.as_deref(),
-                renderer.model_name.as_deref(),
-                Some(&renderer.av_transport_control_url),
-            );
-            redirect_home(
-                writer,
-                Some(&renderer_location),
-                Some(&format!(
-                    "Now playing '{}' on {}.",
-                    track.title, renderer.friendly_name
-                )),
-                None,
-            )
-        }
+    match state
+        .replace_queue_with_track(&renderer_location, &track)
+        .and_then(|_| state.start_current_queue_entry(&renderer_location))
+    {
+        Ok((started_track, _queue_entry_id, renderer_name, _renderer_location)) => redirect_home(
+            writer,
+            Some(&renderer_location),
+            Some(&format!(
+                "Now playing '{}' on {}. The queue now contains 1 item.",
+                started_track.title, renderer_name
+            )),
+            None,
+        ),
         Err(error) => redirect_home(
             writer,
             Some(&renderer_location),
@@ -595,7 +660,7 @@ fn handle_play_album_request(
 
     let _ = state.remember_renderer_location(&renderer_location);
 
-    let Some(track) = state.first_track_for_album(&album.id) else {
+    let Some(_track) = state.first_track_for_album(&album.id) else {
         return redirect_album(
             writer,
             &album.id,
@@ -605,43 +670,206 @@ fn handle_play_album_request(
         );
     };
 
-    let stream_url = format!(
-        "{}/stream/track/{}",
-        state.config.base_url.trim_end_matches('/'),
-        track.id
-    );
-    let resource = StreamResource {
-        stream_url,
-        mime_type: track.mime_type.clone(),
-        title: track.title.clone(),
-    };
-
-    match play_stream(&renderer_location, &resource) {
-        Ok(renderer) => {
-            let _ = state.remember_renderer_details(
-                &renderer.location,
-                &renderer.friendly_name,
-                renderer.manufacturer.as_deref(),
-                renderer.model_name.as_deref(),
-                Some(&renderer.av_transport_control_url),
-            );
-            redirect_album(
-                writer,
-                &album.id,
-                Some(&renderer_location),
-                Some(&format!(
-                    "Started album '{}' from track '{}' on {}. Full continuous album playback comes next.",
-                    album.title, track.title, renderer.friendly_name
-                )),
-                None,
-            )
-        }
+    match state
+        .replace_queue_with_album(&renderer_location, &album)
+        .and_then(|_| state.start_current_queue_entry(&renderer_location))
+    {
+        Ok((started_track, _queue_entry_id, renderer_name, _renderer_location)) => redirect_album(
+            writer,
+            &album.id,
+            Some(&renderer_location),
+            Some(&format!(
+                "Started album '{}' from track '{}' on {}. The queue now contains the album, and automatic advancement is the next phase.",
+                album.title, started_track.title, renderer_name
+            )),
+            None,
+        ),
         Err(error) => redirect_album(
             writer,
             &album.id,
             Some(&renderer_location),
             None,
             Some(&format!("Playback failed: {error}")),
+        ),
+    }
+}
+
+fn handle_queue_append_track_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+    let Some(track_id) = request.query.get("track_id").map(String::as_str) else {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some("Select a track before adding it to the queue."),
+        );
+    };
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before queuing music."),
+        );
+    }
+
+    let Some(track) = state.find_track(track_id) else {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some("The selected track is no longer in the scanned library."),
+        );
+    };
+
+    match state.append_track_to_queue(&renderer_location, &track) {
+        Ok(queue) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some(&format!(
+                "Queued '{}' for {}. Queue length: {}.",
+                track.title,
+                renderer_location,
+                queue.entries.len()
+            )),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Queue update failed: {error}")),
+        ),
+    }
+}
+
+fn handle_queue_append_album_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+    let Some(album_id) = request.query.get("album_id").map(String::as_str) else {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some("Select an album before adding it to the queue."),
+        );
+    };
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before queuing music."),
+        );
+    }
+
+    let Some(album) = state.find_album(album_id) else {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some("The selected album is no longer in the scanned library."),
+        );
+    };
+
+    match state.append_album_to_queue(&renderer_location, &album) {
+        Ok(queue) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some(&format!(
+                "Queued album '{}' for {}. Queue length: {}.",
+                album.title,
+                renderer_location,
+                queue.entries.len()
+            )),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Queue update failed: {error}")),
+        ),
+    }
+}
+
+fn handle_queue_clear_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request
+        .query
+        .get("renderer_location")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let return_to = request
+        .query
+        .get("return_to")
+        .map(String::as_str)
+        .unwrap_or("/");
+
+    if renderer_location.is_empty() {
+        return redirect_to_path(
+            writer,
+            return_to,
+            Some(""),
+            None,
+            Some("Enter a renderer LOCATION URL before clearing a queue."),
+        );
+    }
+
+    match state.clear_queue(&renderer_location) {
+        Ok(()) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            Some("Queue cleared."),
+            None,
+        ),
+        Err(error) => redirect_to_path(
+            writer,
+            return_to,
+            Some(&renderer_location),
+            None,
+            Some(&format!("Failed to clear queue: {error}")),
         ),
     }
 }
@@ -875,6 +1103,16 @@ fn redirect_home(
     message: Option<&str>,
     error: Option<&str>,
 ) -> io::Result<()> {
+    redirect_to_path(writer, "/", renderer_location, message, error)
+}
+
+fn redirect_to_path(
+    writer: &mut TcpStream,
+    path: &str,
+    renderer_location: Option<&str>,
+    message: Option<&str>,
+    error: Option<&str>,
+) -> io::Result<()> {
     let mut params = Vec::new();
     if let Some(renderer_location) = renderer_location {
         if !renderer_location.is_empty() {
@@ -892,9 +1130,9 @@ fn redirect_home(
     }
 
     let location = if params.is_empty() {
-        "/".to_string()
+        path.to_string()
     } else {
-        format!("/?{}", params.join("&"))
+        format!("{path}?{}", params.join("&"))
     };
 
     write_response_owned(
@@ -1030,6 +1268,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     let library_path = state.config.library_path.display().to_string();
     let renderer_location = state
         .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
+    let queue_html = render_queue_panel(state, &renderer_location, &tracks);
     let known_renderers = state.renderer_snapshot();
     let message = request.query.get("message").cloned().unwrap_or_default();
     let error = request.query.get("error").cloned().unwrap_or_default();
@@ -1054,13 +1293,15 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
             url_encode(&renderer_location)
         );
         album_rows.push_str(&format!(
-            "<tr data-search=\"{}\"><td>{}</td><td><a class=\"album-link\" href=\"{}\">{}</a></td><td>{}</td><td>{}</td><td><form class=\"inline-form\" action=\"/play-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Album</button></form> <span class=\"muted-sep\">|</span> <a href=\"{}\">View Album</a></td></tr>",
+            "<tr data-search=\"{}\"><td>{}</td><td><a class=\"album-link\" href=\"{}\">{}</a></td><td>{}</td><td>{}</td><td><form class=\"inline-form\" action=\"/play-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Album</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/append-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue Album</button></form> <span class=\"muted-sep\">|</span> <a href=\"{}\">View Album</a></td></tr>",
             html_escape(&search_text),
             cover_html,
             html_escape(&album_url),
             html_escape(&album.title),
             html_escape(&album.artist),
             album.track_count,
+            html_escape(&album.id),
+            html_escape(&renderer_location),
             html_escape(&album.id),
             html_escape(&renderer_location),
             html_escape(&album_url),
@@ -1086,7 +1327,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
             })
             .unwrap_or_else(|| "<div class=\"cover-thumb placeholder\">No Art</div>".to_string());
         rows.push_str(&format!(
-            "<tr data-search=\"{}\"><td><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{}\"></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><a href=\"/stream/track/{}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
+            "<tr data-search=\"{}\"><td><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{}\"></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><form class=\"inline-form\" action=\"/queue/append-track\" method=\"get\"><input type=\"hidden\" name=\"track_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue</button></form> <span class=\"muted-sep\">|</span> <a href=\"/stream/track/{}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
             html_escape(&search_text),
             html_escape(&track.id),
             cover_html,
@@ -1098,6 +1339,8 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
                 url_encode(&renderer_location),
                 html_escape(&track.album)
             ),
+            html_escape(&track.id),
+            html_escape(&renderer_location),
             html_escape(&track.id),
             html_escape(&track.id),
         ));
@@ -1384,6 +1627,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       </form>
     </section>
     {}
+    {}
     <h2 class="section-heading">Albums</h2>
     <p class="section-note">Album playback currently starts with the first ordered track. Continuous queue playback is the next step.</p>
     {}
@@ -1413,7 +1657,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
             <th>Title</th>
             <th>Artist</th>
             <th>Album</th>
-            <th>Preview</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="track_table">
@@ -1488,8 +1732,110 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         renderer_options,
         html_escape(&renderer_location),
         empty_state,
+        queue_html,
         album_empty_state,
         album_rows,
+        rows,
+    )
+}
+
+fn render_queue_panel(
+    state: &ServiceState,
+    renderer_location: &str,
+    tracks: &[LibraryTrack],
+) -> String {
+    if renderer_location.trim().is_empty() {
+        return "<section class=\"table-wrap\"><p class=\"empty\">Enter a renderer LOCATION URL to inspect or build a queue.</p></section>".to_string();
+    }
+
+    let queue = state.queue_snapshot(renderer_location);
+    let session = state.playback_session(renderer_location);
+
+    let session_meta = session
+        .map(|session| {
+            let error_note = session
+                .last_error
+                .map(|error| format!(" Error: {}.", html_escape(&error)))
+                .unwrap_or_default();
+            format!(
+                "<p class=\"section-note\">Renderer session: {}. Last observed: {}.{} </p>",
+                html_escape(&session.transport_state),
+                session.last_observed_unix,
+                error_note
+            )
+        })
+        .unwrap_or_else(|| {
+            "<p class=\"section-note\">No playback session has been recorded for this renderer yet.</p>"
+                .to_string()
+        });
+
+    let Some(queue) = queue else {
+        return format!(
+            "<h2 class=\"section-heading\">Queue</h2>{session_meta}<section class=\"table-wrap\"><p class=\"empty\">No queue has been saved for this renderer yet.</p></section>"
+        );
+    };
+
+    let rows = queue
+        .entries
+        .iter()
+        .map(|entry| {
+            let track = tracks.iter().find(|track| track.id == entry.track_id);
+            let title = track
+                .map(|track| track.title.clone())
+                .unwrap_or_else(|| "Missing track".to_string());
+            let album = track
+                .map(|track| track.album.clone())
+                .unwrap_or_else(|| "Unknown album".to_string());
+            let marker = if Some(entry.id) == queue.current_entry_id {
+                "Current"
+            } else {
+                ""
+            };
+            let duration = track
+                .and_then(|track| track.duration_seconds)
+                .map(format_duration_seconds)
+                .unwrap_or_else(|| "Unknown".to_string());
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                entry.position,
+                html_escape(marker),
+                html_escape(&title),
+                html_escape(&album),
+                html_escape(&duration)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    format!(
+        r#"<h2 class="section-heading">Queue</h2>
+{session_meta}
+<p class="section-note">Renderer: {}. Status: {}. Queue version: {}.</p>
+<section class="table-wrap">
+  <div class="control-row" style="padding: 0 0 1rem;">
+    <form class="inline-form" action="/queue/clear" method="get">
+      <input class="renderer-location-proxy" type="hidden" name="renderer_location" value="{}">
+      <input type="hidden" name="return_to" value="/">
+      <button type="submit" class="secondary">Clear Queue</button>
+    </form>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Position</th>
+        <th>Marker</th>
+        <th>Title</th>
+        <th>Album</th>
+        <th>Duration</th>
+      </tr>
+    </thead>
+    <tbody>{}</tbody>
+  </table>
+</section>"#,
+        html_escape(renderer_location),
+        html_escape(&queue.status),
+        queue.version,
+        html_escape(renderer_location),
         rows,
     )
 }
@@ -1703,6 +2049,8 @@ fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
           <input id="renderer_location" name="renderer_location" type="text" value="{}" placeholder="http://192.168.1.55:49152/description.xml">
           <div class="actions">
             <button type="submit">Play Album</button>
+            <button type="submit" formaction="/queue/append-album">Queue Album</button>
+            <input type="hidden" name="return_to" value="/album/{}">
             <a class="secondary" href="/stream/track/{}" target="_blank" rel="noreferrer">Preview First Track</a>
           </div>
         </form>
@@ -1734,6 +2082,7 @@ fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         artwork_html,
         html_escape(&album.id),
         html_escape(&renderer_location),
+        html_escape(&album.id),
         html_escape(&album.first_track_id),
         track_rows,
     )
@@ -1772,6 +2121,13 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         (
             "Disc / Track",
             format_track_position(track.disc_number, track.track_number),
+        ),
+        (
+            "Duration",
+            track
+                .duration_seconds
+                .map(format_duration_seconds)
+                .unwrap_or_else(|| "Unknown".to_string()),
         ),
         ("Relative path", track.relative_path.clone()),
         ("Absolute path", track.path.display().to_string()),
@@ -1850,6 +2206,12 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         "/play?track_id={}&renderer_location={}",
         url_encode(&track.id),
         url_encode(&renderer_location)
+    );
+    let queue_url = format!(
+        "/queue/append-track?track_id={}&renderer_location={}&return_to={}",
+        url_encode(&track.id),
+        url_encode(&renderer_location),
+        url_encode(&format!("/track/{}", track.id))
     );
     let artwork_html = artwork_url
         .map(|url| {
@@ -1959,6 +2321,7 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         <a href="/">Back to Library</a>
         <a class="secondary" href="/album/{}?renderer_location={}">View Album</a>
         <a class="secondary" href="/stream/track/{}" target="_blank" rel="noreferrer">Preview Stream</a>
+        <a class="secondary" href="{}">Queue Track</a>
         <a href="{}">Play On Renderer</a>
       </div>
     </header>
@@ -1983,6 +2346,7 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
         html_escape(&track.album_id),
         html_escape(&renderer_location),
         html_escape(&track.id),
+        html_escape(&queue_url),
         html_escape(&play_url),
         inferred_rows,
         artwork_html,
@@ -2037,7 +2401,7 @@ fn render_track_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
     );
 
     format!(
-        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
+        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
         json_escape(&track.id),
         json_escape(&track.album_id),
         json_escape(&track.title),
@@ -2045,6 +2409,7 @@ fn render_track_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
         json_escape(&track.album),
         option_u32_json(track.disc_number),
         option_u32_json(track.track_number),
+        option_u64_json(track.duration_seconds),
         json_escape(&track.relative_path),
         json_escape(&track.path.display().to_string()),
         json_escape(&track.mime_type),
@@ -2082,7 +2447,7 @@ fn render_tracks_json(state: &ServiceState) -> String {
                 .map(|_| format!("/artwork/track/{}", track.id))
                 .unwrap_or_default();
             format!(
-                r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"path":"{}","mime_type":"{}","size":{},"artwork_url":"{}"}}"#,
+                r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"path":"{}","mime_type":"{}","size":{},"artwork_url":"{}"}}"#,
                 json_escape(&track.id),
                 json_escape(&track.album_id),
                 json_escape(&track.title),
@@ -2090,6 +2455,7 @@ fn render_tracks_json(state: &ServiceState) -> String {
                 json_escape(&track.album),
                 option_u32_json(track.disc_number),
                 option_u32_json(track.track_number),
+                option_u64_json(track.duration_seconds),
                 json_escape(&track.relative_path),
                 json_escape(&track.mime_type),
                 track.file_size,
@@ -2124,6 +2490,84 @@ fn render_albums_json(state: &ServiceState) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("[{entries}]")
+}
+
+fn render_queue_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let renderer_location = state
+        .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
+    let session = state.playback_session(&renderer_location);
+    let Some(queue) = state.queue_snapshot(&renderer_location) else {
+        let session_json = session.map_or_else(
+            || "null".to_string(),
+            |session| {
+                format!(
+                    r#"{{"transport_state":"{}","queue_entry_id":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{}}}"#,
+                    json_escape(&session.transport_state),
+                    option_i64_json(session.queue_entry_id),
+                    option_u64_json(session.position_seconds),
+                    option_u64_json(session.duration_seconds),
+                    session.last_observed_unix,
+                    option_string_json(session.last_error.as_deref()),
+                )
+            },
+        );
+        return format!(
+            r#"{{"renderer_location":"{}","status":"empty","entries":[],"session":{}}}"#,
+            json_escape(&renderer_location),
+            session_json,
+        );
+    };
+
+    let entries = queue
+        .entries
+        .iter()
+        .map(|entry| {
+            let track = state.find_track(&entry.track_id);
+            format!(
+                r#"{{"id":{},"position":{},"track_id":"{}","album_id":{},"source_kind":"{}","source_ref":{},"entry_status":"{}","started_unix":{},"completed_unix":{},"title":{},"artist":{},"album":{},"duration_seconds":{}}}"#,
+                entry.id,
+                entry.position,
+                json_escape(&entry.track_id),
+                option_string_json(entry.album_id.as_deref()),
+                json_escape(&entry.source_kind),
+                option_string_json(entry.source_ref.as_deref()),
+                json_escape(&entry.entry_status),
+                option_i64_json(entry.started_unix),
+                option_i64_json(entry.completed_unix),
+                option_string_json(track.as_ref().map(|track| track.title.as_str())),
+                option_string_json(track.as_ref().map(|track| track.artist.as_str())),
+                option_string_json(track.as_ref().map(|track| track.album.as_str())),
+                option_u64_json(track.and_then(|track| track.duration_seconds)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let session_json = session.map_or_else(
+        || "null".to_string(),
+        |session| {
+            format!(
+                r#"{{"transport_state":"{}","queue_entry_id":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{}}}"#,
+                json_escape(&session.transport_state),
+                option_i64_json(session.queue_entry_id),
+                option_u64_json(session.position_seconds),
+                option_u64_json(session.duration_seconds),
+                session.last_observed_unix,
+                option_string_json(session.last_error.as_deref()),
+            )
+        },
+    );
+
+    format!(
+        r#"{{"renderer_location":"{}","name":"{}","status":"{}","version":{},"updated_unix":{},"current_entry_id":{},"entries":[{}],"session":{}}}"#,
+        json_escape(&queue.renderer_location),
+        json_escape(&queue.name),
+        json_escape(&queue.status),
+        queue.version,
+        queue.updated_unix,
+        option_i64_json(queue.current_entry_id),
+        entries,
+        session_json,
+    )
 }
 
 fn render_discovery_json(state: &ServiceState) -> String {
@@ -2206,6 +2650,7 @@ impl Database {
                     album TEXT NOT NULL,
                     disc_number INTEGER,
                     track_number INTEGER,
+                    duration_seconds INTEGER,
                     relative_path TEXT NOT NULL,
                     path TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
@@ -2228,12 +2673,46 @@ impl Database {
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS playback_queues (
+                    renderer_location TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    current_entry_id INTEGER,
+                    status TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    updated_unix INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS queue_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    renderer_location TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    track_id TEXT NOT NULL,
+                    album_id TEXT,
+                    source_kind TEXT NOT NULL,
+                    source_ref TEXT,
+                    entry_status TEXT NOT NULL,
+                    started_unix INTEGER,
+                    completed_unix INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS playback_sessions (
+                    renderer_location TEXT PRIMARY KEY,
+                    queue_entry_id INTEGER,
+                    transport_state TEXT NOT NULL,
+                    current_track_uri TEXT,
+                    position_seconds INTEGER,
+                    duration_seconds INTEGER,
+                    last_observed_unix INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT
+                );
                 "#,
             )
             .map_err(db_error)?;
         ensure_column(&connection, "tracks", "album_id", "TEXT")?;
         ensure_column(&connection, "tracks", "disc_number", "INTEGER")?;
         ensure_column(&connection, "tracks", "track_number", "INTEGER")?;
+        ensure_column(&connection, "tracks", "duration_seconds", "INTEGER")?;
         ensure_column(&connection, "tracks", "artwork_cache_key", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_source", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_mime_type", "TEXT")?;
@@ -2249,8 +2728,8 @@ impl Database {
         let mut statement = connection
             .prepare(
                 "SELECT id, album_id, title, artist, album, disc_number, track_number,
-                        relative_path, path, mime_type, file_size, artwork_cache_key,
-                        artwork_source, artwork_mime_type
+                        duration_seconds, relative_path, path, mime_type, file_size,
+                        artwork_cache_key, artwork_source, artwork_mime_type
                  FROM tracks
                  ORDER BY artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
             )
@@ -2269,14 +2748,15 @@ impl Database {
                     album,
                     disc_number: row.get(5)?,
                     track_number: row.get(6)?,
-                    relative_path: row.get(7)?,
-                    path: PathBuf::from(row.get::<_, String>(8)?),
-                    mime_type: row.get(9)?,
-                    file_size: row.get(10)?,
+                    duration_seconds: row.get(7)?,
+                    relative_path: row.get(8)?,
+                    path: PathBuf::from(row.get::<_, String>(9)?),
+                    mime_type: row.get(10)?,
+                    file_size: row.get(11)?,
                     artwork: match (
-                        row.get::<_, Option<String>>(11)?,
                         row.get::<_, Option<String>>(12)?,
                         row.get::<_, Option<String>>(13)?,
+                        row.get::<_, Option<String>>(14)?,
                     ) {
                         (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
                             cache_key,
@@ -2308,9 +2788,9 @@ impl Database {
                 .prepare(
                     "INSERT INTO tracks
                      (id, album_id, title, artist, album, disc_number, track_number,
-                      relative_path, path, mime_type, file_size, artwork_cache_key,
-                      artwork_source, artwork_mime_type)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      duration_seconds, relative_path, path, mime_type, file_size,
+                      artwork_cache_key, artwork_source, artwork_mime_type)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
@@ -2333,6 +2813,7 @@ impl Database {
                         track.album,
                         track.disc_number,
                         track.track_number,
+                        track.duration_seconds,
                         track.relative_path,
                         track.path.display().to_string(),
                         track.mime_type,
@@ -2387,6 +2868,29 @@ impl Database {
         Ok(renderers)
     }
 
+    fn load_renderer(&self, location: &str) -> io::Result<Option<RendererRecord>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT location, name, manufacturer, model_name, av_transport_control_url, last_seen_unix
+                 FROM renderers
+                 WHERE location = ?",
+                [location],
+                |row| {
+                    Ok(RendererRecord {
+                        location: row.get(0)?,
+                        name: row.get(1)?,
+                        manufacturer: row.get(2)?,
+                        model_name: row.get(3)?,
+                        av_transport_control_url: row.get(4)?,
+                        last_seen_unix: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_error)
+    }
+
     fn upsert_renderer(&self, renderer: &RendererRecord) -> io::Result<()> {
         let connection = self.connection()?;
         connection
@@ -2435,6 +2939,574 @@ impl Database {
             )
             .optional()
             .map_err(db_error)
+    }
+
+    fn load_queue(&self, renderer_location: &str) -> io::Result<Option<PlaybackQueue>> {
+        let connection = self.connection()?;
+        let queue_row = connection
+            .query_row(
+                "SELECT renderer_location, name, current_entry_id, status, version, updated_unix
+                 FROM playback_queues
+                 WHERE renderer_location = ?",
+                [renderer_location],
+                |row| {
+                    Ok(PlaybackQueue {
+                        renderer_location: row.get(0)?,
+                        name: row.get(1)?,
+                        current_entry_id: row.get(2)?,
+                        status: row.get(3)?,
+                        version: row.get(4)?,
+                        updated_unix: row.get(5)?,
+                        entries: Vec::new(),
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_error)?;
+
+        let Some(mut queue) = queue_row else {
+            return Ok(None);
+        };
+
+        let mut statement = connection
+            .prepare(
+                "SELECT id, position, track_id, album_id, source_kind, source_ref,
+                        entry_status, started_unix, completed_unix
+                 FROM queue_entries
+                 WHERE renderer_location = ?
+                 ORDER BY position ASC, id ASC",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([renderer_location], |row| {
+                Ok(QueueEntry {
+                    id: row.get(0)?,
+                    position: row.get(1)?,
+                    track_id: row.get(2)?,
+                    album_id: row.get(3)?,
+                    source_kind: row.get(4)?,
+                    source_ref: row.get(5)?,
+                    entry_status: row.get(6)?,
+                    started_unix: row.get(7)?,
+                    completed_unix: row.get(8)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        for row in rows {
+            queue.entries.push(row.map_err(db_error)?);
+        }
+
+        Ok(Some(queue))
+    }
+
+    fn load_playback_session(
+        &self,
+        renderer_location: &str,
+    ) -> io::Result<Option<PlaybackSession>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT renderer_location, queue_entry_id, transport_state, current_track_uri,
+                        position_seconds, duration_seconds, last_observed_unix, last_error
+                 FROM playback_sessions
+                 WHERE renderer_location = ?",
+                [renderer_location],
+                |row| {
+                    Ok(PlaybackSession {
+                        renderer_location: row.get(0)?,
+                        queue_entry_id: row.get(1)?,
+                        transport_state: row.get(2)?,
+                        current_track_uri: row.get(3)?,
+                        position_seconds: row.get::<_, Option<u64>>(4)?,
+                        duration_seconds: row.get::<_, Option<u64>>(5)?,
+                        last_observed_unix: row.get(6)?,
+                        last_error: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_error)
+    }
+
+    fn replace_queue(
+        &self,
+        renderer_location: &str,
+        name: &str,
+        entries: &[QueueMutationEntry],
+    ) -> io::Result<PlaybackQueue> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let current_version = transaction
+            .query_row(
+                "SELECT version FROM playback_queues WHERE renderer_location = ?",
+                [renderer_location],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(db_error)?
+            .unwrap_or(0);
+        transaction
+            .execute(
+                "DELETE FROM queue_entries WHERE renderer_location = ?",
+                [renderer_location],
+            )
+            .map_err(db_error)?;
+
+        let mut current_entry_id = None;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO queue_entries
+                     (renderer_location, position, track_id, album_id, source_kind, source_ref,
+                      entry_status, started_unix, completed_unix)
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)",
+                )
+                .map_err(db_error)?;
+            for (index, entry) in entries.iter().enumerate() {
+                statement
+                    .execute(params![
+                        renderer_location,
+                        i64::try_from(index + 1).unwrap_or(i64::MAX),
+                        entry.track_id,
+                        entry.album_id,
+                        entry.source_kind,
+                        entry.source_ref,
+                    ])
+                    .map_err(db_error)?;
+                if index == 0 {
+                    current_entry_id = Some(transaction.last_insert_rowid());
+                }
+            }
+        }
+
+        transaction
+            .execute(
+                "INSERT INTO playback_queues
+                 (renderer_location, name, current_entry_id, status, version, updated_unix)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    name = excluded.name,
+                    current_entry_id = excluded.current_entry_id,
+                    status = excluded.status,
+                    version = excluded.version,
+                    updated_unix = excluded.updated_unix",
+                params![
+                    renderer_location,
+                    name,
+                    current_entry_id,
+                    if entries.is_empty() { "empty" } else { "ready" },
+                    current_version + 1,
+                    now_unix_timestamp(),
+                ],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM playback_sessions WHERE renderer_location = ?",
+                [renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+
+        self.load_queue(renderer_location)?
+            .ok_or_else(|| io::Error::other("queue disappeared after replace"))
+    }
+
+    fn append_queue_entries(
+        &self,
+        renderer_location: &str,
+        name: &str,
+        entries: &[QueueMutationEntry],
+    ) -> io::Result<PlaybackQueue> {
+        if entries.is_empty() {
+            return self
+                .load_queue(renderer_location)?
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queue does not exist"));
+        }
+
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let current_version = transaction
+            .query_row(
+                "SELECT version FROM playback_queues WHERE renderer_location = ?",
+                [renderer_location],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(db_error)?
+            .unwrap_or(0);
+        let max_position = transaction
+            .query_row(
+                "SELECT MAX(position) FROM queue_entries WHERE renderer_location = ?",
+                [renderer_location],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(db_error)?
+            .unwrap_or(0);
+        let mut first_inserted_id = None;
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO queue_entries
+                     (renderer_location, position, track_id, album_id, source_kind, source_ref,
+                      entry_status, started_unix, completed_unix)
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL)",
+                )
+                .map_err(db_error)?;
+            for (index, entry) in entries.iter().enumerate() {
+                statement
+                    .execute(params![
+                        renderer_location,
+                        max_position + i64::try_from(index + 1).unwrap_or(i64::MAX),
+                        entry.track_id,
+                        entry.album_id,
+                        entry.source_kind,
+                        entry.source_ref,
+                    ])
+                    .map_err(db_error)?;
+                if index == 0 {
+                    first_inserted_id = Some(transaction.last_insert_rowid());
+                }
+            }
+        }
+
+        let existing_current_entry_id = transaction
+            .query_row(
+                "SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?",
+                [renderer_location],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(db_error)?
+            .flatten();
+        transaction
+            .execute(
+                "INSERT INTO playback_queues
+                 (renderer_location, name, current_entry_id, status, version, updated_unix)
+                 VALUES (?, ?, ?, 'ready', ?, ?)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    name = excluded.name,
+                    current_entry_id = COALESCE(playback_queues.current_entry_id, excluded.current_entry_id),
+                    status = CASE
+                        WHEN playback_queues.status = 'playing' THEN playback_queues.status
+                        ELSE excluded.status
+                    END,
+                    version = excluded.version,
+                    updated_unix = excluded.updated_unix",
+                params![
+                    renderer_location,
+                    name,
+                    existing_current_entry_id.or(first_inserted_id),
+                    current_version + 1,
+                    now_unix_timestamp(),
+                ],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+
+        self.load_queue(renderer_location)?
+            .ok_or_else(|| io::Error::other("queue disappeared after append"))
+    }
+
+    fn clear_queue(&self, renderer_location: &str) -> io::Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM queue_entries WHERE renderer_location = ?",
+                [renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM playback_queues WHERE renderer_location = ?",
+                [renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM playback_sessions WHERE renderer_location = ?",
+                [renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+        Ok(())
+    }
+
+    fn mark_queue_play_started(
+        &self,
+        renderer_location: &str,
+        queue_entry_id: i64,
+        current_track_uri: &str,
+        duration_seconds: Option<u64>,
+    ) -> io::Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let now = now_unix_timestamp();
+        transaction
+            .execute(
+                "UPDATE queue_entries
+                 SET entry_status = 'playing', started_unix = COALESCE(started_unix, ?), completed_unix = NULL
+                 WHERE id = ?",
+                params![now, queue_entry_id],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "UPDATE queue_entries
+                 SET entry_status = CASE
+                    WHEN id = ? THEN entry_status
+                    WHEN completed_unix IS NOT NULL THEN 'completed'
+                    ELSE 'pending'
+                 END
+                 WHERE renderer_location = ?",
+                params![queue_entry_id, renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "UPDATE playback_queues
+                 SET current_entry_id = ?, status = 'playing', updated_unix = ?, version = version + 1
+                 WHERE renderer_location = ?",
+                params![queue_entry_id, now, renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (?, ?, 'PLAYING', ?, 0, ?, ?, NULL)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    queue_entry_id = excluded.queue_entry_id,
+                    transport_state = excluded.transport_state,
+                    current_track_uri = excluded.current_track_uri,
+                    position_seconds = excluded.position_seconds,
+                    duration_seconds = excluded.duration_seconds,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![
+                    renderer_location,
+                    queue_entry_id,
+                    current_track_uri,
+                    duration_seconds,
+                    now
+                ],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+        Ok(())
+    }
+
+    fn mark_queue_play_error(
+        &self,
+        renderer_location: &str,
+        queue_entry_id: Option<i64>,
+        error: &str,
+    ) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (?, ?, 'ERROR', NULL, NULL, NULL, ?, ?)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    queue_entry_id = excluded.queue_entry_id,
+                    transport_state = excluded.transport_state,
+                    current_track_uri = excluded.current_track_uri,
+                    position_seconds = excluded.position_seconds,
+                    duration_seconds = excluded.duration_seconds,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![
+                    renderer_location,
+                    queue_entry_id,
+                    now_unix_timestamp(),
+                    error
+                ],
+            )
+            .map_err(db_error)?;
+        connection
+            .execute(
+                "UPDATE playback_queues
+                 SET status = 'error', updated_unix = ?, version = version + 1
+                 WHERE renderer_location = ?",
+                params![now_unix_timestamp(), renderer_location],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn record_transport_snapshot(
+        &self,
+        renderer_location: &str,
+        transport_state: &str,
+        current_track_uri: Option<&str>,
+        position_seconds: Option<u64>,
+        duration_seconds: Option<u64>,
+    ) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (
+                    ?,
+                    (SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?),
+                    ?, ?, ?, ?, ?, NULL
+                 )
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    transport_state = excluded.transport_state,
+                    current_track_uri = excluded.current_track_uri,
+                    position_seconds = excluded.position_seconds,
+                    duration_seconds = excluded.duration_seconds,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![
+                    renderer_location,
+                    renderer_location,
+                    transport_state,
+                    current_track_uri,
+                    position_seconds,
+                    duration_seconds,
+                    now_unix_timestamp(),
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn record_transport_poll_error(&self, renderer_location: &str, error: &str) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (
+                    ?,
+                    (SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?),
+                    'ERROR', NULL, NULL, NULL, ?, ?
+                 )
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    transport_state = excluded.transport_state,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![
+                    renderer_location,
+                    renderer_location,
+                    now_unix_timestamp(),
+                    error
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    fn advance_queue_after_completion(&self, renderer_location: &str) -> io::Result<Option<i64>> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let current_entry_id = transaction
+            .query_row(
+                "SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?",
+                [renderer_location],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(db_error)?
+            .flatten();
+        let Some(current_entry_id) = current_entry_id else {
+            transaction.commit().map_err(db_error)?;
+            return Ok(None);
+        };
+
+        let now = now_unix_timestamp();
+        transaction
+            .execute(
+                "UPDATE queue_entries
+                 SET entry_status = 'completed',
+                     completed_unix = COALESCE(completed_unix, ?)
+                 WHERE id = ?",
+                params![now, current_entry_id],
+            )
+            .map_err(db_error)?;
+
+        let next_entry_id = transaction
+            .query_row(
+                "SELECT id
+                 FROM queue_entries
+                 WHERE renderer_location = ?
+                   AND position > (
+                       SELECT position FROM queue_entries WHERE id = ?
+                   )
+                 ORDER BY position ASC, id ASC
+                 LIMIT 1",
+                params![renderer_location, current_entry_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+
+        transaction
+            .execute(
+                "UPDATE playback_queues
+                 SET current_entry_id = ?, status = ?, updated_unix = ?, version = version + 1
+                 WHERE renderer_location = ?",
+                params![
+                    next_entry_id,
+                    if next_entry_id.is_some() {
+                        "ready"
+                    } else {
+                        "completed"
+                    },
+                    now,
+                    renderer_location
+                ],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "UPDATE playback_sessions
+                 SET queue_entry_id = ?, transport_state = ?, current_track_uri = NULL,
+                     position_seconds = NULL, duration_seconds = NULL, last_observed_unix = ?, last_error = NULL
+                 WHERE renderer_location = ?",
+                params![
+                    next_entry_id,
+                    if next_entry_id.is_some() {
+                        "READY"
+                    } else {
+                        "COMPLETED"
+                    },
+                    now,
+                    renderer_location
+                ],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+        Ok(next_entry_id)
+    }
+
+    fn list_playing_queue_renderers(&self) -> io::Result<Vec<String>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT renderer_location
+                 FROM playback_queues
+                 WHERE status = 'playing'
+                 ORDER BY updated_unix ASC, renderer_location ASC",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(db_error)?;
+        let mut locations = Vec::new();
+        for row in rows {
+            locations.push(row.map_err(db_error)?);
+        }
+        Ok(locations)
     }
 }
 
@@ -2516,6 +3588,17 @@ impl ServiceState {
         self.tracks_for_album(album_id).into_iter().next()
     }
 
+    fn queue_snapshot(&self, renderer_location: &str) -> Option<PlaybackQueue> {
+        self.database.load_queue(renderer_location).ok().flatten()
+    }
+
+    fn playback_session(&self, renderer_location: &str) -> Option<PlaybackSession> {
+        self.database
+            .load_playback_session(renderer_location)
+            .ok()
+            .flatten()
+    }
+
     fn rescan(&self) -> io::Result<usize> {
         let library = scan_library(&self.config.library_path, &self.config.config_path)?;
         let track_count = library.tracks.len();
@@ -2590,6 +3673,208 @@ impl ServiceState {
             .artwork
             .as_ref()
             .map(|artwork| artwork_cache_path(&self.config.config_path, &artwork.cache_key))
+    }
+
+    fn av_transport_control_url(&self, renderer_location: &str) -> io::Result<String> {
+        if let Some(renderer) = self.database.load_renderer(renderer_location)? {
+            if let Some(control_url) = renderer.av_transport_control_url {
+                return Ok(control_url);
+            }
+        }
+
+        let renderer = inspect_renderer(renderer_location)?;
+        let _ = self.remember_renderer_details(
+            &renderer.location,
+            &renderer.friendly_name,
+            renderer.manufacturer.as_deref(),
+            renderer.model_name.as_deref(),
+            Some(&renderer.av_transport_control_url),
+        );
+        Ok(renderer.av_transport_control_url)
+    }
+
+    fn replace_queue_with_track(
+        &self,
+        renderer_location: &str,
+        track: &LibraryTrack,
+    ) -> io::Result<PlaybackQueue> {
+        self.database.replace_queue(
+            renderer_location,
+            &format!("Track: {}", track.title),
+            &[QueueMutationEntry {
+                track_id: track.id.clone(),
+                album_id: Some(track.album_id.clone()),
+                source_kind: "track".to_string(),
+                source_ref: Some(track.id.clone()),
+            }],
+        )
+    }
+
+    fn replace_queue_with_album(
+        &self,
+        renderer_location: &str,
+        album: &AlbumSummary,
+    ) -> io::Result<PlaybackQueue> {
+        let tracks = self.tracks_for_album(&album.id);
+        let entries = tracks
+            .into_iter()
+            .map(|track| QueueMutationEntry {
+                track_id: track.id,
+                album_id: Some(album.id.clone()),
+                source_kind: "album".to_string(),
+                source_ref: Some(album.id.clone()),
+            })
+            .collect::<Vec<_>>();
+        self.database
+            .replace_queue(renderer_location, &album.title, &entries)
+    }
+
+    fn append_track_to_queue(
+        &self,
+        renderer_location: &str,
+        track: &LibraryTrack,
+    ) -> io::Result<PlaybackQueue> {
+        self.database.append_queue_entries(
+            renderer_location,
+            &format!("Track: {}", track.title),
+            &[QueueMutationEntry {
+                track_id: track.id.clone(),
+                album_id: Some(track.album_id.clone()),
+                source_kind: "track".to_string(),
+                source_ref: Some(track.id.clone()),
+            }],
+        )
+    }
+
+    fn append_album_to_queue(
+        &self,
+        renderer_location: &str,
+        album: &AlbumSummary,
+    ) -> io::Result<PlaybackQueue> {
+        let tracks = self.tracks_for_album(&album.id);
+        let entries = tracks
+            .into_iter()
+            .map(|track| QueueMutationEntry {
+                track_id: track.id,
+                album_id: Some(album.id.clone()),
+                source_kind: "album".to_string(),
+                source_ref: Some(album.id.clone()),
+            })
+            .collect::<Vec<_>>();
+        self.database
+            .append_queue_entries(renderer_location, &album.title, &entries)
+    }
+
+    fn clear_queue(&self, renderer_location: &str) -> io::Result<()> {
+        self.database.clear_queue(renderer_location)
+    }
+
+    fn start_current_queue_entry(
+        &self,
+        renderer_location: &str,
+    ) -> io::Result<(LibraryTrack, i64, String, String)> {
+        let queue = self
+            .database
+            .load_queue(renderer_location)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queue not found"))?;
+        let current_entry = queue
+            .entries
+            .iter()
+            .find(|entry| Some(entry.id) == queue.current_entry_id)
+            .or_else(|| queue.entries.first())
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queue is empty"))?;
+        let track = self
+            .find_track(&current_entry.track_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queued track not found"))?;
+        let stream_url = format!(
+            "{}/stream/track/{}",
+            self.config.base_url.trim_end_matches('/'),
+            track.id
+        );
+        let resource = StreamResource {
+            stream_url: stream_url.clone(),
+            mime_type: track.mime_type.clone(),
+            title: track.title.clone(),
+        };
+
+        match play_stream(renderer_location, &resource) {
+            Ok(renderer) => {
+                let _ = self.remember_renderer_details(
+                    &renderer.location,
+                    &renderer.friendly_name,
+                    renderer.manufacturer.as_deref(),
+                    renderer.model_name.as_deref(),
+                    Some(&renderer.av_transport_control_url),
+                );
+                self.database.mark_queue_play_started(
+                    renderer_location,
+                    current_entry.id,
+                    &stream_url,
+                    track.duration_seconds,
+                )?;
+                Ok((
+                    track,
+                    current_entry.id,
+                    renderer.friendly_name,
+                    renderer.location,
+                ))
+            }
+            Err(error) => {
+                let _ = self.database.mark_queue_play_error(
+                    renderer_location,
+                    Some(current_entry.id),
+                    &error.to_string(),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn poll_active_queues(&self) -> io::Result<()> {
+        for renderer_location in self.database.list_playing_queue_renderers()? {
+            if let Err(error) = self.poll_renderer_queue(&renderer_location) {
+                eprintln!("queue poll failed for {renderer_location}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_renderer_queue(&self, renderer_location: &str) -> io::Result<()> {
+        let queue = match self.queue_snapshot(renderer_location) {
+            Some(queue) => queue,
+            None => return Ok(()),
+        };
+        let session = self.playback_session(renderer_location);
+        let control_url = self.av_transport_control_url(renderer_location)?;
+        let snapshot = match get_transport_snapshot(&control_url) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = self
+                    .database
+                    .record_transport_poll_error(renderer_location, &error.to_string());
+                return Err(error);
+            }
+        };
+
+        self.database.record_transport_snapshot(
+            renderer_location,
+            &snapshot.transport_info.transport_state,
+            snapshot.position_info.track_uri.as_deref(),
+            snapshot.position_info.rel_time_seconds,
+            snapshot.position_info.track_duration_seconds,
+        )?;
+
+        if should_auto_advance(&queue, session.as_ref(), &snapshot, self) {
+            let next_entry_id = self
+                .database
+                .advance_queue_after_completion(renderer_location)?;
+            if next_entry_id.is_some() {
+                let _ = self.start_current_queue_entry(renderer_location)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -2762,6 +4047,7 @@ fn scan_dir(
             album,
             disc_number,
             track_number,
+            duration_seconds: parsed_tags.duration_seconds,
             relative_path,
             path,
             mime_type,
@@ -3163,6 +4449,10 @@ fn read_lofty_track_tags(path: &Path) -> ParsedTrackTags {
         album: tag.album().map(|value| value.into_owned()),
         disc_number: tag.disk(),
         track_number: tag.track(),
+        duration_seconds: {
+            let seconds = tagged_file.properties().duration().as_secs();
+            if seconds == 0 { None } else { Some(seconds) }
+        },
     }
 }
 
@@ -3618,6 +4908,89 @@ fn option_u32_json(value: Option<u32>) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+fn option_u64_json(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn option_i64_json(value: Option<i64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn option_string_json(value: Option<&str>) -> String {
+    value
+        .map(|value| format!(r#""{}""#, json_escape(value)))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn format_duration_seconds(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+fn should_auto_advance(
+    queue: &PlaybackQueue,
+    session: Option<&PlaybackSession>,
+    snapshot: &TransportSnapshot,
+    state: &ServiceState,
+) -> bool {
+    if !matches!(
+        snapshot.transport_info.transport_state.as_str(),
+        "STOPPED" | "NO_MEDIA_PRESENT"
+    ) {
+        return false;
+    }
+
+    let session = match session {
+        Some(session) => session,
+        None => return false,
+    };
+    let current_entry_id = match queue.current_entry_id {
+        Some(current_entry_id) => current_entry_id,
+        None => return false,
+    };
+    let current_entry = match queue
+        .entries
+        .iter()
+        .find(|entry| entry.id == current_entry_id)
+    {
+        Some(current_entry) => current_entry,
+        None => return false,
+    };
+    if current_entry.entry_status != "playing" {
+        return false;
+    }
+
+    let track = match state.find_track(&current_entry.track_id) {
+        Some(track) => track,
+        None => return false,
+    };
+    let expected_duration = snapshot
+        .position_info
+        .track_duration_seconds
+        .or(track.duration_seconds)
+        .or(session.duration_seconds);
+    let observed_position = session
+        .position_seconds
+        .into_iter()
+        .chain(snapshot.position_info.rel_time_seconds)
+        .max()
+        .unwrap_or(0);
+
+    expected_duration
+        .map(|duration| observed_position.saturating_add(2) >= duration)
+        .unwrap_or(false)
+}
+
 fn parse_range_header(value: &str, total_len: u64) -> Option<(u64, u64)> {
     let bytes = value.strip_prefix("bytes=")?;
     let (start_text, end_text) = bytes.split_once('-')?;
@@ -3666,12 +5039,17 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        LibraryTrack, artwork_name_priority, cleanup_track_label, compare_track_album_order,
+        Database, LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
+        ServiceState, artwork_name_priority, cleanup_track_label, compare_track_album_order,
         decode_id3v1_text, infer_artist_and_album, infer_disc_and_track_numbers,
         infer_image_mime_from_bytes, parse_query_string, parse_range_header,
-        parse_vorbis_comment_block, should_skip_entry, stable_album_id, stable_track_id,
+        parse_vorbis_comment_block, should_auto_advance, should_skip_entry, stable_album_id,
+        stable_track_id,
     };
+    use musicd_core::AppConfig;
+    use musicd_upnp::{PositionInfo, TransportInfo, TransportSnapshot};
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_standard_http_ranges() {
@@ -3810,6 +5188,116 @@ mod tests {
     }
 
     #[test]
+    fn queue_replace_and_append_round_trip() {
+        let config_path = temp_config_path("queue-round-trip");
+        let database = Database::open(&config_path).expect("database should open");
+
+        let replaced = database
+            .replace_queue(
+                "http://renderer.local/description.xml",
+                "Album Queue",
+                &[QueueMutationEntry {
+                    track_id: "track-1".to_string(),
+                    album_id: Some("album-1".to_string()),
+                    source_kind: "album".to_string(),
+                    source_ref: Some("album-1".to_string()),
+                }],
+            )
+            .expect("queue replace should succeed");
+        assert_eq!(replaced.entries.len(), 1);
+        assert_eq!(replaced.current_entry_id, Some(replaced.entries[0].id));
+
+        let appended = database
+            .append_queue_entries(
+                "http://renderer.local/description.xml",
+                "Album Queue",
+                &[QueueMutationEntry {
+                    track_id: "track-2".to_string(),
+                    album_id: Some("album-1".to_string()),
+                    source_kind: "album".to_string(),
+                    source_ref: Some("album-1".to_string()),
+                }],
+            )
+            .expect("queue append should succeed");
+        assert_eq!(appended.entries.len(), 2);
+        assert_eq!(appended.entries[0].track_id, "track-1");
+        assert_eq!(appended.entries[1].track_id, "track-2");
+
+        let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
+    fn auto_advance_requires_stop_near_end() {
+        let state = sample_state(vec![sample_track("track-1", Some(1), Some(1), "Track 1")]);
+        let queue = PlaybackQueue {
+            renderer_location: "http://renderer.local/description.xml".to_string(),
+            name: "Queue".to_string(),
+            current_entry_id: Some(1),
+            status: "playing".to_string(),
+            version: 1,
+            updated_unix: 0,
+            entries: vec![QueueEntry {
+                id: 1,
+                position: 1,
+                track_id: "track-1".to_string(),
+                album_id: Some("album".to_string()),
+                source_kind: "track".to_string(),
+                source_ref: Some("track-1".to_string()),
+                entry_status: "playing".to_string(),
+                started_unix: Some(1),
+                completed_unix: None,
+            }],
+        };
+        let session = PlaybackSession {
+            renderer_location: queue.renderer_location.clone(),
+            queue_entry_id: Some(1),
+            transport_state: "PLAYING".to_string(),
+            current_track_uri: Some("http://musicd.local/stream/track/track-1".to_string()),
+            position_seconds: Some(179),
+            duration_seconds: Some(180),
+            last_observed_unix: 1,
+            last_error: None,
+        };
+        let snapshot = TransportSnapshot {
+            transport_info: TransportInfo {
+                transport_state: "STOPPED".to_string(),
+                transport_status: Some("OK".to_string()),
+                current_speed: Some("1".to_string()),
+            },
+            position_info: PositionInfo {
+                track_uri: Some("http://musicd.local/stream/track/track-1".to_string()),
+                rel_time_seconds: Some(179),
+                track_duration_seconds: Some(180),
+            },
+        };
+        assert!(should_auto_advance(
+            &queue,
+            Some(&session),
+            &snapshot,
+            &state
+        ));
+
+        let early_session = PlaybackSession {
+            position_seconds: Some(40),
+            ..session
+        };
+        let early_snapshot = TransportSnapshot {
+            transport_info: snapshot.transport_info.clone(),
+            position_info: PositionInfo {
+                track_uri: snapshot.position_info.track_uri.clone(),
+                rel_time_seconds: Some(40),
+                track_duration_seconds: snapshot.position_info.track_duration_seconds,
+            },
+        };
+        assert!(!should_auto_advance(
+            &queue,
+            Some(&early_session),
+            &early_snapshot,
+            &state
+        ));
+    }
+
+    #[test]
     fn prioritizes_cover_art_names() {
         assert!(
             artwork_name_priority("cover.jpg") < artwork_name_priority("folder.jpg"),
@@ -3853,11 +5341,40 @@ mod tests {
             album: "Album".to_string(),
             disc_number,
             track_number,
+            duration_seconds: Some(180),
             relative_path: format!("{title}.flac"),
             path: PathBuf::from(format!("/music/{title}.flac")),
             mime_type: "audio/flac".to_string(),
             file_size: 123,
             artwork: None,
         }
+    }
+
+    fn sample_state(tracks: Vec<LibraryTrack>) -> ServiceState {
+        let config_path = temp_config_path("service-state");
+        let database = Database::open(&config_path).expect("database should open");
+        ServiceState {
+            config: AppConfig {
+                library_path: PathBuf::from("/music"),
+                config_path,
+                bind_address: "0.0.0.0:7878".to_string(),
+                base_url: "http://192.168.1.10:7878".to_string(),
+                discovery_timeout_ms: 1500,
+                default_renderer_location: None,
+            },
+            database,
+            library: std::sync::Mutex::new(super::Library {
+                scan_root: PathBuf::from("/music"),
+                tracks,
+            }),
+        }
+    }
+
+    fn temp_config_path(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should move forward")
+            .as_nanos();
+        std::env::temp_dir().join(format!("musicd-{label}-{unique}"))
     }
 }
