@@ -2136,6 +2136,91 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       padding: 0 1rem 1.5rem;
       overflow-x: auto;
     }}
+    .library-grid {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.8fr) minmax(18rem, 0.95fr);
+      gap: 1rem;
+      align-items: start;
+      padding: 0 1rem 1.5rem;
+    }}
+    .library-grid .table-wrap {{
+      padding: 0;
+      overflow-x: auto;
+    }}
+    .track-sidebar {{
+      position: sticky;
+      top: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.74);
+      padding: 1rem;
+      box-shadow: 0 10px 24px rgba(31, 26, 23, 0.08);
+    }}
+    .track-sidebar h3 {{
+      margin: 0 0 0.35rem;
+      font-size: 1.15rem;
+    }}
+    .track-sidebar p {{
+      color: var(--muted);
+    }}
+    .track-sidebar .sidebar-artwork {{
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: cover;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(31, 26, 23, 0.06);
+      margin-bottom: 0.9rem;
+    }}
+    .track-sidebar .sidebar-artwork.placeholder {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
+    .track-sidebar-meta,
+    .track-sidebar-tags {{
+      display: grid;
+      gap: 0.6rem;
+      margin-top: 0.85rem;
+    }}
+    .track-sidebar-meta-row,
+    .track-sidebar-tag {{
+      display: grid;
+      gap: 0.22rem;
+      padding-top: 0.6rem;
+      border-top: 1px solid var(--line);
+    }}
+    .track-sidebar-label {{
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
+    .track-sidebar-value,
+    .track-sidebar-tag-value {{
+      word-break: break-word;
+      font-size: 0.95rem;
+    }}
+    .track-sidebar-tag-value code,
+    .track-sidebar-meta-row code {{
+      font-family: "SFMono-Regular", Menlo, monospace;
+      font-size: 0.92em;
+    }}
+    .track-sidebar-actions {{
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-top: 1rem;
+    }}
+    .track-sidebar-note-list {{
+      margin: 0.75rem 0 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+    }}
     .section-heading {{
       margin: 0;
       padding: 0 2rem 1rem;
@@ -2245,6 +2330,15 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       }}
       .table-wrap {{
         overflow-x: visible;
+      }}
+      .library-grid {{
+        grid-template-columns: 1fr;
+        padding-left: 1rem;
+        padding-right: 1rem;
+      }}
+      .track-sidebar {{
+        position: static;
+        order: -1;
       }}
       table {{
         display: block;
@@ -2363,25 +2457,134 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       </table>
     </section>
     <h2 class="section-heading">Tracks</h2>
-    <section class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Play</th>
-            <th>Cover</th>
-            <th>Title</th>
-            <th>Artist</th>
-            <th>Album</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="track_table">
-          {}
-        </tbody>
-      </table>
+    <section class="library-grid">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Play</th>
+              <th>Cover</th>
+              <th>Title</th>
+              <th>Artist</th>
+              <th>Album</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="track_table">
+            {}
+          </tbody>
+        </table>
+      </div>
+      <aside id="track_detail_panel" class="track-sidebar">
+        <h3>Track Tags</h3>
+        <p>Select a track to inspect its embedded tags, artwork source, and file metadata here.</p>
+      </aside>
     </section>
   </main>
   <script>
+    function escapeHtml(value) {{
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }}
+
+    function formatDuration(seconds) {{
+      if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {{
+        return 'Unknown';
+      }}
+      const total = Number(seconds);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const secs = total % 60;
+      if (hours > 0) {{
+        return `${{hours}}:${{String(minutes).padStart(2, '0')}}:${{String(secs).padStart(2, '0')}}`;
+      }}
+      return `${{minutes}}:${{String(secs).padStart(2, '0')}}`;
+    }}
+
+    function renderTrackDetailPanel(track) {{
+      const host = document.getElementById('track_detail_panel');
+      if (!host) {{
+        return;
+      }}
+      if (!track || track.error) {{
+        host.innerHTML = `<h3>Track Tags</h3><p>${{escapeHtml(track?.error || 'Track details are unavailable.')}}</p>`;
+        return;
+      }}
+
+      const artworkHtml = track.artwork
+        ? `<img class="sidebar-artwork" src="${{escapeHtml(track.artwork.url)}}" alt="Artwork for ${{escapeHtml(track.album)}}">`
+        : '<div class="sidebar-artwork placeholder">No Art</div>';
+
+      const metaRows = [
+        {{ label: 'Artist', value: track.artist || 'Unknown' }},
+        {{ label: 'Album', value: track.album || 'Unknown' }},
+        {{ label: 'Disc / Track', value: `${{track.disc_number ?? '?'}} / ${{track.track_number ?? '?'}}` }},
+        {{ label: 'Duration', value: formatDuration(track.duration_seconds) }},
+        {{ label: 'Format', value: track.mime_type || 'Unknown' }},
+        {{ label: 'Parser', value: track.embedded_metadata?.parser || 'Unknown' }},
+        {{ label: 'Path', value: `<code>${{escapeHtml(track.relative_path || track.absolute_path || '')}}</code>`, isHtml: true }},
+      ]
+        .map((item) => `
+          <div class="track-sidebar-meta-row">
+            <div class="track-sidebar-label">${{escapeHtml(item.label)}}</div>
+            <div class="track-sidebar-value">${{item.isHtml ? item.value : escapeHtml(item.value)}}</div>
+          </div>
+        `)
+        .join('');
+
+      const tagRows = (track.embedded_metadata?.fields || []).length
+        ? track.embedded_metadata.fields
+            .map((field) => `
+              <div class="track-sidebar-tag">
+                <div class="track-sidebar-label">${{escapeHtml(field.key)}}</div>
+                <div class="track-sidebar-tag-value"><code>${{escapeHtml(field.value)}}</code></div>
+              </div>
+            `)
+            .join('')
+        : '<div class="track-sidebar-tag"><div class="track-sidebar-value">No embedded tag fields were parsed for this file.</div></div>';
+
+      const notesHtml = (track.embedded_metadata?.notes || []).length
+        ? `<ul class="track-sidebar-note-list">${{track.embedded_metadata.notes.map((note) => `<li>${{escapeHtml(note)}}</li>`).join('')}}</ul>`
+        : '';
+
+      host.innerHTML = `
+        <h3>${{escapeHtml(track.title || 'Track Tags')}}</h3>
+        <p>${{escapeHtml(track.artist || 'Unknown artist')}} • ${{escapeHtml(track.album || 'Unknown album')}}</p>
+        ${{artworkHtml}}
+        <div class="track-sidebar-actions">
+          <a class="button-link secondary" href="/track/${{encodeURIComponent(track.id)}}" target="_blank" rel="noreferrer">Full Inspector</a>
+          <a class="button-link secondary" href="/stream/track/${{encodeURIComponent(track.id)}}" target="_blank" rel="noreferrer">Preview</a>
+        </div>
+        <div class="track-sidebar-meta">${{metaRows}}</div>
+        <div class="track-sidebar-tags">${{tagRows}}</div>
+        ${{notesHtml}}
+      `;
+    }}
+
+    async function loadTrackDetails(trackId) {{
+      if (!trackId) {{
+        return;
+      }}
+      try {{
+        const response = await fetch(`/api/tracks/${{encodeURIComponent(trackId)}}`);
+        const payload = await response.json();
+        renderTrackDetailPanel(payload);
+      }} catch (_error) {{
+        renderTrackDetailPanel({{ error: 'Failed to load track details.' }});
+      }}
+    }}
+
+    function syncSelectedTrackSidebar() {{
+      const selected = document.querySelector('input[name="track_id"]:checked');
+      if (selected) {{
+        loadTrackDetails(selected.value);
+      }}
+    }}
+
     async function discoverRenderers() {{
       const select = document.getElementById('renderer_discovery');
       select.innerHTML = '<option value="">Discovering renderers...</option>';
@@ -2488,8 +2691,15 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       }}
     }}
 
+    document.addEventListener('change', (event) => {{
+      if (event.target instanceof HTMLInputElement && event.target.name === 'track_id') {{
+        loadTrackDetails(event.target.value);
+      }}
+    }});
+
     refreshQueuePanel();
     startQueueRefresh();
+    syncSelectedTrackSidebar();
   </script>
 </body>
 </html>"#,
