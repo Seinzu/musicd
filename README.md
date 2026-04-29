@@ -122,3 +122,5 @@ cargo run -p musicd -- play-file \
 ## Run on Unraid
 
 See [docs/unraid.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/unraid.md) for the recommended Docker packaging model, path mappings, environment variables, and example Unraid settings.
+
+If you publish the image through GitHub Actions, the workflow emits both moving tags for deployment (`edge` from `main`, `latest` from release tags) and immutable tags (`sha-<commit>` plus semver release tags). For Unraid, use a moving tag in the template if you want the WebUI to notice updates.
