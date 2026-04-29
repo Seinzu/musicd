@@ -432,6 +432,7 @@ fn run_play_url(renderer_location: &str, stream_url: &str, title: &str) -> io::R
         stream_url: stream_url.to_string(),
         mime_type: infer_mime_type(Path::new(stream_url)).to_string(),
         title: title.to_string(),
+        album_art_url: None,
     };
 
     let renderer = play_stream(renderer_location, &resource)?;
@@ -481,6 +482,7 @@ fn run_play_file(
         stream_url: stream_url.clone(),
         mime_type: infer_mime_type(path.as_path()).to_string(),
         title: title.to_string(),
+        album_art_url: None,
     };
 
     let renderer = play_stream(renderer_location, &resource)?;
@@ -5598,6 +5600,13 @@ impl ServiceState {
             ),
             mime_type: track.mime_type.clone(),
             title: track.title.clone(),
+            album_art_url: track.artwork.as_ref().map(|_| {
+                format!(
+                    "{}/artwork/track/{}",
+                    self.config.base_url.trim_end_matches('/'),
+                    track.id
+                )
+            }),
         }
     }
 
