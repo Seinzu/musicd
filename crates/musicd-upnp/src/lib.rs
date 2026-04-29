@@ -244,6 +244,38 @@ pub fn play(control_url: &str) -> io::Result<()> {
         Some(body.as_bytes()),
     )?;
 
+    if expect_successful_soap("Play", response.clone()).is_ok() {
+        return Ok(());
+    }
+
+    if is_transition_not_available_fault(&response) {
+        std::thread::sleep(Duration::from_millis(250));
+        if transport_is_starting_or_playing(control_url) {
+            return Ok(());
+        }
+
+        let retry = http_request(
+            "POST",
+            control_url,
+            &[
+                ("Content-Type", "text/xml; charset=\"utf-8\""),
+                (
+                    "SOAPACTION",
+                    "\"urn:schemas-upnp-org:service:AVTransport:1#Play\"",
+                ),
+            ],
+            Some(body.as_bytes()),
+        )?;
+        if expect_successful_soap("Play", retry.clone()).is_ok()
+            || (is_transition_not_available_fault(&retry)
+                && transport_is_starting_or_playing(control_url))
+        {
+            return Ok(());
+        }
+
+        return expect_successful_soap("Play", retry);
+    }
+
     expect_successful_soap("Play", response)
 }
 
@@ -362,6 +394,33 @@ fn expect_successful_soap(action: &str, response: HttpResponse) -> io::Result<()
             preview.trim()
         ),
     ))
+}
+
+fn transport_is_starting_or_playing(control_url: &str) -> bool {
+    matches!(
+        get_transport_info(control_url)
+            .map(|info| info.transport_state)
+            .ok()
+            .as_deref(),
+        Some("PLAYING" | "TRANSITIONING")
+    )
+}
+
+fn is_transition_not_available_fault(response: &HttpResponse) -> bool {
+    if !(400..600).contains(&response.status_code) {
+        return false;
+    }
+
+    let body = match std::str::from_utf8(&response.body) {
+        Ok(body) => body,
+        Err(_) => return false,
+    };
+
+    matches!(extract_first_tag(body, "errorCode"), Some("701"))
+        || matches!(
+            extract_first_tag(body, "errorDescription"),
+            Some("Transition not available")
+        )
 }
 
 fn parse_ssdp_response(response: &str) -> Option<DiscoveryResponse> {
@@ -840,10 +899,11 @@ mod tests {
     use super::{
         build_get_position_info_envelope, build_get_transport_info_envelope, build_play_envelope,
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
-        decode_chunked_body, parse_device_description, parse_http_response, parse_http_url,
-        parse_position_info_response, parse_ssdp_response, parse_transport_info_response,
-        resolve_url,
+        decode_chunked_body, is_transition_not_available_fault, parse_device_description,
+        parse_http_response, parse_http_url, parse_position_info_response, parse_ssdp_response,
+        parse_transport_info_response, resolve_url,
     };
+    use std::collections::HashMap;
 
     #[test]
     fn set_transport_uri_contains_escaped_values() {
@@ -1023,5 +1083,30 @@ mod tests {
             resolve_url("http://192.168.1.55:49152/base", "upnp/control"),
             "http://192.168.1.55:49152/base/upnp/control"
         );
+    }
+
+    #[test]
+    fn detects_transition_not_available_fault() {
+        let response = super::HttpResponse {
+            status_code: 500,
+            reason_phrase: "SOAP Error".to_string(),
+            headers: HashMap::new(),
+            body: br#"<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <s:Fault>
+      <detail>
+        <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+          <errorCode>701</errorCode>
+          <errorDescription>Transition not available</errorDescription>
+        </UPnPError>
+      </detail>
+    </s:Fault>
+  </s:Body>
+</s:Envelope>"#
+                .to_vec(),
+        };
+
+        assert!(is_transition_not_available_fault(&response));
     }
 }
