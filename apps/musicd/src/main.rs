@@ -1773,7 +1773,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
             url_encode(&renderer_location)
         );
         album_rows.push_str(&format!(
-            "<tr data-search=\"{}\"><td>{}</td><td><a class=\"album-link\" href=\"{}\">{}</a></td><td>{}</td><td>{}</td><td><form class=\"inline-form\" action=\"/play-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Album</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/play-next-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Next</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/append-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue Album</button></form> <span class=\"muted-sep\">|</span> <a href=\"{}\">View Album</a></td></tr>",
+            "<tr data-search=\"{}\"><td data-label=\"Cover\">{}</td><td data-label=\"Album\"><a class=\"album-link\" href=\"{}\">{}</a></td><td data-label=\"Artist\">{}</td><td data-label=\"Tracks\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><form class=\"inline-form\" action=\"/play-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Album</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/play-next-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Next</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/append-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue Album</button></form> <span class=\"muted-sep\">|</span> <a href=\"{}\">View Album</a></td></tr>",
             html_escape(&search_text),
             cover_html,
             html_escape(&album_url),
@@ -1809,7 +1809,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
             })
             .unwrap_or_else(|| "<div class=\"cover-thumb placeholder\">No Art</div>".to_string());
         rows.push_str(&format!(
-            "<tr data-search=\"{}\"><td><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{}\"></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><form class=\"inline-form\" action=\"/queue/play-next-track\" method=\"get\"><input type=\"hidden\" name=\"track_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Next</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/append-track\" method=\"get\"><input type=\"hidden\" name=\"track_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue</button></form> <span class=\"muted-sep\">|</span> <a href=\"/stream/track/{}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
+            "<tr data-search=\"{}\"><td data-label=\"Play\"><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{}\"></td><td data-label=\"Cover\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td><td data-label=\"Album\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><form class=\"inline-form\" action=\"/queue/play-next-track\" method=\"get\"><input type=\"hidden\" name=\"track_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Next</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/append-track\" method=\"get\"><input type=\"hidden\" name=\"track_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue</button></form> <span class=\"muted-sep\">|</span> <a href=\"/stream/track/{}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
             html_escape(&search_text),
             html_escape(&track.id),
             cover_html,
@@ -2060,6 +2060,9 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     .inline-form {{
       display: inline;
     }}
+    .actions-cell {{
+      line-height: 1.9;
+    }}
     @media (max-width: 720px) {{
       main {{
         width: calc(100vw - 1rem);
@@ -2070,6 +2073,24 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         padding-left: 1rem;
         padding-right: 1rem;
       }}
+      .section-heading, .section-note, .banner {{
+        margin-left: 1rem;
+        margin-right: 1rem;
+        padding-left: 0;
+        padding-right: 0;
+      }}
+      .control-row {{
+        align-items: stretch;
+      }}
+      .control-row > button,
+      .control-row > .button-link,
+      .control-row > select,
+      .control-row > input[type="text"] {{
+        width: 100%;
+      }}
+      button, .button-link {{
+        min-height: 2.9rem;
+      }}
       label {{
         min-width: auto;
         width: 100%;
@@ -2077,6 +2098,70 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       input[type="text"], select {{
         min-width: 0;
         width: 100%;
+      }}
+      .table-wrap {{
+        overflow-x: visible;
+      }}
+      table {{
+        display: block;
+        margin-top: 0;
+      }}
+      thead {{
+        display: none;
+      }}
+      tbody {{
+        display: grid;
+        gap: 0.9rem;
+      }}
+      tbody tr {{
+        display: grid;
+        gap: 0.65rem;
+        padding: 0.95rem;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.7);
+      }}
+      tbody tr:hover {{
+        background: rgba(255, 255, 255, 0.82);
+      }}
+      td {{
+        display: grid;
+        grid-template-columns: 5.8rem minmax(0, 1fr);
+        gap: 0.75rem;
+        padding: 0;
+        border: 0;
+        align-items: start;
+      }}
+      td::before {{
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }}
+      td[data-label="Cover"]::before,
+      td[data-label="Play"]::before {{
+        align-self: center;
+      }}
+      .cover-thumb {{
+        width: 3.5rem;
+        height: 3.5rem;
+      }}
+      .actions-cell {{
+        line-height: 1.6;
+      }}
+      .actions-cell .inline-form {{
+        display: block;
+        margin-bottom: 0.45rem;
+      }}
+      .actions-cell button,
+      .actions-cell a {{
+        width: 100%;
+        display: inline-flex;
+        justify-content: center;
+      }}
+      .muted-sep {{
+        display: none;
       }}
     }}
   </style>
@@ -2340,7 +2425,7 @@ fn render_queue_panel(
                 actions.join(" <span class=\"muted-sep\">|</span> ")
             };
             format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td data-label=\"Position\">{}</td><td data-label=\"Marker\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Album\">{}</td><td data-label=\"Duration\">{}</td><td data-label=\"Actions\" class=\"actions-cell\">{}</td></tr>",
                 entry.position,
                 html_escape(marker),
                 html_escape(&title),
@@ -2473,7 +2558,7 @@ fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
                 url_encode(&album.id)
             );
             format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td><a href=\"{}\">Play Track</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Play Next</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Queue</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}?renderer_location={}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
+                "<tr><td data-label=\"Position\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><a href=\"{}\">Play Track</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Play Next</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Queue</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}?renderer_location={}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
                 html_escape(&format_track_position(track.disc_number, track.track_number)),
                 html_escape(&track.title),
                 html_escape(&track.artist),
@@ -2562,6 +2647,9 @@ fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
       flex-wrap: wrap;
       margin-top: 1rem;
     }}
+    .actions-cell {{
+      line-height: 1.8;
+    }}
     .actions a, .actions button {{
       text-decoration: none;
       color: white;
@@ -2614,6 +2702,63 @@ fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
     @media (max-width: 760px) {{
       .layout {{
         grid-template-columns: 1fr;
+      }}
+      main {{
+        width: calc(100vw - 1rem);
+        margin: 0.5rem auto 1rem;
+        border-radius: 18px;
+      }}
+      header, section {{
+        padding: 1rem;
+      }}
+      .actions a, .actions button {{
+        width: 100%;
+        justify-content: center;
+        text-align: center;
+      }}
+      table {{
+        display: block;
+      }}
+      thead {{
+        display: none;
+      }}
+      tbody {{
+        display: grid;
+        gap: 0.8rem;
+      }}
+      tbody tr {{
+        display: grid;
+        gap: 0.65rem;
+        padding: 0.9rem;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.72);
+      }}
+      th, td {{
+        padding: 0;
+        border: 0;
+      }}
+      td {{
+        display: grid;
+        grid-template-columns: 5.3rem minmax(0, 1fr);
+        gap: 0.7rem;
+      }}
+      td::before {{
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }}
+      .actions-cell a {{
+        display: block;
+        padding: 0.65rem 0.8rem;
+        border-radius: 12px;
+        margin-bottom: 0.4rem;
+        background: rgba(31, 26, 23, 0.08);
+      }}
+      .muted-sep {{
+        display: none;
       }}
     }}
   </style>
@@ -2883,6 +3028,9 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
       gap: 0.75rem;
       flex-wrap: wrap;
     }}
+    .metadata-table td {{
+      word-break: break-word;
+    }}
     .actions a {{
       text-decoration: none;
       color: white;
@@ -2901,6 +3049,49 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
       border: 1px solid var(--line);
       box-shadow: 0 14px 28px rgba(31, 26, 23, 0.12);
     }}
+    @media (max-width: 760px) {{
+      main {{
+        width: calc(100vw - 1rem);
+        margin: 0.5rem auto 1rem;
+        border-radius: 18px;
+      }}
+      header, section {{
+        padding: 1rem;
+      }}
+      .actions a {{
+        width: 100%;
+        text-align: center;
+      }}
+      table {{
+        display: block;
+      }}
+      tbody {{
+        display: grid;
+        gap: 0.8rem;
+      }}
+      tr {{
+        display: grid;
+        gap: 0.4rem;
+        padding: 0.9rem;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.72);
+      }}
+      th, td {{
+        display: block;
+        width: auto;
+        padding: 0;
+        border: 0;
+      }}
+      th {{
+        font-size: 0.82rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }}
+      code {{
+        white-space: pre-wrap;
+      }}
+    }}
   </style>
 </head>
 <body>
@@ -2918,13 +3109,13 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
     </header>
     <section>
       <h2>Inferred Library Metadata</h2>
-      <table>{}</table>
+      <table class="metadata-table"><tbody>{}</tbody></table>
     </section>
     {}
     <section>
       <h2>Embedded File Metadata</h2>
       <p>Parser: {}</p>
-      <table>{}</table>
+      <table class="metadata-table"><tbody>{}</tbody></table>
       {}
     </section>
   </main>
