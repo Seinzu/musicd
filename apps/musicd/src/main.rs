@@ -487,6 +487,16 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/queue/panel") | ("HEAD", "/queue/panel") => {
+            let body = render_queue_panel_html(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "text/html; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         _ if request.path.starts_with("/api/tracks/") => {
             if request.method != "GET" && request.method != "HEAD" {
                 return respond_method_not_allowed(writer);
@@ -2186,7 +2196,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     <section class="controls">
       <form id="playback_form" class="control-row" action="/play" method="get">
         <label for="renderer_location">Renderer LOCATION</label>
-        <input id="renderer_location" name="renderer_location" type="text" value="{}" placeholder="http://192.168.1.55:49152/description.xml" oninput="syncRendererFields(this.value)">
+        <input id="renderer_location" name="renderer_location" type="text" value="{}" placeholder="http://192.168.1.55:49152/description.xml" oninput="syncRendererFields(this.value)" onchange="refreshQueuePanel()">
         <button type="submit">Play Selected Track</button>
       </form>
       <div class="control-row">
@@ -2204,7 +2214,9 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       </form>
     </section>
     {}
-    {}
+    <div id="queue_panel_host">
+      {}
+    </div>
     <h2 class="section-heading">Albums</h2>
     <p class="section-note">Album playback fills the queue in disc/track order and will advance automatically. Use the queue controls to pause, stop, or skip.</p>
     {}
@@ -2272,6 +2284,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       if (select.value) {{
         input.value = select.value;
         syncRendererFields(select.value);
+        refreshQueuePanel();
       }}
     }}
 
@@ -2286,6 +2299,57 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
       }}
     }}
 
+    let queueRefreshTimer = null;
+    let queueRefreshInFlight = false;
+
+    async function refreshQueuePanel() {{
+      const rendererInput = document.getElementById('renderer_location');
+      const host = document.getElementById('queue_panel_host');
+      if (!rendererInput || !host) {{
+        return;
+      }}
+      const rendererLocation = rendererInput.value.trim();
+      if (queueRefreshInFlight) {{
+        return;
+      }}
+      queueRefreshInFlight = true;
+      try {{
+        const url = rendererLocation
+          ? `/queue/panel?renderer_location=${{encodeURIComponent(rendererLocation)}}`
+          : '/queue/panel';
+        const response = await fetch(url, {{
+          headers: {{
+            'X-Requested-With': 'musicd-live-refresh'
+          }}
+        }});
+        if (!response.ok) {{
+          return;
+        }}
+        host.innerHTML = await response.text();
+        syncRendererFields(rendererLocation);
+      }} catch (_error) {{
+      }} finally {{
+        queueRefreshInFlight = false;
+      }}
+    }}
+
+    function startQueueRefresh() {{
+      if (queueRefreshTimer !== null) {{
+        clearInterval(queueRefreshTimer);
+      }}
+      document.addEventListener('visibilitychange', () => {{
+        if (!document.hidden) {{
+          refreshQueuePanel();
+        }}
+      }});
+      queueRefreshTimer = setInterval(() => {{
+        if (document.hidden) {{
+          return;
+        }}
+        refreshQueuePanel();
+      }}, 2500);
+    }}
+
     function filterTracks() {{
       const needle = document.getElementById('track_filter').value.trim().toLowerCase();
       const rows = document.querySelectorAll('#track_table tr');
@@ -2297,6 +2361,9 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         row.style.display = !needle || row.dataset.search.includes(needle) ? '' : 'none';
       }}
     }}
+
+    refreshQueuePanel();
+    startQueueRefresh();
   </script>
 </body>
 </html>"#,
@@ -2507,6 +2574,13 @@ fn render_queue_panel(
         html_escape(renderer_location),
         rows,
     )
+}
+
+fn render_queue_panel_html(state: &ServiceState, request: &HttpRequest) -> String {
+    let renderer_location = state
+        .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
+    let tracks = state.tracks_snapshot();
+    render_queue_panel(state, &renderer_location, &tracks)
 }
 
 fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> String {
