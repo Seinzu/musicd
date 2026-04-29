@@ -26,6 +26,7 @@ That is much more realistic than trying to recreate all of Roon's RAAT-like beha
 - `docs/queue-plan.md`: queue and transport progression plan
 - `docs/unraid.md`: Docker packaging and Unraid deployment notes
 - `apps/musicd`: starter service binary
+- `apps/musicd-android`: Android controller scaffold and API client shell
 - `crates/musicd-core`: domain models and shared config
 - `crates/musicd-upnp`: UPnP transport helpers for renderer integration
 

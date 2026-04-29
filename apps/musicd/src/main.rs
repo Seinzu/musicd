@@ -4309,23 +4309,7 @@ fn render_album_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
         .unwrap_or_default();
     let tracks_json = tracks
         .into_iter()
-        .map(|track| {
-            let artwork_url = track
-                .artwork
-                .as_ref()
-                .map(|_| format!("/artwork/track/{}", track.id));
-            format!(
-                r#"{{"id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{}}}"#,
-                json_escape(&track.id),
-                json_escape(&track.title),
-                json_escape(&track.artist),
-                json_escape(&track.album),
-                option_u32_json(track.disc_number),
-                option_u32_json(track.track_number),
-                option_u64_json(track.duration_seconds),
-                option_string_json(artwork_url.as_deref()),
-            )
-        })
+        .map(|track| track_summary_json(&track))
         .collect::<Vec<_>>()
         .join(",");
     format!(
