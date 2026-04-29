@@ -49,6 +49,16 @@ struct AlbumSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ArtistSummary {
+    id: String,
+    name: String,
+    album_count: usize,
+    track_count: usize,
+    artwork_track_id: Option<String>,
+    first_album_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TrackArtwork {
     cache_key: String,
     source: String,
@@ -648,6 +658,16 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/api/artists") | ("HEAD", "/api/artists") => {
+            let body = render_artists_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         ("POST", "/api/renderers/discover") => {
             handle_api_renderer_discover_request(writer, request, &state)
         }
@@ -711,6 +731,19 @@ fn handle_service_request(
                 return respond_method_not_allowed(writer);
             }
             let body = render_album_detail_json(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        _ if request.path.starts_with("/api/artists/") => {
+            if request.method != "GET" && request.method != "HEAD" {
+                return respond_method_not_allowed(writer);
+            }
+            let body = render_artist_detail_json(&state, request);
             respond_text(
                 writer,
                 "200 OK",
@@ -4275,22 +4308,17 @@ fn render_albums_json(state: &ServiceState) -> String {
     let albums = state.albums_snapshot();
     let entries = albums
         .into_iter()
-        .map(|album| {
-            let artwork_url = album
-                .artwork_track_id
-                .as_ref()
-                .map(|track_id| format!("/artwork/track/{track_id}"))
-                .unwrap_or_default();
-            format!(
-                r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}"}}"#,
-                json_escape(&album.id),
-                json_escape(&album.title),
-                json_escape(&album.artist),
-                album.track_count,
-                json_escape(&album.first_track_id),
-                json_escape(&artwork_url),
-            )
-        })
+        .map(|album| album_summary_json(&album))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{entries}]")
+}
+
+fn render_artists_json(state: &ServiceState) -> String {
+    let artists = state.artists_snapshot();
+    let entries = artists
+        .into_iter()
+        .map(|artist| artist_summary_json(&artist))
         .collect::<Vec<_>>()
         .join(",");
     format!("[{entries}]")
@@ -4321,6 +4349,70 @@ fn render_album_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
         json_escape(&album.first_track_id),
         json_escape(&artwork_url),
         tracks_json,
+    )
+}
+
+fn album_summary_json(album: &AlbumSummary) -> String {
+    let artwork_url = album
+        .artwork_track_id
+        .as_ref()
+        .map(|track_id| format!("/artwork/track/{track_id}"))
+        .unwrap_or_default();
+    format!(
+        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}"}}"#,
+        json_escape(&album.id),
+        json_escape(&album.title),
+        json_escape(&album.artist),
+        album.track_count,
+        json_escape(&album.first_track_id),
+        json_escape(&artwork_url),
+    )
+}
+
+fn artist_summary_json(artist: &ArtistSummary) -> String {
+    format!(
+        r#"{{"id":"{}","name":"{}","album_count":{},"track_count":{},"artwork_url":{},"first_album_id":"{}"}}"#,
+        json_escape(&artist.id),
+        json_escape(&artist.name),
+        artist.album_count,
+        artist.track_count,
+        option_string_json(
+            artist
+                .artwork_track_id
+                .as_ref()
+                .map(|track_id| format!("/artwork/track/{track_id}"))
+                .as_deref()
+        ),
+        json_escape(&artist.first_album_id),
+    )
+}
+
+fn render_artist_detail_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let artist_id = request.path.trim_start_matches("/api/artists/");
+    let Some(artist) = state.find_artist(artist_id) else {
+        return r#"{"error":"artist not found"}"#.to_string();
+    };
+    let albums = state.albums_for_artist(&artist.id);
+    let albums_json = albums
+        .into_iter()
+        .map(|album| album_summary_json(&album))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{"id":"{}","name":"{}","album_count":{},"track_count":{},"artwork_url":{},"first_album_id":"{}","albums":[{}]}}"#,
+        json_escape(&artist.id),
+        json_escape(&artist.name),
+        artist.album_count,
+        artist.track_count,
+        option_string_json(
+            artist
+                .artwork_track_id
+                .as_ref()
+                .map(|track_id| format!("/artwork/track/{track_id}"))
+                .as_deref()
+        ),
+        json_escape(&artist.first_album_id),
+        albums_json,
     )
 }
 
@@ -6107,6 +6199,13 @@ impl ServiceState {
             .unwrap_or_default()
     }
 
+    fn artists_snapshot(&self) -> Vec<ArtistSummary> {
+        self.library
+            .lock()
+            .map(|library| build_artist_summaries(&library.tracks))
+            .unwrap_or_default()
+    }
+
     fn find_track(&self, track_id: &str) -> Option<LibraryTrack> {
         self.library.lock().ok().and_then(|library| {
             library
@@ -6121,6 +6220,12 @@ impl ServiceState {
         self.albums_snapshot()
             .into_iter()
             .find(|album| album.id == album_id)
+    }
+
+    fn find_artist(&self, artist_id: &str) -> Option<ArtistSummary> {
+        self.artists_snapshot()
+            .into_iter()
+            .find(|artist| artist.id == artist_id)
     }
 
     fn tracks_for_album(&self, album_id: &str) -> Vec<LibraryTrack> {
@@ -6141,6 +6246,16 @@ impl ServiceState {
 
     fn first_track_for_album(&self, album_id: &str) -> Option<LibraryTrack> {
         self.tracks_for_album(album_id).into_iter().next()
+    }
+
+    fn albums_for_artist(&self, artist_id: &str) -> Vec<AlbumSummary> {
+        let Some(artist) = self.find_artist(artist_id) else {
+            return Vec::new();
+        };
+        self.albums_snapshot()
+            .into_iter()
+            .filter(|album| album.artist == artist.name)
+            .collect()
     }
 
     fn queue_snapshot(&self, renderer_location: &str) -> Option<PlaybackQueue> {
@@ -6948,6 +7063,41 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
     albums
 }
 
+fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
+    let albums = build_album_summaries(tracks);
+    let mut track_counts = HashMap::<String, usize>::new();
+    for track in tracks {
+        *track_counts.entry(track.artist.clone()).or_default() += 1;
+    }
+
+    let mut grouped = HashMap::<String, Vec<AlbumSummary>>::new();
+    for album in albums {
+        grouped.entry(album.artist.clone()).or_default().push(album);
+    }
+
+    let mut artists = grouped
+        .into_iter()
+        .filter_map(|(artist_name, mut artist_albums)| {
+            artist_albums.sort_by(compare_albums);
+            let first_album = artist_albums.first()?.clone();
+            let artwork_track_id = artist_albums
+                .iter()
+                .find_map(|album| album.artwork_track_id.clone());
+            Some(ArtistSummary {
+                id: stable_artist_id(&artist_name),
+                name: artist_name.clone(),
+                album_count: artist_albums.len(),
+                track_count: track_counts.get(&artist_name).copied().unwrap_or(0),
+                artwork_track_id,
+                first_album_id: first_album.id,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    artists.sort_by(compare_artists);
+    artists
+}
+
 fn compare_library_tracks(left: &LibraryTrack, right: &LibraryTrack) -> std::cmp::Ordering {
     (
         left.artist.as_str(),
@@ -6988,6 +7138,10 @@ fn compare_albums(left: &AlbumSummary, right: &AlbumSummary) -> std::cmp::Orderi
         right.title.as_str(),
         right.id.as_str(),
     ))
+}
+
+fn compare_artists(left: &ArtistSummary, right: &ArtistSummary) -> std::cmp::Ordering {
+    (left.name.as_str(), left.id.as_str()).cmp(&(right.name.as_str(), right.id.as_str()))
 }
 
 fn numeric_sort_key(value: Option<u32>) -> (bool, u32) {
@@ -7329,6 +7483,10 @@ fn stable_album_id(artist: &str, album: &str) -> String {
         artist.trim().to_ascii_lowercase(),
         album.trim().to_ascii_lowercase()
     ))
+}
+
+fn stable_artist_id(artist: &str) -> String {
+    stable_track_id(&format!("artist:{}", artist.trim().to_ascii_lowercase()))
 }
 
 fn infer_disc_and_track_numbers(relative_components: &[String]) -> (Option<u32>, Option<u32>) {
