@@ -129,6 +129,16 @@ struct PlaybackSession {
     last_error: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackPlayRecord {
+    id: i64,
+    track_id: String,
+    renderer_location: String,
+    queue_entry_id: Option<i64>,
+    played_unix: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct QueueMutationEntry {
     track_id: String,
@@ -4769,6 +4779,20 @@ impl Database {
                     last_observed_unix INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS track_play_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    track_id TEXT NOT NULL,
+                    renderer_location TEXT NOT NULL,
+                    queue_entry_id INTEGER,
+                    played_unix INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_track_play_history_track_id
+                ON track_play_history(track_id, played_unix DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_track_play_history_renderer
+                ON track_play_history(renderer_location, played_unix DESC);
                 "#,
             )
             .map_err(db_error)?;
@@ -5097,6 +5121,48 @@ impl Database {
             )
             .optional()
             .map_err(db_error)
+    }
+
+    #[allow(dead_code)]
+    fn count_track_plays(&self, track_id: &str) -> io::Result<u64> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM track_play_history WHERE track_id = ?",
+                [track_id],
+                |row| row.get::<_, u64>(0),
+            )
+            .map_err(db_error)
+    }
+
+    #[allow(dead_code)]
+    fn load_track_play_history(&self, track_id: &str) -> io::Result<Vec<TrackPlayRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, track_id, renderer_location, queue_entry_id, played_unix
+                 FROM track_play_history
+                 WHERE track_id = ?
+                 ORDER BY played_unix DESC, id DESC",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([track_id], |row| {
+                Ok(TrackPlayRecord {
+                    id: row.get(0)?,
+                    track_id: row.get(1)?,
+                    renderer_location: row.get(2)?,
+                    queue_entry_id: row.get(3)?,
+                    played_unix: row.get(4)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(db_error)?);
+        }
+        Ok(records)
     }
 
     fn replace_queue(
@@ -5608,6 +5674,7 @@ impl Database {
         &self,
         renderer_location: &str,
         queue_entry_id: i64,
+        track_id: &str,
         current_track_uri: &str,
         duration_seconds: Option<u64>,
     ) -> io::Result<()> {
@@ -5666,6 +5733,14 @@ impl Database {
                 ],
             )
             .map_err(db_error)?;
+        transaction
+            .execute(
+                "INSERT INTO track_play_history
+                 (track_id, renderer_location, queue_entry_id, played_unix)
+                 VALUES (?, ?, ?, ?)",
+                params![track_id, renderer_location, queue_entry_id, now],
+            )
+            .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
         Ok(())
     }
@@ -5674,6 +5749,7 @@ impl Database {
         &self,
         renderer_location: &str,
         queue_entry_id: i64,
+        track_id: &str,
         current_track_uri: &str,
         duration_seconds: Option<u64>,
     ) -> io::Result<()> {
@@ -5751,6 +5827,14 @@ impl Database {
                     duration_seconds,
                     now
                 ],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "INSERT INTO track_play_history
+                 (track_id, renderer_location, queue_entry_id, played_unix)
+                 VALUES (?, ?, ?, ?)",
+                params![track_id, renderer_location, queue_entry_id, now],
             )
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
@@ -6798,6 +6882,7 @@ impl ServiceState {
         self.database.adopt_next_queue_entry_as_current(
             renderer_location,
             next_entry.id,
+            &next_track.id,
             track_uri,
             next_track.duration_seconds,
         )?;
@@ -6849,6 +6934,7 @@ impl ServiceState {
                 self.database.mark_queue_play_started(
                     renderer_location,
                     current_entry.id,
+                    &track.id,
                     &stream_url,
                     track.duration_seconds,
                 )?;
@@ -8880,6 +8966,65 @@ mod tests {
         assert_eq!(artists[0].track_count, 2);
         assert_eq!(artists[0].album_count, 2);
         assert_eq!(artists[0].id, stable_artist_id("Radiohead"));
+    }
+
+    #[test]
+    fn records_track_play_history_per_started_entry() {
+        let config_path = temp_config_path("track-play-history");
+        let database = Database::open(&config_path).expect("database should open");
+        let queue = database
+            .replace_queue(
+                "renderer-1",
+                "Test Queue",
+                &[
+                    QueueMutationEntry {
+                        track_id: "track-1".to_string(),
+                        album_id: Some("album-1".to_string()),
+                        source_kind: "album".to_string(),
+                        source_ref: Some("album-1".to_string()),
+                    },
+                    QueueMutationEntry {
+                        track_id: "track-2".to_string(),
+                        album_id: Some("album-1".to_string()),
+                        source_kind: "album".to_string(),
+                        source_ref: Some("album-1".to_string()),
+                    },
+                ],
+            )
+            .expect("queue should be created");
+
+        let first_entry = queue.entries.first().expect("first entry").id;
+        let second_entry = queue.entries.get(1).expect("second entry").id;
+
+        database
+            .mark_queue_play_started(
+                "renderer-1",
+                first_entry,
+                "track-1",
+                "http://musicd.local/stream/track/track-1",
+                Some(180),
+            )
+            .expect("first play should be recorded");
+        database
+            .adopt_next_queue_entry_as_current(
+                "renderer-1",
+                second_entry,
+                "track-2",
+                "http://musicd.local/stream/track/track-2",
+                Some(200),
+            )
+            .expect("second play should be recorded");
+
+        assert_eq!(database.count_track_plays("track-1").unwrap_or(0), 1);
+        assert_eq!(database.count_track_plays("track-2").unwrap_or(0), 1);
+
+        let history = database
+            .load_track_play_history("track-2")
+            .expect("history should load");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].track_id, "track-2");
+        assert_eq!(history[0].renderer_location, "renderer-1");
+        assert_eq!(history[0].queue_entry_id, Some(second_entry));
     }
 
     fn sample_track(
