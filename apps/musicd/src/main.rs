@@ -385,11 +385,12 @@ fn run_serve() -> io::Result<()> {
 
     spawn_queue_worker(Arc::clone(&state));
 
-    println!("musicd service");
+    println!("{} service", config.instance_name);
     println!("Library path: {}", config.library_path.display());
     println!("Config path: {}", config.config_path.display());
     println!("Bind address: {}", config.bind_address);
     println!("HTTP base URL: {}", config.base_url);
+    println!("Instance name: {}", config.instance_name);
     println!("Indexed tracks: {track_count}");
     if let Some(renderer) = &config.default_renderer_location {
         println!("Default renderer: {renderer}");
@@ -634,6 +635,16 @@ fn handle_service_request(
         }
         ("GET", "/api/renderers") | ("HEAD", "/api/renderers") => {
             let body = render_renderers_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/api/server") | ("HEAD", "/api/server") => {
+            let body = render_server_json(&state);
             respond_text(
                 writer,
                 "200 OK",
@@ -2674,7 +2685,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>musicd</title>
+  <title>{}</title>
   <style>
     :root {{
       color-scheme: light;
@@ -3058,7 +3069,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
 <body>
   <main>
     <header>
-      <h1>musicd</h1>
+      <h1>{}</h1>
       <p class="meta">Library path: {}</p>
       <p class="meta">Indexed tracks: {}</p>
       <p class="meta">Stream base URL: {}</p>
@@ -3354,6 +3365,8 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
   </script>
 </body>
 </html>"#,
+        html_escape(&state.config.instance_name),
+        html_escape(&state.config.instance_name),
         html_escape(&library_path),
         tracks.len(),
         html_escape(&state.config.base_url),
@@ -4448,6 +4461,15 @@ fn render_renderers_json(state: &ServiceState) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("[{entries}]")
+}
+
+fn render_server_json(state: &ServiceState) -> String {
+    format!(
+        r#"{{"name":"{}","base_url":"{}","bind_address":"{}"}}"#,
+        json_escape(&state.config.instance_name),
+        json_escape(&state.config.base_url),
+        json_escape(&state.config.bind_address),
+    )
 }
 
 fn render_now_playing_json(state: &ServiceState, request: &HttpRequest) -> String {
@@ -9136,6 +9158,7 @@ mod tests {
         let database = Database::open(&config_path).expect("database should open");
         ServiceState {
             config: AppConfig {
+                instance_name: "musicd".to_string(),
                 library_path: PathBuf::from("/music"),
                 config_path,
                 bind_address: "0.0.0.0:7878".to_string(),

@@ -50,6 +50,7 @@ pub struct Renderer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfig {
+    pub instance_name: String,
     pub library_path: PathBuf,
     pub config_path: PathBuf,
     pub bind_address: String,
@@ -62,6 +63,11 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn from_env() -> Self {
         Self {
+            instance_name: std::env::var("MUSICD_INSTANCE_NAME")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "musicd".to_string()),
             library_path: std::env::var("MUSICD_LIBRARY_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/music")),
