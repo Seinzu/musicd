@@ -6249,12 +6249,12 @@ impl ServiceState {
     }
 
     fn albums_for_artist(&self, artist_id: &str) -> Vec<AlbumSummary> {
-        let Some(artist) = self.find_artist(artist_id) else {
+        if self.find_artist(artist_id).is_none() {
             return Vec::new();
-        };
+        }
         self.albums_snapshot()
             .into_iter()
-            .filter(|album| album.artist == artist.name)
+            .filter(|album| stable_artist_id(&album.artist) == artist_id)
             .collect()
     }
 
@@ -7067,27 +7067,32 @@ fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
     let albums = build_album_summaries(tracks);
     let mut track_counts = HashMap::<String, usize>::new();
     for track in tracks {
-        *track_counts.entry(track.artist.clone()).or_default() += 1;
+        *track_counts
+            .entry(stable_artist_id(&track.artist))
+            .or_default() += 1;
     }
 
     let mut grouped = HashMap::<String, Vec<AlbumSummary>>::new();
     for album in albums {
-        grouped.entry(album.artist.clone()).or_default().push(album);
+        grouped
+            .entry(stable_artist_id(&album.artist))
+            .or_default()
+            .push(album);
     }
 
     let mut artists = grouped
         .into_iter()
-        .filter_map(|(artist_name, mut artist_albums)| {
+        .filter_map(|(artist_id, mut artist_albums)| {
             artist_albums.sort_by(compare_albums);
             let first_album = artist_albums.first()?.clone();
             let artwork_track_id = artist_albums
                 .iter()
                 .find_map(|album| album.artwork_track_id.clone());
             Some(ArtistSummary {
-                id: stable_artist_id(&artist_name),
-                name: artist_name.clone(),
+                id: artist_id.clone(),
+                name: first_album.artist.clone(),
                 album_count: artist_albums.len(),
-                track_count: track_counts.get(&artist_name).copied().unwrap_or(0),
+                track_count: track_counts.get(&artist_id).copied().unwrap_or(0),
                 artwork_track_id,
                 first_album_id: first_album.id,
             })
@@ -8311,13 +8316,14 @@ fn json_escape(value: &str) -> String {
 mod tests {
     use super::{
         Database, LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
-        RendererBackends, RendererKind, ServiceState, artwork_name_priority, cleanup_track_label,
-        compare_track_album_order, decode_id3v1_text, infer_artist_and_album,
-        infer_disc_and_track_numbers, infer_image_mime_from_bytes, next_queue_entry_after,
-        parse_query_string, parse_range_header, parse_request_form, parse_vorbis_comment_block,
+        RendererBackends, RendererKind, ServiceState, artwork_name_priority,
+        build_artist_summaries, cleanup_track_label, compare_track_album_order,
+        decode_id3v1_text, infer_artist_and_album, infer_disc_and_track_numbers,
+        infer_image_mime_from_bytes, next_queue_entry_after, parse_query_string,
+        parse_range_header, parse_request_form, parse_vorbis_comment_block,
         previous_queue_entry_before, queue_status_for_transport, renderer_kind_for_location,
         should_adopt_preloaded_next_entry, should_auto_advance, should_skip_entry, stable_album_id,
-        stable_track_id,
+        stable_artist_id, stable_track_id,
     };
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, TransportInfo, TransportSnapshot};
@@ -8855,6 +8861,25 @@ mod tests {
             Some("image/webp")
         );
         assert_eq!(infer_image_mime_from_bytes(b"not an image"), None);
+    }
+
+    #[test]
+    fn merges_artists_with_same_normalized_name() {
+        let mut first = sample_track("track-1", Some(1), Some(1), "Song A");
+        first.artist = "Radiohead".to_string();
+        first.album = "In Rainbows".to_string();
+        first.album_id = stable_album_id(&first.artist, &first.album);
+
+        let mut second = sample_track("track-2", Some(1), Some(1), "Song B");
+        second.artist = " radiohead ".to_string();
+        second.album = "Kid A".to_string();
+        second.album_id = stable_album_id(&second.artist, &second.album);
+
+        let artists = build_artist_summaries(&[first, second]);
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists[0].track_count, 2);
+        assert_eq!(artists[0].album_count, 2);
+        assert_eq!(artists[0].id, stable_artist_id("Radiohead"));
     }
 
     fn sample_track(
