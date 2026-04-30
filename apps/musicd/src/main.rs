@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -249,7 +249,11 @@ impl RendererBackend for UpnpRendererBackend {
         let renderer = inspect_renderer(renderer_location)?;
         Ok(RendererRecord {
             location: renderer_location.to_string(),
-            name: renderer.friendly_name,
+            name: normalized_renderer_name(
+                renderer_location,
+                &renderer.friendly_name,
+                renderer.model_name.as_deref(),
+            ),
             manufacturer: renderer.manufacturer,
             model_name: renderer.model_name,
             av_transport_control_url: Some(renderer.av_transport_control_url),
@@ -6390,9 +6394,28 @@ impl ServiceState {
     }
 
     fn remember_renderer_location(&self, location: &str) -> io::Result<()> {
+        if let Some(existing) = self.database.load_renderer(location)? {
+            if !renderer_name_looks_like_location(&existing.name, location) {
+                self.database.set_last_selected_renderer_location(location)?;
+                return Ok(());
+            }
+        }
+
+        if matches!(renderer_kind_for_location(location), RendererKind::Upnp) {
+            if let Ok(details) = inspect_renderer(location) {
+                return self.remember_renderer_details(
+                    location,
+                    &details.friendly_name,
+                    details.manufacturer.as_deref(),
+                    details.model_name.as_deref(),
+                    Some(&details.av_transport_control_url),
+                );
+            }
+        }
+
         let renderer = RendererRecord {
             location: location.to_string(),
-            name: location.to_string(),
+            name: renderer_location_host(location).unwrap_or(location).to_string(),
             manufacturer: None,
             model_name: None,
             av_transport_control_url: None,
@@ -6412,7 +6435,7 @@ impl ServiceState {
     ) -> io::Result<()> {
         let renderer = RendererRecord {
             location: location.to_string(),
-            name: name.to_string(),
+            name: normalized_renderer_name(location, name, model_name),
             manufacturer: manufacturer.map(ToString::to_string),
             model_name: model_name.map(ToString::to_string),
             av_transport_control_url: av_transport_control_url.map(ToString::to_string),
@@ -7596,6 +7619,64 @@ fn stable_album_id(artist: &str, album: &str) -> String {
 
 fn stable_artist_id(artist: &str) -> String {
     stable_track_id(&format!("artist:{}", artist.trim().to_ascii_lowercase()))
+}
+
+fn normalized_renderer_name(location: &str, name: &str, model_name: Option<&str>) -> String {
+    let trimmed_name = name.trim();
+    let trimmed_model = model_name.map(str::trim).filter(|value| !value.is_empty());
+
+    if renderer_name_looks_like_location(trimmed_name, location) {
+        return trimmed_model
+            .map(ToString::to_string)
+            .or_else(|| renderer_location_host(location).map(ToString::to_string))
+            .unwrap_or_else(|| location.to_string());
+    }
+
+    if trimmed_name.is_empty() {
+        return trimmed_model
+            .map(ToString::to_string)
+            .or_else(|| renderer_location_host(location).map(ToString::to_string))
+            .unwrap_or_else(|| location.to_string());
+    }
+
+    trimmed_name.to_string()
+}
+
+fn renderer_name_looks_like_location(name: &str, location: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed == location {
+        return true;
+    }
+    if trimmed.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+
+    renderer_location_host(location)
+        .map(|host| {
+            trimmed.eq_ignore_ascii_case(host)
+                || host.parse::<IpAddr>().is_ok() && trimmed.eq_ignore_ascii_case(host)
+        })
+        .unwrap_or(false)
+}
+
+fn renderer_location_host(location: &str) -> Option<&str> {
+    let remainder = location
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(location);
+    let authority = remainder.split('/').next()?.trim();
+    if authority.is_empty() {
+        return None;
+    }
+    let host = authority
+        .strip_prefix('[')
+        .and_then(|value| value.split_once(']').map(|(host, _)| host))
+        .unwrap_or_else(|| authority.split(':').next().unwrap_or(authority))
+        .trim();
+    if host.is_empty() { None } else { Some(host) }
 }
 
 fn infer_disc_and_track_numbers(relative_components: &[String]) -> (Option<u32>, Option<u32>) {
