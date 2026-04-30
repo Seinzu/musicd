@@ -13,6 +13,7 @@ import io.musicd.android.data.MutationResponseDto
 import io.musicd.android.data.NowPlayingDto
 import io.musicd.android.data.QueueDto
 import io.musicd.android.data.RendererDto
+import io.musicd.android.data.ServerInfoDto
 import io.musicd.android.data.TrackSummaryDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +42,7 @@ enum class LibrarySearchFacet {
 data class MusicdUiState(
     val serverInput: String = "",
     val baseUrl: String = "",
+    val serverName: String? = null,
     val connected: Boolean = false,
     val showServerEditor: Boolean = false,
     val selectedTab: MusicdTab = MusicdTab.Home,
@@ -133,11 +135,12 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             loadServerData(
                 baseUrl = normalized,
-                onSuccess = { renderers, artists, albums, tracks, nowPlaying, queue ->
+                onSuccess = { serverInfo, renderers, artists, albums, tracks, nowPlaying, queue ->
                     repository.saveBaseUrl(normalized)
                     _uiState.update {
                         it.copy(
                             baseUrl = normalized,
+                            serverName = serverInfo.name,
                             connected = true,
                             showServerEditor = false,
                             renderers = renderers,
@@ -181,7 +184,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
             loadServerData(
                 baseUrl = baseUrl,
-                onSuccess = { renderers, artists, albums, tracks, nowPlaying, queue ->
+                onSuccess = { serverInfo, renderers, artists, albums, tracks, nowPlaying, queue ->
                     _uiState.update {
                         val selectedRendererLocation = nowPlaying?.rendererLocation
                             ?: chooseRendererLocation(
@@ -191,6 +194,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             ).orEmpty()
                         it.copy(
                             connected = true,
+                            serverName = serverInfo.name,
                             renderers = renderers,
                             artists = artists,
                             albums = albums,
@@ -227,10 +231,11 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun loadServerData(
         baseUrl: String,
-        onSuccess: (List<RendererDto>, List<ArtistSummaryDto>, List<AlbumSummaryDto>, List<TrackSummaryDto>, NowPlayingDto?, QueueDto?) -> Unit,
+        onSuccess: (ServerInfoDto, List<RendererDto>, List<ArtistSummaryDto>, List<AlbumSummaryDto>, List<TrackSummaryDto>, NowPlayingDto?, QueueDto?) -> Unit,
         onFailure: (Throwable) -> Unit,
     ) {
         runCatching {
+            val serverInfo = repository.getServerInfo(baseUrl)
             val renderers = repository.getRenderers(baseUrl)
             val artists = repository.getArtists(baseUrl)
             val albums = repository.getAlbums(baseUrl)
@@ -242,9 +247,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             )
             val nowPlaying = rendererLocation?.let { repository.getNowPlaying(baseUrl, it) }
             val queue = rendererLocation?.let { repository.getQueue(baseUrl, it) }
-            Sextuple(renderers, artists, albums, tracks, nowPlaying, queue)
-        }.onSuccess { (renderers, artists, albums, tracks, nowPlaying, queue) ->
-            onSuccess(renderers, artists, albums, tracks, nowPlaying, queue)
+            Septuple(serverInfo, renderers, artists, albums, tracks, nowPlaying, queue)
+        }.onSuccess { (serverInfo, renderers, artists, albums, tracks, nowPlaying, queue) ->
+            onSuccess(serverInfo, renderers, artists, albums, tracks, nowPlaying, queue)
         }.onFailure(onFailure)
     }
 
@@ -262,6 +267,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 connected = false,
                 baseUrl = "",
+                serverName = null,
                 serverInput = "",
                 showServerEditor = false,
                 selectedRendererLocation = "",
@@ -301,7 +307,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         refreshPlaybackSurfaces()
     }
 
-    fun openAlbum(albumId: String) {
+    fun openAlbum(albumId: String, preserveArtistContext: Boolean = false) {
         val baseUrl = uiState.value.baseUrl
         if (baseUrl.isBlank()) return
         viewModelScope.launch {
@@ -309,9 +315,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             runCatching { repository.getAlbumDetail(baseUrl, albumId) }
                 .onSuccess { album ->
                     _uiState.update {
+                        val artistContext = if (preserveArtistContext) it.selectedArtistDetail else null
                         it.copy(
                             selectedTab = MusicdTab.Library,
-                            selectedArtistDetail = null,
+                            selectedArtistDetail = artistContext,
                             selectedAlbumDetail = album,
                             isLoading = false,
                             warningMessage = null,
@@ -363,6 +370,21 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun closeArtistDetail() {
         _uiState.update { it.copy(selectedArtistDetail = null) }
+    }
+
+    fun openArtistByName(name: String) {
+        val artistId = uiState.value.artists.firstOrNull {
+            normalizeLibraryName(it.name) == normalizeLibraryName(name)
+        }?.id
+
+        if (artistId == null) {
+            _uiState.update {
+                it.copy(errorMessage = "Could not find an artist entry for \"$name\".")
+            }
+            return
+        }
+
+        openArtist(artistId)
     }
 
     fun discoverRenderers() {
@@ -625,6 +647,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 }
 
+private fun normalizeLibraryName(value: String): String =
+    value.trim().lowercase()
+
 private data class Quintuple<A, B, C, D, E>(
     val first: A,
     val second: B,
@@ -640,4 +665,14 @@ private data class Sextuple<A, B, C, D, E, F>(
     val fourth: D,
     val fifth: E,
     val sixth: F,
+)
+
+private data class Septuple<A, B, C, D, E, F, G>(
+    val first: A,
+    val second: B,
+    val third: C,
+    val fourth: D,
+    val fifth: E,
+    val sixth: F,
+    val seventh: G,
 )

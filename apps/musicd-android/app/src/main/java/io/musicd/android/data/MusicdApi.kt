@@ -28,6 +28,13 @@ data class RendererDto(
 )
 
 @Serializable
+data class ServerInfoDto(
+    val name: String,
+    @SerialName("base_url") val baseUrl: String,
+    @SerialName("bind_address") val bindAddress: String,
+)
+
+@Serializable
 data class TrackSummaryDto(
     val id: String,
     @SerialName("album_id") val albumId: String,
@@ -182,6 +189,9 @@ class MusicdApi(
     private val client: OkHttpClient = OkHttpClient(),
     private val json: Json = Json { ignoreUnknownKeys = true },
 ) {
+    suspend fun getServerInfo(baseUrl: String): ServerInfoDto =
+        get("$baseUrl/api/server")
+
     suspend fun getAlbums(baseUrl: String): List<AlbumSummaryDto> =
         get("$baseUrl/api/albums")
 

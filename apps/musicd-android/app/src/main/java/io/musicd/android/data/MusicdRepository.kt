@@ -33,6 +33,10 @@ class MusicdRepository(
         prefs.edit { remove(KEY_RENDERER_LOCATION) }
     }
 
+    suspend fun getServerInfo(baseUrl: String): ServerInfoDto = withContext(Dispatchers.IO) {
+        api.getServerInfo(baseUrl.normalizeBaseUrl())
+    }
+
     suspend fun getAlbums(baseUrl: String): List<AlbumSummaryDto> = withContext(Dispatchers.IO) {
         api.getAlbums(baseUrl.normalizeBaseUrl())
     }

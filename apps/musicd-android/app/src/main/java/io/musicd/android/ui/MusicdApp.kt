@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.rounded.Add
@@ -27,9 +29,13 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speaker
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -39,6 +45,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,6 +55,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TextButton
@@ -58,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,7 +91,9 @@ import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.QueueEntryDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.TrackSummaryDto
+import java.time.LocalTime
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private data class LibrarySearchResults(
     val artists: List<ArtistSummaryDto>,
@@ -91,6 +102,11 @@ private data class LibrarySearchResults(
 ) {
     fun isEmpty(): Boolean = artists.isEmpty() && albums.isEmpty() && tracks.isEmpty()
 }
+
+private data class AlphabetJumpTarget(
+    val label: String,
+    val itemIndex: Int,
+)
 
 @Composable
 fun MusicdApp(viewModel: MusicdViewModel) {
@@ -114,6 +130,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
     if (!state.connected) {
         ServerSetupScreen(
             serverInput = state.serverInput,
+            serverName = state.serverName,
             isConnecting = state.isConnecting,
             errorMessage = state.errorMessage,
             onServerInputChange = viewModel::updateServerInput,
@@ -147,8 +164,10 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onPrevious = viewModel::transportPrevious,
         onSearchQueryChange = viewModel::updateSearchQuery,
         onOpenArtist = viewModel::openArtist,
+        onOpenArtistByName = viewModel::openArtistByName,
         onCloseArtistDetail = viewModel::closeArtistDetail,
         onOpenAlbum = viewModel::openAlbum,
+        onOpenAlbumPreservingArtist = { albumId -> viewModel.openAlbum(albumId, preserveArtistContext = true) },
         onCloseAlbumDetail = viewModel::closeAlbumDetail,
         onPlayTrack = viewModel::playTrack,
         onPlayAlbum = viewModel::playAlbum,
@@ -190,8 +209,10 @@ private fun MusicdRoot(
     onPrevious: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onOpenArtist: (String) -> Unit,
+    onOpenArtistByName: (String) -> Unit,
     onCloseArtistDetail: () -> Unit,
     onOpenAlbum: (String) -> Unit,
+    onOpenAlbumPreservingArtist: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
     onPlayTrack: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
@@ -218,6 +239,7 @@ private fun MusicdRoot(
         ) {
             ServerEditorSheet(
                 serverInput = state.serverInput,
+                serverName = state.serverName,
                 connectedBaseUrl = state.baseUrl,
                 isConnecting = state.isConnecting,
                 errorMessage = state.errorMessage,
@@ -316,7 +338,7 @@ private fun MusicdRoot(
             ) {
                 AssistChip(
                     onClick = onOpenServerEditor,
-                    label = { Text(serverLabel(state.baseUrl)) },
+                    label = { Text(serverLabel(state.serverName, state.baseUrl)) },
                 )
                 AssistChip(
                     onClick = onOpenRendererPicker,
@@ -378,8 +400,10 @@ private fun MusicdRoot(
                     onSelectLibrarySearchFacet = onSelectLibrarySearchFacet,
                     onSearchQueryChange = onSearchQueryChange,
                     onOpenArtist = onOpenArtist,
+                    onOpenArtistByName = onOpenArtistByName,
                     onCloseArtistDetail = onCloseArtistDetail,
                     onOpenAlbum = onOpenAlbum,
+                    onOpenAlbumPreservingArtist = onOpenAlbumPreservingArtist,
                     onCloseAlbumDetail = onCloseAlbumDetail,
                     onPlayTrack = onPlayTrack,
                     onPlayAlbum = onPlayAlbum,
@@ -448,7 +472,7 @@ private fun MiniPlayerBar(
                     )
                     Text(
                         listOfNotNull(track?.artist, track?.album).joinToString(" · ")
-                            .ifBlank { state.nowPlaying?.session?.transportState ?: "IDLE" },
+                            .ifBlank { humanizeTransportState(state.nowPlaying?.session?.transportState) },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
@@ -456,11 +480,14 @@ private fun MiniPlayerBar(
                     )
                 }
                 val isPlaying = session?.transportState == "PLAYING"
-                TextButton(onClick = if (isPlaying) onPause else onPlay) {
-                    Text(if (isPlaying) "Pause" else "Play")
+                FilledIconButton(onClick = if (isPlaying) onPause else onPlay) {
+                    Icon(
+                        if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                    )
                 }
-                TextButton(onClick = onNext) {
-                    Text("Next")
+                OutlinedIconButton(onClick = onNext) {
+                    Icon(Icons.Rounded.SkipNext, contentDescription = "Next")
                 }
             }
             if (progress != null && session != null) {
@@ -477,6 +504,7 @@ private fun MiniPlayerBar(
 @Composable
 private fun ServerSetupScreen(
     serverInput: String,
+    serverName: String?,
     isConnecting: Boolean,
     errorMessage: String?,
     onServerInputChange: (String) -> Unit,
@@ -494,7 +522,11 @@ private fun ServerSetupScreen(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
-                Text("musicd", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
+                Text(
+                    serverName?.takeIf { it.isNotBlank() } ?: "musicd",
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.Bold,
+                )
                 Spacer(Modifier.height(12.dp))
                 Text(
                     "Connect to your local musicd server to browse the library, switch renderers, and control the queue.",
@@ -541,7 +573,7 @@ private fun HomeScreen(
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             ElevatedPanel {
-                Text("Good evening", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                Text(homeGreeting(), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
                 Spacer(Modifier.height(6.dp))
                 Text("What shall we listen to?", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(16.dp))
@@ -580,6 +612,13 @@ private fun HomeScreen(
     }
 }
 
+private fun homeGreeting(now: LocalTime = LocalTime.now()): String =
+    when {
+        now.hour < 12 -> "Good morning"
+        now.hour < 18 -> "Good afternoon"
+        else -> "Good evening"
+    }
+
 @Composable
 private fun LibraryScreen(
     state: MusicdUiState,
@@ -587,8 +626,10 @@ private fun LibraryScreen(
     onSelectLibrarySearchFacet: (LibrarySearchFacet) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onOpenArtist: (String) -> Unit,
+    onOpenArtistByName: (String) -> Unit,
     onCloseArtistDetail: () -> Unit,
     onOpenAlbum: (String) -> Unit,
+    onOpenAlbumPreservingArtist: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
     onPlayTrack: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
@@ -608,18 +649,39 @@ private fun LibraryScreen(
     var showAllArtistResults by remember(query) { mutableStateOf(false) }
     var showAllAlbumResults by remember(query) { mutableStateOf(false) }
     var showAllTrackResults by remember(query) { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    val alphabetJumpTargets = remember(isSearching, state.libraryBrowseMode, state.artists, state.albums) {
+        if (isSearching) {
+            emptyList()
+        } else {
+            when (state.libraryBrowseMode) {
+                LibraryBrowseMode.Artists -> buildAlphabetJumpTargets(
+                    labels = state.artists.map { it.name },
+                    firstRowItemIndex = 2,
+                )
+                LibraryBrowseMode.Albums -> buildAlphabetJumpTargets(
+                    labels = state.albums.map { it.title },
+                    firstRowItemIndex = 2,
+                )
+            }
+        }
+    }
 
     state.selectedAlbumDetail?.let { album ->
         AlbumDetailScreen(
             baseUrl = state.baseUrl,
             album = album,
             onBack = onCloseAlbumDetail,
+            backLabel = if (state.selectedArtistDetail != null) "Back to artist" else "Back to library",
+            onOpenArtist = { onOpenArtistByName(album.artist) },
             onPlayAlbum = { onPlayAlbum(album.id) },
             onAppendAlbum = { onAppendAlbum(album.id) },
             onPlayNextAlbum = { onPlayNextAlbum(album.id) },
             onPlayTrack = onPlayTrack,
             onAppendTrack = onAppendTrack,
             onPlayNextTrack = onPlayNextTrack,
+            onOpenArtistByName = onOpenArtistByName,
         )
         return
     }
@@ -629,7 +691,7 @@ private fun LibraryScreen(
             baseUrl = state.baseUrl,
             artist = artist,
             onBack = onCloseArtistDetail,
-            onOpenAlbum = onOpenAlbum,
+            onOpenAlbum = onOpenAlbumPreservingArtist,
             onPlayAlbum = onPlayAlbum,
             onAppendAlbum = onAppendAlbum,
             onPlayNextAlbum = onPlayNextAlbum,
@@ -637,172 +699,279 @@ private fun LibraryScreen(
         return
     }
 
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item {
-            Text("Library", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = state.libraryBrowseMode == LibraryBrowseMode.Artists,
-                    onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.Artists) },
-                    label = { Text("Artists") },
-                )
-                FilterChip(
-                    selected = state.libraryBrowseMode == LibraryBrowseMode.Albums,
-                    onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.Albums) },
-                    label = { Text("Albums") },
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            OutlinedTextField(
-                value = state.searchQuery,
-                onValueChange = onSearchQueryChange,
-                label = { Text("Search library") },
-                placeholder = { Text("Artist, album, or track") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                if (!isSearching && state.libraryBrowseMode == LibraryBrowseMode.Artists) {
-                    "Browse artists, then drill into their albums."
-                } else if (!isSearching) {
-                    "Browse albums or search for a specific track."
-                } else {
-                    "${searchResults.artists.size} artists, ${searchResults.albums.size} albums, and ${searchResults.tracks.size} tracks match \"$query\"."
-                },
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (isSearching) {
-            if (searchResults.isEmpty()) {
-                item {
-                    SearchEmptyState(query = query)
-                }
-            }
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = if (alphabetJumpTargets.isEmpty()) 0.dp else 34.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item {
+                Text("Library", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = state.librarySearchFacet == LibrarySearchFacet.All,
-                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.All) },
-                        label = { Text("All") },
-                    )
-                    FilterChip(
-                        selected = state.librarySearchFacet == LibrarySearchFacet.Artists,
-                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Artists) },
+                        selected = state.libraryBrowseMode == LibraryBrowseMode.Artists,
+                        onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.Artists) },
                         label = { Text("Artists") },
                     )
                     FilterChip(
-                        selected = state.librarySearchFacet == LibrarySearchFacet.Albums,
-                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Albums) },
+                        selected = state.libraryBrowseMode == LibraryBrowseMode.Albums,
+                        onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.Albums) },
                         label = { Text("Albums") },
                     )
-                    FilterChip(
-                        selected = state.librarySearchFacet == LibrarySearchFacet.Tracks,
-                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Tracks) },
-                        label = { Text("Tracks") },
-                    )
                 }
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = state.searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    label = { Text("Search library") },
+                    placeholder = { Text("Artist, album, or track") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (!isSearching && state.libraryBrowseMode == LibraryBrowseMode.Artists) {
+                        "Browse artists, then drill into their albums."
+                    } else if (!isSearching) {
+                        "Browse albums or search for a specific track."
+                    } else {
+                        "${searchResults.artists.size} artists, ${searchResults.albums.size} albums, and ${searchResults.tracks.size} tracks match \"$query\"."
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Artists) {
-                val visibleArtists = if (showAllArtistResults) searchResults.artists else searchResults.artists.take(8)
-                item {
-                    SearchSectionHeader("Artists", searchResults.artists.size)
+            if (isSearching) {
+                if (searchResults.isEmpty()) {
+                    item {
+                        SearchEmptyState(query = query)
+                    }
                 }
-                items(visibleArtists, key = { "search-artist-${it.id}" }) { artist ->
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = state.librarySearchFacet == LibrarySearchFacet.All,
+                            onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.All) },
+                            label = { Text("All") },
+                        )
+                        FilterChip(
+                            selected = state.librarySearchFacet == LibrarySearchFacet.Artists,
+                            onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Artists) },
+                            label = { Text("Artists") },
+                        )
+                        FilterChip(
+                            selected = state.librarySearchFacet == LibrarySearchFacet.Albums,
+                            onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Albums) },
+                            label = { Text("Albums") },
+                        )
+                        FilterChip(
+                            selected = state.librarySearchFacet == LibrarySearchFacet.Tracks,
+                            onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Tracks) },
+                            label = { Text("Tracks") },
+                        )
+                    }
+                }
+                if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Artists) {
+                    val visibleArtists = if (showAllArtistResults) searchResults.artists else searchResults.artists.take(8)
+                    item {
+                        SearchSectionHeader("Artists", searchResults.artists.size)
+                    }
+                    items(visibleArtists, key = { "search-artist-${it.id}" }) { artist ->
+                        ArtistRow(
+                            baseUrl = state.baseUrl,
+                            artist = artist,
+                            onOpenArtist = { onOpenArtist(artist.id) },
+                            onOpenAlbum = { onOpenAlbum(artist.firstAlbumId) },
+                            highlightQuery = query,
+                        )
+                    }
+                    item {
+                        SearchExpandRow(
+                            total = searchResults.artists.size,
+                            defaultVisible = 8,
+                            expanded = showAllArtistResults,
+                            onToggle = { showAllArtistResults = !showAllArtistResults },
+                        )
+                    }
+                }
+                if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Albums) {
+                    val visibleAlbums = if (showAllAlbumResults) searchResults.albums else searchResults.albums.take(12)
+                    item {
+                        SearchSectionHeader("Albums", searchResults.albums.size)
+                    }
+                    items(visibleAlbums, key = { "search-album-${it.id}" }) { album ->
+                        AlbumRow(
+                            baseUrl = state.baseUrl,
+                            album = album,
+                            onOpenAlbum = { onOpenAlbum(album.id) },
+                            onOpenArtist = { onOpenArtistByName(album.artist) },
+                            onPlayAlbum = { onPlayAlbum(album.id) },
+                            onAppendAlbum = { onAppendAlbum(album.id) },
+                            onPlayNextAlbum = { onPlayNextAlbum(album.id) },
+                            highlightQuery = query,
+                        )
+                    }
+                    item {
+                        SearchExpandRow(
+                            total = searchResults.albums.size,
+                            defaultVisible = 12,
+                            expanded = showAllAlbumResults,
+                            onToggle = { showAllAlbumResults = !showAllAlbumResults },
+                        )
+                    }
+                }
+                if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Tracks) {
+                    val visibleTracks = if (showAllTrackResults) searchResults.tracks else searchResults.tracks.take(20)
+                    item {
+                        SearchSectionHeader("Tracks", searchResults.tracks.size)
+                    }
+                    items(visibleTracks, key = { "search-track-${it.id}" }) { track ->
+                        TrackRow(
+                            baseUrl = state.baseUrl,
+                            track = track,
+                            onPlayTrack = { onPlayTrack(track.id) },
+                            onAppendTrack = { onAppendTrack(track.id) },
+                            onPlayNextTrack = { onPlayNextTrack(track.id) },
+                            onOpenArtist = { onOpenArtistByName(track.artist) },
+                            onOpenAlbum = { onOpenAlbum(track.albumId) },
+                            highlightQuery = query,
+                        )
+                    }
+                    item {
+                        SearchExpandRow(
+                            total = searchResults.tracks.size,
+                            defaultVisible = 20,
+                            expanded = showAllTrackResults,
+                            onToggle = { showAllTrackResults = !showAllTrackResults },
+                        )
+                    }
+                }
+            } else if (state.libraryBrowseMode == LibraryBrowseMode.Artists) {
+                item {
+                    Text("Artists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                }
+                items(state.artists, key = { "artist-${it.id}" }) { artist ->
                     ArtistRow(
                         baseUrl = state.baseUrl,
                         artist = artist,
                         onOpenArtist = { onOpenArtist(artist.id) },
                         onOpenAlbum = { onOpenAlbum(artist.firstAlbumId) },
-                        highlightQuery = query,
+                        highlightQuery = null,
                     )
                 }
                 item {
-                    SearchExpandRow(
-                        total = searchResults.artists.size,
-                        defaultVisible = 8,
-                        expanded = showAllArtistResults,
-                        onToggle = { showAllArtistResults = !showAllArtistResults },
-                    )
+                    Spacer(Modifier.height(24.dp))
                 }
-            }
-            if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Albums) {
-                val visibleAlbums = if (showAllAlbumResults) searchResults.albums else searchResults.albums.take(12)
+            } else {
                 item {
-                    SearchSectionHeader("Albums", searchResults.albums.size)
+                    Text("Albums", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 }
-                items(visibleAlbums, key = { "search-album-${it.id}" }) { album ->
+                items(state.albums, key = { "album-${it.id}" }) { album ->
                     AlbumRow(
                         baseUrl = state.baseUrl,
                         album = album,
                         onOpenAlbum = { onOpenAlbum(album.id) },
+                        onOpenArtist = { onOpenArtistByName(album.artist) },
                         onPlayAlbum = { onPlayAlbum(album.id) },
                         onAppendAlbum = { onAppendAlbum(album.id) },
                         onPlayNextAlbum = { onPlayNextAlbum(album.id) },
-                        highlightQuery = query,
+                        highlightQuery = null,
                     )
                 }
                 item {
-                    SearchExpandRow(
-                        total = searchResults.albums.size,
-                        defaultVisible = 12,
-                        expanded = showAllAlbumResults,
-                        onToggle = { showAllAlbumResults = !showAllAlbumResults },
-                    )
+                    Spacer(Modifier.height(24.dp))
                 }
             }
-            if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Tracks) {
-                val visibleTracks = if (showAllTrackResults) searchResults.tracks else searchResults.tracks.take(20)
-                item {
-                    SearchSectionHeader("Tracks", searchResults.tracks.size)
-                }
-                items(visibleTracks, key = { "search-track-${it.id}" }) { track ->
-                    TrackRow(
-                        baseUrl = state.baseUrl,
-                        track = track,
-                        onPlayTrack = { onPlayTrack(track.id) },
-                        onAppendTrack = { onAppendTrack(track.id) },
-                        onPlayNextTrack = { onPlayNextTrack(track.id) },
-                        onOpenAlbum = { onOpenAlbum(track.albumId) },
-                        highlightQuery = query,
-                    )
-                }
-                item {
-                    SearchExpandRow(
-                        total = searchResults.tracks.size,
-                        defaultVisible = 20,
-                        expanded = showAllTrackResults,
-                        onToggle = { showAllTrackResults = !showAllTrackResults },
-                    )
-                }
-            }
-        } else if (state.libraryBrowseMode == LibraryBrowseMode.Artists) {
-            item {
-                Text("Artists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            }
-            items(state.artists, key = { "artist-${it.id}" }) { artist ->
-                ArtistRow(
-                    baseUrl = state.baseUrl,
-                    artist = artist,
-                    onOpenArtist = { onOpenArtist(artist.id) },
-                    onOpenAlbum = { onOpenAlbum(artist.firstAlbumId) },
-                    highlightQuery = null,
-                )
-            }
-        } else {
-            item {
-                Text("Albums", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            }
-            items(state.albums, key = { "album-${it.id}" }) { album ->
-                AlbumRow(
-                    baseUrl = state.baseUrl,
-                    album = album,
-                    onOpenAlbum = { onOpenAlbum(album.id) },
-                    onPlayAlbum = { onPlayAlbum(album.id) },
-                    onAppendAlbum = { onAppendAlbum(album.id) },
-                    onPlayNextAlbum = { onPlayNextAlbum(album.id) },
-                    highlightQuery = null,
+        }
+
+        if (alphabetJumpTargets.isNotEmpty()) {
+            AlphabetJumpRail(
+                targets = alphabetJumpTargets,
+                listState = listState,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(top = 12.dp, bottom = 12.dp),
+                onJumpToItem = { itemIndex ->
+                    coroutineScope.launch {
+                        listState.animateScrollToItem(itemIndex)
+                    }
+                },
+            )
+        }
+    }
+}
+
+private fun buildAlphabetJumpTargets(
+    labels: List<String>,
+    firstRowItemIndex: Int,
+): List<AlphabetJumpTarget> {
+    if (labels.isEmpty()) {
+        return emptyList()
+    }
+
+    val targets = mutableListOf<AlphabetJumpTarget>()
+    val seen = mutableSetOf<String>()
+    labels.forEachIndexed { index, label ->
+        val normalizedLabel = alphabetBucket(label)
+        if (seen.add(normalizedLabel)) {
+            targets += AlphabetJumpTarget(
+                label = normalizedLabel,
+                itemIndex = firstRowItemIndex + index,
+            )
+        }
+    }
+    return targets
+}
+
+private fun alphabetBucket(label: String): String {
+    val firstLetter = label.trim().firstOrNull()?.uppercaseChar()
+    return if (firstLetter != null && firstLetter.isLetter()) {
+        firstLetter.toString()
+    } else {
+        "#"
+    }
+}
+
+@Composable
+private fun AlphabetJumpRail(
+    targets: List<AlphabetJumpTarget>,
+    listState: LazyListState,
+    modifier: Modifier = Modifier,
+    onJumpToItem: (Int) -> Unit,
+) {
+    val activeTarget = remember(targets, listState.firstVisibleItemIndex) {
+        targets.lastOrNull { it.itemIndex <= listState.firstVisibleItemIndex }
+    }
+
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f),
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            targets.forEach { target ->
+                val isActive = activeTarget?.label == target.label
+                Text(
+                    text = target.label,
+                    modifier = Modifier
+                        .clickable { onJumpToItem(target.itemIndex) }
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isActive) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }
@@ -966,27 +1135,46 @@ private fun QueueScreen(
 ) {
     val entries = state.queue?.entries.orEmpty()
     val currentEntryId = state.queue?.currentEntryId
+    val currentEntry = entries.firstOrNull {
+        it.id == currentEntryId || it.entryStatus.equals("playing", ignoreCase = true)
+    }
+    val upcomingEntries = if (currentEntry != null) {
+        entries.filterNot { it.id == currentEntry.id }
+    } else {
+        entries
+    }
+    val trackLookup = remember(state.tracks) { state.tracks.associateBy { it.id } }
+    val accentColor = Color(0xFFF5AF43)
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            ElevatedPanel {
-                Text("Queue", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(12.dp))
-                NowPlayingContent(
-                    state = state,
-                    onPlay = onPlay,
-                    onPause = onPause,
-                    onStop = onStop,
-                    onNext = onNext,
-                    onPrevious = onPrevious,
-                )
-                Spacer(Modifier.height(14.dp))
-                OutlinedButton(
-                    onClick = onClearQueue,
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = entries.isNotEmpty(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Text("Clear Queue")
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Queue",
+                            style = MaterialTheme.typography.displaySmall,
+                            fontStyle = FontStyle.Italic,
+                            fontWeight = FontWeight.Light,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            queueSummaryLine(entries, currentEntry),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = onClearQueue,
+                        enabled = entries.isNotEmpty(),
+                        shape = RoundedCornerShape(99.dp),
+                    ) {
+                        Text("Clear")
+                    }
                 }
             }
         }
@@ -999,18 +1187,75 @@ private fun QueueScreen(
                 )
             }
         }
-        itemsIndexed(entries, key = { _, entry -> entry.id }) { index, entry ->
-            val isCurrent = currentEntryId == entry.id || entry.entryStatus.equals("playing", ignoreCase = true)
+        currentEntry?.let { entry ->
+            item {
+                QueueSectionHeader("Now Playing")
+            }
+            item {
+                QueueEntryRow(
+                    baseUrl = state.baseUrl,
+                    entry = entry,
+                    track = state.nowPlaying?.currentTrack ?: trackLookup[entry.trackId],
+                    isCurrent = true,
+                    accentColor = accentColor,
+                    canMoveUp = false,
+                    canMoveDown = false,
+                    canRemove = false,
+                    onMoveUp = {},
+                    onMoveDown = {},
+                    onRemove = {},
+                )
+            }
+        }
+        if (upcomingEntries.isNotEmpty()) {
+            item {
+                QueueSectionHeader("Up Next")
+            }
+        }
+        itemsIndexed(upcomingEntries, key = { _, entry -> entry.id }) { index, entry ->
             QueueEntryRow(
+                baseUrl = state.baseUrl,
                 entry = entry,
-                isCurrent = isCurrent,
-                canMoveUp = !isCurrent && index > 0,
-                canMoveDown = !isCurrent && index < entries.lastIndex,
-                canRemove = !isCurrent,
+                track = trackLookup[entry.trackId],
+                isCurrent = false,
+                accentColor = accentColor,
+                canMoveUp = index > 0,
+                canMoveDown = index < upcomingEntries.lastIndex,
+                canRemove = true,
                 onMoveUp = { onMoveQueueEntryUp(entry.id) },
                 onMoveDown = { onMoveQueueEntryDown(entry.id) },
                 onRemove = { onRemoveQueueEntry(entry.id) },
             )
+        }
+        if (entries.isEmpty()) {
+            item {
+                ElevatedPanel {
+                    Text("Queue is empty", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Play an album or add tracks from the library to start building a queue.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onPrevious) {
+                            Icon(Icons.Rounded.SkipPrevious, contentDescription = "Previous")
+                        }
+                        FilledIconButton(onClick = onPlay) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Play")
+                        }
+                        OutlinedIconButton(onClick = onPause) {
+                            Icon(Icons.Rounded.Pause, contentDescription = "Pause")
+                        }
+                        OutlinedIconButton(onClick = onStop) {
+                            Icon(Icons.Rounded.Stop, contentDescription = "Stop")
+                        }
+                        OutlinedIconButton(onClick = onNext) {
+                            Icon(Icons.Rounded.SkipNext, contentDescription = "Next")
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1018,6 +1263,7 @@ private fun QueueScreen(
 @Composable
 private fun ServerEditorSheet(
     serverInput: String,
+    serverName: String?,
     connectedBaseUrl: String,
     isConnecting: Boolean,
     errorMessage: String?,
@@ -1044,6 +1290,14 @@ private fun ServerEditorSheet(
         )
         if (connectedBaseUrl.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
+            serverName?.takeIf { it.isNotBlank() }?.let { name ->
+                Text(
+                    "Connected to: $name",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(4.dp))
+            }
             Text(
                 "Current server: $connectedBaseUrl",
                 style = MaterialTheme.typography.bodySmall,
@@ -1353,6 +1607,7 @@ private fun AlbumRow(
     baseUrl: String,
     album: AlbumSummaryDto,
     onOpenAlbum: () -> Unit,
+    onOpenArtist: (() -> Unit)? = null,
     onPlayAlbum: () -> Unit,
     onAppendAlbum: () -> Unit,
     onPlayNextAlbum: () -> Unit,
@@ -1398,6 +1653,7 @@ private fun AlbumRow(
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     OutlinedButton(onClick = onPlayAlbum) { Text("Play") }
+                    onOpenArtist?.let { TextButton(onClick = it) { Text("Artist") } }
                     TextButton(onClick = onPlayNextAlbum) { Text("Play Next") }
                     TextButton(onClick = onAppendAlbum) { Text("Add Queue") }
                 }
@@ -1504,12 +1760,15 @@ private fun AlbumDetailScreen(
     baseUrl: String,
     album: AlbumDetailDto,
     onBack: () -> Unit,
+    backLabel: String,
+    onOpenArtist: (() -> Unit)?,
     onPlayAlbum: () -> Unit,
     onAppendAlbum: () -> Unit,
     onPlayNextAlbum: () -> Unit,
     onPlayTrack: (String) -> Unit,
     onAppendTrack: (String) -> Unit,
     onPlayNextTrack: (String) -> Unit,
+    onOpenArtistByName: (String) -> Unit,
 ) {
     val totalDurationLabel = albumTotalDurationLabel(album)
     val secondaryMeta = listOfNotNull(
@@ -1521,7 +1780,7 @@ private fun AlbumDetailScreen(
         item {
             ElevatedPanel {
                 Row(modifier = Modifier.fillMaxWidth()) {
-                    TextButton(onClick = onBack) { Text("Back to library") }
+                    TextButton(onClick = onBack) { Text(backLabel) }
                 }
                 Spacer(Modifier.height(4.dp))
                 Column(
@@ -1564,6 +1823,11 @@ private fun AlbumDetailScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        onOpenArtist?.let {
+                            OutlinedButton(onClick = it) {
+                                Text("Artist")
+                            }
+                        }
                         OutlinedButton(onClick = onPlayNextAlbum) {
                             Text("Play Next")
                         }
@@ -1580,6 +1844,7 @@ private fun AlbumDetailScreen(
                 onPlayTrack = { onPlayTrack(track.id) },
                 onAppendTrack = { onAppendTrack(track.id) },
                 onPlayNextTrack = { onPlayNextTrack(track.id) },
+                onOpenArtist = { onOpenArtistByName(track.artist) },
             )
         }
     }
@@ -1591,6 +1856,7 @@ private fun AlbumTrackRow(
     onPlayTrack: () -> Unit,
     onAppendTrack: () -> Unit,
     onPlayNextTrack: () -> Unit,
+    onOpenArtist: (() -> Unit)? = null,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     Card(
@@ -1640,6 +1906,15 @@ private fun AlbumTrackRow(
                         expanded = menuExpanded,
                         onDismissRequest = { menuExpanded = false },
                     ) {
+                        onOpenArtist?.let {
+                            DropdownMenuItem(
+                                text = { Text("Open Artist") },
+                                onClick = {
+                                    menuExpanded = false
+                                    it()
+                                },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Play Next") },
                             onClick = {
@@ -1678,6 +1953,7 @@ private fun TrackRow(
     onPlayTrack: () -> Unit,
     onAppendTrack: () -> Unit,
     onPlayNextTrack: () -> Unit,
+    onOpenArtist: (() -> Unit)?,
     onOpenAlbum: (() -> Unit)?,
     highlightQuery: String? = null,
 ) {
@@ -1720,6 +1996,9 @@ private fun TrackRow(
                     Button(onClick = onPlayTrack) {
                         Text("Play")
                     }
+                    onOpenArtist?.let {
+                        TextButton(onClick = it) { Text("Artist") }
+                    }
                     onOpenAlbum?.let {
                         TextButton(onClick = it) { Text("Album") }
                     }
@@ -1736,8 +2015,11 @@ private fun TrackRow(
 
 @Composable
 private fun QueueEntryRow(
+    baseUrl: String,
     entry: QueueEntryDto,
+    track: TrackSummaryDto?,
     isCurrent: Boolean,
+    accentColor: Color,
     canMoveUp: Boolean,
     canMoveDown: Boolean,
     canRemove: Boolean,
@@ -1745,45 +2027,190 @@ private fun QueueEntryRow(
     onMoveDown: () -> Unit,
     onRemove: () -> Unit,
 ) {
+    var menuExpanded by remember(entry.id) { mutableStateOf(false) }
+    val title = entry.title ?: track?.title ?: "Unknown Track"
+    val subtitle = listOfNotNull(
+        entry.artist ?: track?.artist,
+        entry.album ?: track?.album,
+    ).joinToString(" · ")
+    val duration = entry.durationSeconds ?: track?.durationSeconds
+
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (isCurrent) {
-                MaterialTheme.colorScheme.surfaceVariant
-            } else {
-                MaterialTheme.colorScheme.surface
-            }
-        )
+            containerColor = if (isCurrent) MaterialTheme.colorScheme.surface else Color.Transparent,
+        ),
+        border = if (isCurrent) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+        } else {
+            null
+        },
+        shape = RoundedCornerShape(24.dp),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            if (isCurrent) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = if (isCurrent) 14.dp else 6.dp, vertical = if (isCurrent) 12.dp else 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            QueueHandleDots(
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            )
+            ArtworkSquare(
+                url = resolveUrl(baseUrl, track?.artworkUrl),
+                modifier = Modifier.size(if (isCurrent) 64.dp else 60.dp),
+                fallbackText = track?.album?.ifBlank { title } ?: title,
+                contentHeight = if (isCurrent) 64.dp else 60.dp,
+            )
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "Playing now",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.secondary,
+                    text = title,
+                    style = if (isCurrent) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
+                    color = if (isCurrent) accentColor else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(4.dp))
+                if (subtitle.isNotBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
-            Text(entry.title ?: "Unknown Track", fontWeight = FontWeight.SemiBold)
-            Text(
-                listOfNotNull(entry.artist, entry.album).joinToString(" · "),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                entry.entryStatus.replace('_', ' '),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onMoveUp, enabled = canMoveUp) { Text("Up") }
-                TextButton(onClick = onMoveDown, enabled = canMoveDown) { Text("Down") }
-                TextButton(onClick = onRemove, enabled = canRemove) { Text("Remove") }
+            duration?.let {
+                Text(
+                    text = formatDuration(it),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (!isCurrent) {
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            Icons.Rounded.MoreVert,
+                            contentDescription = "Queue entry actions",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Move up") },
+                            enabled = canMoveUp,
+                            onClick = {
+                                menuExpanded = false
+                                onMoveUp()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Move down") },
+                            enabled = canMoveDown,
+                            onClick = {
+                                menuExpanded = false
+                                onMoveDown()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Remove") },
+                            enabled = canRemove,
+                            onClick = {
+                                menuExpanded = false
+                                onRemove()
+                            },
+                        )
+                    }
+                }
             }
         }
     }
 }
+
+@Composable
+private fun QueueSectionHeader(title: String) {
+    Text(
+        text = title.uppercase(),
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontWeight = FontWeight.Medium,
+    )
+}
+
+@Composable
+private fun QueueHandleDots(
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.padding(horizontal = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        repeat(3) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                repeat(2) {
+                    Box(
+                        modifier = Modifier
+                            .size(4.dp)
+                            .background(tint, CircleShape)
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun queueSummaryLine(
+    entries: List<QueueEntryDto>,
+    currentEntry: QueueEntryDto?,
+): String {
+    val trackCountLabel = "${entries.size} ${if (entries.size == 1) "track" else "tracks"}"
+    val remainingSeconds = if (currentEntry != null) {
+        entries.dropWhile { it.id != currentEntry.id }.mapNotNull { it.durationSeconds }.sum()
+    } else {
+        entries.mapNotNull { it.durationSeconds }.sum()
+    }
+
+    if (remainingSeconds <= 0L) {
+        return trackCountLabel
+    }
+
+    val totalMinutes = remainingSeconds / 60
+    val remainingLabel = if (totalMinutes >= 60) {
+        val hours = totalMinutes / 60
+        val minutes = totalMinutes % 60
+        if (minutes == 0L) {
+            "$hours hr remaining"
+        } else {
+            "$hours hr $minutes min remaining"
+        }
+    } else {
+        "${totalMinutes.coerceAtLeast(1)} min remaining"
+    }
+
+    return "$trackCountLabel · $remainingLabel"
+}
+
+private fun humanizeTransportState(state: String?): String =
+    when (state?.trim()?.uppercase()) {
+        null, "", "IDLE" -> "Idle"
+        "PLAYING" -> "Playing"
+        "PAUSED_PLAYBACK" -> "Paused"
+        "STOPPED" -> "Stopped"
+        "TRANSITIONING" -> "Changing track"
+        "NO_MEDIA_PRESENT" -> "No media"
+        else -> state
+            .trim()
+            .lowercase()
+            .replace('_', ' ')
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    }
 
 @Composable
 private fun NowPlayingContent(
@@ -1809,7 +2236,7 @@ private fun NowPlayingContent(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                state.nowPlaying?.session?.transportState ?: "IDLE",
+                humanizeTransportState(state.nowPlaying?.session?.transportState),
                 color = MaterialTheme.colorScheme.secondary,
                 style = MaterialTheme.typography.labelLarge,
             )
@@ -1826,14 +2253,21 @@ private fun NowPlayingContent(
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onPrevious) { Text("Prev") }
-                Button(onClick = onPlay) { Icon(Icons.Rounded.PlayArrow, contentDescription = null) }
-                OutlinedButton(onClick = onPause) { Text("Pause") }
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onStop) { Text("Stop") }
-                OutlinedButton(onClick = onNext) { Text("Next") }
+                OutlinedIconButton(onClick = onPrevious) {
+                    Icon(Icons.Rounded.SkipPrevious, contentDescription = "Previous")
+                }
+                FilledIconButton(onClick = onPlay) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = "Play")
+                }
+                OutlinedIconButton(onClick = onPause) {
+                    Icon(Icons.Rounded.Pause, contentDescription = "Pause")
+                }
+                OutlinedIconButton(onClick = onStop) {
+                    Icon(Icons.Rounded.Stop, contentDescription = "Stop")
+                }
+                OutlinedIconButton(onClick = onNext) {
+                    Icon(Icons.Rounded.SkipNext, contentDescription = "Next")
+                }
             }
         }
     }
@@ -2037,8 +2471,8 @@ private fun resolveUrl(baseUrl: String, path: String?): String? {
     return "${baseUrl.trimEnd('/')}/${path.trimStart('/')}"
 }
 
-private fun serverLabel(baseUrl: String): String =
-    if (baseUrl.isBlank()) {
+private fun serverLabel(serverName: String?, baseUrl: String): String =
+    serverName?.takeIf { it.isNotBlank() } ?: if (baseUrl.isBlank()) {
         "Set Server"
     } else {
         baseUrl.removePrefix("http://").removePrefix("https://")
