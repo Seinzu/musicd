@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -19,7 +19,10 @@ use musicd_upnp::{
     inspect_renderer, next, pause, play, play_stream, previous, set_av_transport_uri,
     set_next_av_transport_uri, stop,
 };
+use reqwest::blocking::Client;
+use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LibraryTrack {
@@ -45,6 +48,7 @@ struct AlbumSummary {
     artist: String,
     track_count: usize,
     artwork_track_id: Option<String>,
+    artwork_url: Option<String>,
     first_track_id: String,
 }
 
@@ -55,6 +59,7 @@ struct ArtistSummary {
     album_count: usize,
     track_count: usize,
     artwork_track_id: Option<String>,
+    artwork_url: Option<String>,
     first_album_id: String,
 }
 
@@ -63,6 +68,81 @@ struct TrackArtwork {
     cache_key: String,
     source: String,
     mime_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AlbumArtworkOverride {
+    album_id: String,
+    cache_key: String,
+    source: String,
+    mime_type: String,
+    musicbrainz_release_id: Option<String>,
+    applied_unix: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AlbumArtworkSearchCandidate {
+    release_id: String,
+    release_group_id: Option<String>,
+    title: String,
+    artist: String,
+    date: Option<String>,
+    country: Option<String>,
+    score: i32,
+    thumbnail_url: String,
+    image_url: String,
+    source: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzSearchResponse {
+    #[serde(default)]
+    releases: Vec<MusicBrainzSearchRelease>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzSearchRelease {
+    id: String,
+    title: String,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+    #[serde(default)]
+    score: Option<i32>,
+    #[serde(rename = "artist-credit", default)]
+    artist_credit: Vec<MusicBrainzArtistCredit>,
+    #[serde(rename = "release-group", default)]
+    release_group: Option<MusicBrainzReleaseGroupRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzArtistCredit {
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MusicBrainzReleaseGroupRef {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoverArtArchiveResponse {
+    #[serde(default)]
+    images: Vec<CoverArtArchiveImage>,
+    #[serde(default)]
+    release: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoverArtArchiveImage {
+    #[serde(default)]
+    front: bool,
+    #[serde(default)]
+    approved: bool,
+    image: String,
+    #[serde(default)]
+    thumbnails: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -698,6 +778,9 @@ fn handle_service_request(
         }
         ("POST", "/api/play") => handle_api_play_request(writer, request, &state),
         ("POST", "/api/play-album") => handle_api_play_album_request(writer, request, &state),
+        ("POST", "/api/albums/artwork/select") => {
+            handle_api_album_artwork_select_request(writer, request, &state)
+        }
         ("POST", "/api/transport/play") => {
             handle_api_transport_play_request(writer, request, &state)
         }
@@ -755,7 +838,11 @@ fn handle_service_request(
             if request.method != "GET" && request.method != "HEAD" {
                 return respond_method_not_allowed(writer);
             }
-            let body = render_album_detail_json(&state, request);
+            let body = if request.path.ends_with("/artwork/candidates") {
+                render_album_artwork_candidates_json(&state, request)
+            } else {
+                render_album_detail_json(&state, request)
+            };
             respond_text(
                 writer,
                 "200 OK",
@@ -882,6 +969,12 @@ fn handle_service_request(
                 return respond_method_not_allowed(writer);
             }
             handle_track_artwork_request(writer, request, &state)
+        }
+        _ if request.path.starts_with("/artwork/album/") => {
+            if request.method != "GET" && request.method != "HEAD" {
+                return respond_method_not_allowed(writer);
+            }
+            handle_album_artwork_request(writer, request, &state)
         }
         _ => respond_not_found(writer, request.method == "HEAD"),
     }
@@ -1765,6 +1858,40 @@ fn handle_api_play_album_request(
     }
 }
 
+fn handle_api_album_artwork_select_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let album_id = match required_request_value(request, "album_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let release_id = match required_request_value(request, "release_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+
+    match state.apply_album_artwork_candidate(&album_id, &release_id) {
+        Ok(album) => {
+            let body = format!(
+                r#"{{"ok":true,"message":"Artwork saved for '{}'.","album":{}}}"#,
+                json_escape(&album.title),
+                album_summary_json(&album),
+            );
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("artwork selection failed: {error}"),
+        ),
+    }
+}
+
 fn handle_api_transport_play_request(
     writer: &mut TcpStream,
     request: &HttpRequest,
@@ -2148,6 +2275,24 @@ fn handle_track_artwork_request(
         return respond_not_found(writer, request.method == "HEAD");
     };
     let Some(artwork_path) = state.track_artwork_path(&track) else {
+        return respond_not_found(writer, request.method == "HEAD");
+    };
+
+    respond_with_file(
+        writer,
+        &artwork_path,
+        request.method == "HEAD",
+        request.range_header.clone(),
+    )
+}
+
+fn handle_album_artwork_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let album_id = request.path.trim_start_matches("/artwork/album/");
+    let Some(artwork_path) = state.album_artwork_override_path(album_id) else {
         return respond_not_found(writer, request.method == "HEAD");
     };
 
@@ -2563,12 +2708,12 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     for album in &albums {
         let search_text = format!("{} {}", album.title, album.artist).to_ascii_lowercase();
         let cover_html = album
-            .artwork_track_id
+            .artwork_url
             .as_ref()
-            .map(|track_id| {
+            .map(|artwork_url| {
                 format!(
-                    "<img class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
-                    html_escape(track_id),
+                    "<img class=\"cover-thumb\" src=\"{}\" alt=\"Artwork for {}\">",
+                    html_escape(artwork_url),
                     html_escape(&album.title)
                 )
             })
@@ -3596,12 +3741,12 @@ fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
 
     let tracks = state.tracks_for_album(&album.id);
     let artwork_html = album
-        .artwork_track_id
+        .artwork_url
         .as_ref()
-        .map(|track_id| {
+        .map(|artwork_url| {
             format!(
-                "<img class=\"detail-artwork\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
-                html_escape(track_id),
+                "<img class=\"detail-artwork\" src=\"{}\" alt=\"Artwork for {}\">",
+                html_escape(artwork_url),
                 html_escape(&album.title)
             )
         })
@@ -4352,16 +4497,14 @@ fn render_artists_json(state: &ServiceState) -> String {
 }
 
 fn render_album_detail_json(state: &ServiceState, request: &HttpRequest) -> String {
-    let album_id = request.path.trim_start_matches("/api/albums/");
+    let album_id = request
+        .path
+        .trim_start_matches("/api/albums/")
+        .trim_end_matches("/artwork/candidates");
     let Some(album) = state.find_album(album_id) else {
         return r#"{"error":"album not found"}"#.to_string();
     };
     let tracks = state.tracks_for_album(&album.id);
-    let artwork_url = album
-        .artwork_track_id
-        .as_ref()
-        .map(|track_id| format!("/artwork/track/{track_id}"))
-        .unwrap_or_default();
     let tracks_json = tracks
         .into_iter()
         .map(|track| track_summary_json(&track))
@@ -4374,17 +4517,12 @@ fn render_album_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
         json_escape(&album.artist),
         album.track_count,
         json_escape(&album.first_track_id),
-        json_escape(&artwork_url),
+        json_escape(album.artwork_url.as_deref().unwrap_or_default()),
         tracks_json,
     )
 }
 
 fn album_summary_json(album: &AlbumSummary) -> String {
-    let artwork_url = album
-        .artwork_track_id
-        .as_ref()
-        .map(|track_id| format!("/artwork/track/{track_id}"))
-        .unwrap_or_default();
     format!(
         r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}"}}"#,
         json_escape(&album.id),
@@ -4392,7 +4530,7 @@ fn album_summary_json(album: &AlbumSummary) -> String {
         json_escape(&album.artist),
         album.track_count,
         json_escape(&album.first_track_id),
-        json_escape(&artwork_url),
+        json_escape(album.artwork_url.as_deref().unwrap_or_default()),
     )
 }
 
@@ -4403,13 +4541,7 @@ fn artist_summary_json(artist: &ArtistSummary) -> String {
         json_escape(&artist.name),
         artist.album_count,
         artist.track_count,
-        option_string_json(
-            artist
-                .artwork_track_id
-                .as_ref()
-                .map(|track_id| format!("/artwork/track/{track_id}"))
-                .as_deref()
-        ),
+        option_string_json(artist.artwork_url.as_deref()),
         json_escape(&artist.first_album_id),
     )
 }
@@ -4431,16 +4563,53 @@ fn render_artist_detail_json(state: &ServiceState, request: &HttpRequest) -> Str
         json_escape(&artist.name),
         artist.album_count,
         artist.track_count,
-        option_string_json(
-            artist
-                .artwork_track_id
-                .as_ref()
-                .map(|track_id| format!("/artwork/track/{track_id}"))
-                .as_deref()
-        ),
+        option_string_json(artist.artwork_url.as_deref()),
         json_escape(&artist.first_album_id),
         albums_json,
     )
+}
+
+fn render_album_artwork_candidates_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let album_id = request
+        .path
+        .trim_start_matches("/api/albums/")
+        .trim_end_matches("/artwork/candidates");
+    let Some(album) = state.find_album(album_id) else {
+        return r#"{"error":"album not found"}"#.to_string();
+    };
+    match state.search_album_artwork_candidates(&album.id) {
+        Ok(candidates) => {
+            let candidates_json = candidates
+                .into_iter()
+                .map(|candidate| {
+                    format!(
+                        r#"{{"release_id":"{}","release_group_id":{},"title":"{}","artist":"{}","date":{},"country":{},"score":{},"thumbnail_url":"{}","image_url":"{}","source":"{}"}}"#,
+                        json_escape(&candidate.release_id),
+                        option_string_json(candidate.release_group_id.as_deref()),
+                        json_escape(&candidate.title),
+                        json_escape(&candidate.artist),
+                        option_string_json(candidate.date.as_deref()),
+                        option_string_json(candidate.country.as_deref()),
+                        candidate.score,
+                        json_escape(&candidate.thumbnail_url),
+                        json_escape(&candidate.image_url),
+                        json_escape(&candidate.source),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                r#"{{"album":{},"candidates":[{}]}}"#,
+                album_summary_json(&album),
+                candidates_json,
+            )
+        }
+        Err(error) => format!(
+            r#"{{"album":{},"error":"{}","candidates":[]}}"#,
+            album_summary_json(&album),
+            json_escape(&error.to_string()),
+        ),
+    }
 }
 
 fn render_renderers_json(state: &ServiceState) -> String {
@@ -4814,6 +4983,15 @@ impl Database {
                     played_unix INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS album_artwork_overrides (
+                    album_id TEXT PRIMARY KEY,
+                    cache_key TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    musicbrainz_release_id TEXT,
+                    applied_unix INTEGER NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_track_play_history_track_id
                 ON track_play_history(track_id, played_unix DESC);
 
@@ -4834,6 +5012,12 @@ impl Database {
             "playback_sessions",
             "next_queue_entry_id",
             "INTEGER",
+        )?;
+        ensure_column(
+            &connection,
+            "album_artwork_overrides",
+            "musicbrainz_release_id",
+            "TEXT",
         )?;
         Ok(())
     }
@@ -4985,6 +5169,86 @@ impl Database {
             });
         }
         Ok(renderers)
+    }
+
+    fn list_album_artwork_overrides(&self) -> io::Result<Vec<AlbumArtworkOverride>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT album_id, cache_key, source, mime_type, musicbrainz_release_id, applied_unix
+                 FROM album_artwork_overrides",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(AlbumArtworkOverride {
+                    album_id: row.get(0)?,
+                    cache_key: row.get(1)?,
+                    source: row.get(2)?,
+                    mime_type: row.get(3)?,
+                    musicbrainz_release_id: row.get(4)?,
+                    applied_unix: row.get(5)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        let mut overrides = Vec::new();
+        for row in rows {
+            overrides.push(row.map_err(db_error)?);
+        }
+        Ok(overrides)
+    }
+
+    fn load_album_artwork_override(
+        &self,
+        album_id: &str,
+    ) -> io::Result<Option<AlbumArtworkOverride>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT album_id, cache_key, source, mime_type, musicbrainz_release_id, applied_unix
+                 FROM album_artwork_overrides
+                 WHERE album_id = ?1",
+                [album_id],
+                |row| {
+                    Ok(AlbumArtworkOverride {
+                        album_id: row.get(0)?,
+                        cache_key: row.get(1)?,
+                        source: row.get(2)?,
+                        mime_type: row.get(3)?,
+                        musicbrainz_release_id: row.get(4)?,
+                        applied_unix: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_error)
+    }
+
+    fn upsert_album_artwork_override(&self, override_record: &AlbumArtworkOverride) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO album_artwork_overrides
+                 (album_id, cache_key, source, mime_type, musicbrainz_release_id, applied_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(album_id) DO UPDATE SET
+                   cache_key = excluded.cache_key,
+                   source = excluded.source,
+                   mime_type = excluded.mime_type,
+                   musicbrainz_release_id = excluded.musicbrainz_release_id,
+                   applied_unix = excluded.applied_unix",
+                params![
+                    override_record.album_id,
+                    override_record.cache_key,
+                    override_record.source,
+                    override_record.mime_type,
+                    override_record.musicbrainz_release_id,
+                    override_record.applied_unix,
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
     }
 
     fn load_renderer(&self, location: &str) -> io::Result<Option<RendererRecord>> {
@@ -6303,17 +6567,31 @@ impl ServiceState {
     }
 
     fn albums_snapshot(&self) -> Vec<AlbumSummary> {
-        self.library
+        let tracks = self
+            .library
             .lock()
-            .map(|library| build_album_summaries(&library.tracks))
-            .unwrap_or_default()
+            .map(|library| library.tracks.clone())
+            .unwrap_or_default();
+        let mut albums = build_album_summaries(&tracks);
+        apply_album_artwork_overrides(
+            &mut albums,
+            &self.database.list_album_artwork_overrides().unwrap_or_default(),
+        );
+        albums
     }
 
     fn artists_snapshot(&self) -> Vec<ArtistSummary> {
-        self.library
+        let tracks = self
+            .library
             .lock()
-            .map(|library| build_artist_summaries(&library.tracks))
-            .unwrap_or_default()
+            .map(|library| library.tracks.clone())
+            .unwrap_or_default();
+        let mut albums = build_album_summaries(&tracks);
+        apply_album_artwork_overrides(
+            &mut albums,
+            &self.database.list_album_artwork_overrides().unwrap_or_default(),
+        );
+        build_artist_summaries_from_albums(&tracks, &albums)
     }
 
     fn find_track(&self, track_id: &str) -> Option<LibraryTrack> {
@@ -6480,6 +6758,86 @@ impl ServiceState {
             .map(|artwork| artwork_cache_path(&self.config.config_path, &artwork.cache_key))
     }
 
+    fn album_artwork_override_path(&self, album_id: &str) -> Option<PathBuf> {
+        self.database
+            .load_album_artwork_override(album_id)
+            .ok()
+            .flatten()
+            .map(|override_record| {
+                artwork_cache_path(&self.config.config_path, &override_record.cache_key)
+            })
+    }
+
+    fn artwork_url_for_track(&self, track: &LibraryTrack) -> Option<String> {
+        if track.artwork.is_some() {
+            return Some(format!(
+                "{}/artwork/track/{}",
+                self.config.base_url.trim_end_matches('/'),
+                track.id
+            ));
+        }
+
+        self.database
+            .load_album_artwork_override(&track.album_id)
+            .ok()
+            .flatten()
+            .map(|_| {
+                format!(
+                    "{}/artwork/album/{}",
+                    self.config.base_url.trim_end_matches('/'),
+                    track.album_id
+                )
+            })
+    }
+
+    fn search_album_artwork_candidates(
+        &self,
+        album_id: &str,
+    ) -> io::Result<Vec<AlbumArtworkSearchCandidate>> {
+        let album = self
+            .find_album(album_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "album not found"))?;
+        let client = musicbrainz_client()?;
+        search_musicbrainz_album_artwork(&client, &album.artist, &album.title)
+    }
+
+    fn apply_album_artwork_candidate(
+        &self,
+        album_id: &str,
+        release_id: &str,
+    ) -> io::Result<AlbumSummary> {
+        let album = self
+            .find_album(album_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "album not found"))?;
+        let client = musicbrainz_client()?;
+        let candidate = fetch_musicbrainz_cover_art_for_release(&client, release_id)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no front artwork found"))?;
+        let downloaded = download_artwork_candidate(&client, &candidate.image_url)?;
+        let cache_key = stable_track_id(&format!("mb-release:{}:{}", album.id, release_id));
+        let extension = image_extension_for_mime(&downloaded.mime_type).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "unsupported remote artwork MIME type")
+        })?;
+        let destination = self
+            .config
+            .config_path
+            .join("artwork")
+            .join(format!("{cache_key}.{extension}"));
+        fs::write(&destination, downloaded.bytes)?;
+
+        let override_record = AlbumArtworkOverride {
+            album_id: album.id.clone(),
+            cache_key: format!("{cache_key}.{extension}"),
+            source: candidate.source,
+            mime_type: downloaded.mime_type,
+            musicbrainz_release_id: Some(release_id.to_string()),
+            applied_unix: now_unix_timestamp(),
+        };
+        self.database
+            .upsert_album_artwork_override(&override_record)?;
+        self.find_album(album_id)
+            .ok_or_else(|| io::Error::other("updated album could not be reloaded"))
+    }
+
     fn renderer_backend(&self, renderer_location: &str) -> io::Result<&dyn RendererBackend> {
         self.renderer_backends
             .backend_for_location(renderer_location)
@@ -6613,13 +6971,7 @@ impl ServiceState {
             ),
             mime_type: track.mime_type.clone(),
             title: track.title.clone(),
-            album_art_url: track.artwork.as_ref().map(|_| {
-                format!(
-                    "{}/artwork/track/{}",
-                    self.config.base_url.trim_end_matches('/'),
-                    track.id
-                )
-            }),
+            album_art_url: self.artwork_url_for_track(track),
         }
     }
 
@@ -7184,7 +7536,10 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
                 title: first_track.album.clone(),
                 artist: first_track.artist.clone(),
                 track_count: album_tracks.len(),
-                artwork_track_id,
+                artwork_track_id: artwork_track_id.clone(),
+                artwork_url: artwork_track_id
+                    .as_ref()
+                    .map(|track_id| format!("/artwork/track/{track_id}")),
                 first_track_id: first_track.id.clone(),
             })
         })
@@ -7194,8 +7549,30 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
     albums
 }
 
-fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
-    let albums = build_album_summaries(tracks);
+fn apply_album_artwork_overrides(
+    albums: &mut [AlbumSummary],
+    overrides: &[AlbumArtworkOverride],
+) {
+    let override_urls = overrides
+        .iter()
+        .map(|override_record| {
+            (
+                override_record.album_id.clone(),
+                format!("/artwork/album/{}", override_record.album_id),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for album in albums {
+        if let Some(override_url) = override_urls.get(&album.id) {
+            album.artwork_url = Some(override_url.clone());
+        }
+    }
+}
+
+fn build_artist_summaries_from_albums(
+    tracks: &[LibraryTrack],
+    albums: &[AlbumSummary],
+) -> Vec<ArtistSummary> {
     let mut track_counts = HashMap::<String, usize>::new();
     for track in tracks {
         *track_counts
@@ -7208,7 +7585,7 @@ fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
         grouped
             .entry(stable_artist_id(&album.artist))
             .or_default()
-            .push(album);
+            .push(album.clone());
     }
 
     let mut artists = grouped
@@ -7219,12 +7596,16 @@ fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
             let artwork_track_id = artist_albums
                 .iter()
                 .find_map(|album| album.artwork_track_id.clone());
+            let artwork_url = artist_albums
+                .iter()
+                .find_map(|album| album.artwork_url.clone());
             Some(ArtistSummary {
                 id: artist_id.clone(),
                 name: first_album.artist.clone(),
                 album_count: artist_albums.len(),
                 track_count: track_counts.get(&artist_id).copied().unwrap_or(0),
                 artwork_track_id,
+                artwork_url,
                 first_album_id: first_album.id,
             })
         })
@@ -7232,6 +7613,11 @@ fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
 
     artists.sort_by(compare_artists);
     artists
+}
+
+fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
+    let albums = build_album_summaries(tracks);
+    build_artist_summaries_from_albums(tracks, &albums)
 }
 
 fn compare_library_tracks(left: &LibraryTrack, right: &LibraryTrack) -> std::cmp::Ordering {
@@ -7379,6 +7765,11 @@ struct ArtworkCandidate {
 enum ArtworkData {
     Bytes(Vec<u8>),
     File(PathBuf),
+}
+
+struct DownloadedArtwork {
+    bytes: Vec<u8>,
+    mime_type: String,
 }
 
 fn resolve_track_artwork(
@@ -7599,6 +7990,170 @@ fn persist_artwork_candidate(candidate: &ArtworkCandidate, destination: &Path) -
 
 fn artwork_cache_path(config_path: &Path, cache_key: &str) -> PathBuf {
     config_path.join("artwork").join(cache_key)
+}
+
+fn musicbrainz_client() -> io::Result<Client> {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(io::Error::other)
+}
+
+fn musicbrainz_user_agent() -> String {
+    format!(
+        "musicd/{} (self-hosted local music library app)",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn search_musicbrainz_album_artwork(
+    client: &Client,
+    artist: &str,
+    album: &str,
+) -> io::Result<Vec<AlbumArtworkSearchCandidate>> {
+    let query = format!(
+        "release:\"{}\" AND artist:\"{}\"",
+        lucene_escape_phrase(album),
+        lucene_escape_phrase(artist),
+    );
+    let response = client
+        .get("https://musicbrainz.org/ws/2/release")
+        .query(&[("query", query.as_str()), ("fmt", "json"), ("limit", "8")])
+        .header(USER_AGENT, musicbrainz_user_agent())
+        .header(ACCEPT, "application/json")
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(io::Error::other)?;
+
+    let search: MusicBrainzSearchResponse = response.json().map_err(io::Error::other)?;
+    let mut seen_release_ids = HashSet::new();
+    let mut candidates = Vec::new();
+
+    for release in search.releases {
+        if !seen_release_ids.insert(release.id.clone()) {
+            continue;
+        }
+        if let Some(cover) = fetch_musicbrainz_cover_art_for_release(client, &release.id)? {
+            candidates.push(AlbumArtworkSearchCandidate {
+                release_id: release.id,
+                release_group_id: release.release_group.map(|group| group.id),
+                title: release.title,
+                artist: artist_credit_name(&release.artist_credit),
+                date: release.date,
+                country: release.country,
+                score: release.score.unwrap_or_default(),
+                thumbnail_url: cover.thumbnail_url,
+                image_url: cover.image_url,
+                source: cover.source,
+            });
+        }
+        if candidates.len() >= 3 {
+            break;
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.date.cmp(&right.date))
+            .then_with(|| left.country.cmp(&right.country))
+    });
+    Ok(candidates)
+}
+
+fn fetch_musicbrainz_cover_art_for_release(
+    client: &Client,
+    release_id: &str,
+) -> io::Result<Option<AlbumArtworkSearchCandidate>> {
+    let response = client
+        .get(format!("https://coverartarchive.org/release/{release_id}/"))
+        .header(USER_AGENT, musicbrainz_user_agent())
+        .header(ACCEPT, "application/json")
+        .send()
+        .map_err(io::Error::other)?;
+
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+
+    let response = response.error_for_status().map_err(io::Error::other)?;
+    let archive: CoverArtArchiveResponse = response.json().map_err(io::Error::other)?;
+    let Some(image) = archive
+        .images
+        .into_iter()
+        .find(|image| image.front || image.approved)
+    else {
+        return Ok(None);
+    };
+
+    let thumbnail_url = image
+        .thumbnails
+        .get("250")
+        .or_else(|| image.thumbnails.get("small"))
+        .cloned()
+        .unwrap_or_else(|| image.image.clone());
+
+    Ok(Some(AlbumArtworkSearchCandidate {
+        release_id: release_id.to_string(),
+        release_group_id: None,
+        title: String::new(),
+        artist: String::new(),
+        date: None,
+        country: None,
+        score: 0,
+        thumbnail_url,
+        image_url: image.image,
+        source: archive
+            .release
+            .unwrap_or_else(|| format!("MusicBrainz release {release_id}")),
+    }))
+}
+
+fn download_artwork_candidate(client: &Client, image_url: &str) -> io::Result<DownloadedArtwork> {
+    let response = client
+        .get(image_url)
+        .header(USER_AGENT, musicbrainz_user_agent())
+        .header(ACCEPT, "image/*")
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(io::Error::other)?;
+
+    let mime_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.starts_with("image/"))
+        .map(ToString::to_string)
+        .or_else(|| infer_image_mime_from_url(image_url).map(ToString::to_string));
+    let bytes = response.bytes().map_err(io::Error::other)?.to_vec();
+    let mime_type = mime_type
+        .or_else(|| infer_image_mime_from_bytes(&bytes).map(ToString::to_string))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown artwork MIME type"))?;
+
+    Ok(DownloadedArtwork { bytes, mime_type })
+}
+
+fn infer_image_mime_from_url(url: &str) -> Option<&'static str> {
+    let clean = url.split('?').next().unwrap_or(url);
+    infer_image_mime_from_path(Path::new(clean))
+}
+
+fn artist_credit_name(credits: &[MusicBrainzArtistCredit]) -> String {
+    credits
+        .iter()
+        .filter_map(|credit| credit.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn lucene_escape_phrase(value: &str) -> String {
+    value.replace('\\', r#"\\"#).replace('"', r#"\""#)
 }
 
 fn component_to_string(component: Component<'_>) -> Option<String> {
