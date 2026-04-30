@@ -2,10 +2,17 @@ package io.musicd.android.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.net.UnknownServiceException
 
 @Serializable
 data class RendererDto(
@@ -45,6 +52,16 @@ data class AlbumSummaryDto(
 )
 
 @Serializable
+data class ArtistSummaryDto(
+    val id: String,
+    val name: String,
+    @SerialName("album_count") val albumCount: Int,
+    @SerialName("track_count") val trackCount: Int,
+    @SerialName("artwork_url") val artworkUrl: String? = null,
+    @SerialName("first_album_id") val firstAlbumId: String,
+)
+
+@Serializable
 data class AlbumDetailDto(
     val id: String,
     val title: String,
@@ -53,6 +70,17 @@ data class AlbumDetailDto(
     @SerialName("first_track_id") val firstTrackId: String,
     @SerialName("artwork_url") val artworkUrl: String,
     val tracks: List<TrackSummaryDto> = emptyList(),
+)
+
+@Serializable
+data class ArtistDetailDto(
+    val id: String,
+    val name: String,
+    @SerialName("album_count") val albumCount: Int,
+    @SerialName("track_count") val trackCount: Int,
+    @SerialName("artwork_url") val artworkUrl: String? = null,
+    @SerialName("first_album_id") val firstAlbumId: String,
+    val albums: List<AlbumSummaryDto> = emptyList(),
 )
 
 @Serializable
@@ -123,6 +151,33 @@ data class MutationResponseDto(
     val session: SessionDto? = null,
 )
 
+@Serializable
+private data class ErrorEnvelopeDto(
+    val error: String? = null,
+    val message: String? = null,
+)
+
+sealed class MusicdApiException(
+    open val userMessage: String,
+    cause: Throwable? = null,
+) : IOException(userMessage, cause) {
+    class Network(
+        override val userMessage: String,
+        cause: Throwable? = null,
+    ) : MusicdApiException(userMessage, cause)
+
+    class Http(
+        val statusCode: Int,
+        val serverMessage: String?,
+        override val userMessage: String,
+    ) : MusicdApiException(userMessage)
+
+    class InvalidResponse(
+        override val userMessage: String,
+        cause: Throwable? = null,
+    ) : MusicdApiException(userMessage, cause)
+}
+
 class MusicdApi(
     private val client: OkHttpClient = OkHttpClient(),
     private val json: Json = Json { ignoreUnknownKeys = true },
@@ -130,8 +185,14 @@ class MusicdApi(
     suspend fun getAlbums(baseUrl: String): List<AlbumSummaryDto> =
         get("$baseUrl/api/albums")
 
+    suspend fun getArtists(baseUrl: String): List<ArtistSummaryDto> =
+        get("$baseUrl/api/artists")
+
     suspend fun getAlbumDetail(baseUrl: String, albumId: String): AlbumDetailDto =
         get("$baseUrl/api/albums/${albumId.encodeForUrl()}")
+
+    suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
+        get("$baseUrl/api/artists/${artistId.encodeForUrl()}")
 
     suspend fun getTracks(baseUrl: String): List<TrackSummaryDto> =
         get("$baseUrl/api/tracks")
@@ -262,12 +323,8 @@ class MusicdApi(
 
     private suspend inline fun <reified T> get(url: String): T {
         val request = Request.Builder().url(url).get().build()
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            error("Request failed: ${response.code}")
-        }
-        val body = response.body?.string().orEmpty()
-        return json.decodeFromString(body)
+        val body = executeRequest(request)
+        return decodeBody(body)
     }
 
     private suspend inline fun <reified T> post(
@@ -282,14 +339,89 @@ class MusicdApi(
             .url(url)
             .post(bodyBuilder.build())
             .build()
-        val response = client.newCall(request).execute()
-        val body = response.body?.string().orEmpty()
-        if (!response.isSuccessful) {
-            error("Request failed: ${response.code} $body")
-        }
-        return json.decodeFromString(body)
+        val body = executeRequest(request)
+        return decodeBody(body)
     }
+
+    private fun executeRequest(request: Request): String {
+        try {
+            client.newCall(request).execute().use { response ->
+                return response.requireSuccessfulBody(json)
+            }
+        } catch (error: MusicdApiException) {
+            throw error
+        } catch (error: UnknownHostException) {
+            throw MusicdApiException.Network(
+                "Couldn't find that server. Check the address and try again.",
+                error,
+            )
+        } catch (error: ConnectException) {
+            throw MusicdApiException.Network(
+                "Couldn't connect to musicd at that address.",
+                error,
+            )
+        } catch (error: SocketTimeoutException) {
+            throw MusicdApiException.Network(
+                "musicd took too long to respond.",
+                error,
+            )
+        } catch (error: UnknownServiceException) {
+            val message = if (error.message.orEmpty().contains("CLEARTEXT", ignoreCase = true)) {
+                "This server must use a normal http:// LAN address."
+            } else {
+                "The server connection type is not supported."
+            }
+            throw MusicdApiException.Network(message, error)
+        } catch (error: IOException) {
+            throw MusicdApiException.Network(
+                "Network error while talking to musicd.",
+                error,
+            )
+        }
+    }
+
+    private inline fun <reified T> decodeBody(body: String): T =
+        try {
+            json.decodeFromString(body)
+        } catch (error: SerializationException) {
+            throw MusicdApiException.InvalidResponse(
+                "musicd returned an unexpected response.",
+                error,
+            )
+        }
+}
+
+private fun Response.requireSuccessfulBody(json: Json): String {
+    val bodyText = body?.string().orEmpty()
+    if (!isSuccessful) {
+        val errorMessage = parseApiError(json, bodyText)
+        throw MusicdApiException.Http(
+            statusCode = code,
+            serverMessage = errorMessage,
+            userMessage = friendlyHttpMessage(code, errorMessage),
+        )
+    }
+    if (bodyText.isBlank()) {
+        throw MusicdApiException.InvalidResponse("musicd returned an empty response.")
+    }
+    return bodyText
 }
 
 private fun String.encodeForUrl(): String =
     java.net.URLEncoder.encode(this, Charsets.UTF_8.name())
+
+private fun parseApiError(json: Json, body: String): String? =
+    try {
+        val envelope = json.decodeFromString<ErrorEnvelopeDto>(body)
+        envelope.error ?: envelope.message
+    } catch (_: SerializationException) {
+        null
+    }
+
+private fun friendlyHttpMessage(statusCode: Int, serverMessage: String?): String =
+    when (statusCode) {
+        400 -> serverMessage ?: "musicd rejected that request."
+        404 -> "That server responded, but it does not look like a musicd instance."
+        in 500..599 -> serverMessage ?: "musicd responded with a server error."
+        else -> serverMessage ?: "musicd request failed ($statusCode)."
+    }

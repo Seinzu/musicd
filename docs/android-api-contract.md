@@ -109,7 +109,44 @@ Each track in `tracks[]` includes:
 - `duration_seconds`
 - `artwork_url`
 
+### `GET /api/artists`
+
+Returns artist summaries.
+
+Each item includes:
+
+- `id`
+- `name`
+- `album_count`
+- `track_count`
+- `artwork_url`
+- `first_album_id`
+
+### `GET /api/artists/<artist_id>`
+
+Returns artist detail plus album summaries for that artist.
+
+Includes:
+
+- `id`
+- `name`
+- `album_count`
+- `track_count`
+- `artwork_url`
+- `first_album_id`
+- `albums[]`
+
 ## Renderer endpoints
+
+### `GET /api/server`
+
+Returns basic server identity metadata for clients.
+
+Includes:
+
+- `name`
+- `base_url`
+- `bind_address`
 
 ### `GET /api/renderers`
 

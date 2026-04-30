@@ -2,6 +2,7 @@ package io.musicd.android.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,21 +18,31 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Speaker
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
@@ -43,27 +54,67 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import coil.compose.AsyncImage
 import io.musicd.android.data.AlbumDetailDto
 import io.musicd.android.data.AlbumSummaryDto
+import io.musicd.android.data.ArtistDetailDto
+import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.QueueEntryDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.TrackSummaryDto
+import kotlinx.coroutines.delay
+
+private data class LibrarySearchResults(
+    val artists: List<ArtistSummaryDto>,
+    val albums: List<AlbumSummaryDto>,
+    val tracks: List<TrackSummaryDto>,
+) {
+    fun isEmpty(): Boolean = artists.isEmpty() && albums.isEmpty() && tracks.isEmpty()
+}
 
 @Composable
 fun MusicdApp(viewModel: MusicdViewModel) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateAsState()
+
+    LaunchedEffect(state.connected, state.selectedRendererLocation, state.isConnecting, lifecycleState) {
+        if (!state.connected || state.selectedRendererLocation.isBlank() || state.isConnecting) {
+            return@LaunchedEffect
+        }
+        if (!lifecycleState.isAtLeast(Lifecycle.State.STARTED)) {
+            return@LaunchedEffect
+        }
+        while (true) {
+            viewModel.refreshPlaybackState()
+            delay(2_500)
+        }
+    }
 
     if (!state.connected) {
         ServerSetupScreen(
             serverInput = state.serverInput,
+            isConnecting = state.isConnecting,
             errorMessage = state.errorMessage,
             onServerInputChange = viewModel::updateServerInput,
             onConnect = { viewModel.connect() },
@@ -74,9 +125,19 @@ fun MusicdApp(viewModel: MusicdViewModel) {
     MusicdRoot(
         state = state,
         onSelectTab = viewModel::selectTab,
+        onSelectLibraryBrowseMode = viewModel::selectLibraryBrowseMode,
+        onSelectLibrarySearchFacet = viewModel::selectLibrarySearchFacet,
         onRefresh = viewModel::refreshAll,
+        onServerInputChange = viewModel::updateServerInput,
+        onOpenServerEditor = { viewModel.toggleServerEditor(true) },
+        onDismissServerEditor = { viewModel.toggleServerEditor(false) },
+        onConnect = { viewModel.connect() },
+        onRetryConnection = viewModel::retryConnection,
+        onDisconnectServer = viewModel::disconnectServer,
         onOpenRendererPicker = { viewModel.toggleRendererPicker(true) },
         onDismissRendererPicker = { viewModel.toggleRendererPicker(false) },
+        onDismissError = viewModel::dismissError,
+        onDismissWarning = viewModel::dismissWarning,
         onSelectRenderer = viewModel::selectRenderer,
         onDiscoverRenderers = viewModel::discoverRenderers,
         onPlay = viewModel::transportPlay,
@@ -85,6 +146,8 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onNext = viewModel::transportNext,
         onPrevious = viewModel::transportPrevious,
         onSearchQueryChange = viewModel::updateSearchQuery,
+        onOpenArtist = viewModel::openArtist,
+        onCloseArtistDetail = viewModel::closeArtistDetail,
         onOpenAlbum = viewModel::openAlbum,
         onCloseAlbumDetail = viewModel::closeAlbumDetail,
         onPlayTrack = viewModel::playTrack,
@@ -105,9 +168,19 @@ fun MusicdApp(viewModel: MusicdViewModel) {
 private fun MusicdRoot(
     state: MusicdUiState,
     onSelectTab: (MusicdTab) -> Unit,
+    onSelectLibraryBrowseMode: (LibraryBrowseMode) -> Unit,
+    onSelectLibrarySearchFacet: (LibrarySearchFacet) -> Unit,
     onRefresh: () -> Unit,
+    onServerInputChange: (String) -> Unit,
+    onOpenServerEditor: () -> Unit,
+    onDismissServerEditor: () -> Unit,
+    onConnect: () -> Unit,
+    onRetryConnection: () -> Unit,
+    onDisconnectServer: () -> Unit,
     onOpenRendererPicker: () -> Unit,
     onDismissRendererPicker: () -> Unit,
+    onDismissError: () -> Unit,
+    onDismissWarning: () -> Unit,
     onSelectRenderer: (String) -> Unit,
     onDiscoverRenderers: () -> Unit,
     onPlay: () -> Unit,
@@ -116,6 +189,8 @@ private fun MusicdRoot(
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
+    onOpenArtist: (String) -> Unit,
+    onCloseArtistDetail: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
     onPlayTrack: (String) -> Unit,
@@ -129,8 +204,29 @@ private fun MusicdRoot(
     onRemoveQueueEntry: (Long) -> Unit,
     onClearQueue: () -> Unit,
 ) {
-    BackHandler(enabled = state.selectedAlbumDetail != null) {
-        onCloseAlbumDetail()
+    BackHandler(enabled = state.selectedAlbumDetail != null || state.selectedArtistDetail != null) {
+        when {
+            state.selectedAlbumDetail != null -> onCloseAlbumDetail()
+            state.selectedArtistDetail != null -> onCloseArtistDetail()
+        }
+    }
+
+    if (state.showServerEditor) {
+        ModalBottomSheet(
+            onDismissRequest = onDismissServerEditor,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            ServerEditorSheet(
+                serverInput = state.serverInput,
+                connectedBaseUrl = state.baseUrl,
+                isConnecting = state.isConnecting,
+                errorMessage = state.errorMessage,
+                onServerInputChange = onServerInputChange,
+                onConnect = onConnect,
+                onRetry = onRetryConnection,
+                onDisconnect = onDisconnectServer,
+            )
+        }
     }
 
     if (state.showRendererPicker) {
@@ -172,25 +268,36 @@ private fun MusicdRoot(
             )
         },
         bottomBar = {
-            NavigationBar(modifier = Modifier.navigationBarsPadding()) {
-                NavigationBarItem(
-                    selected = state.selectedTab == MusicdTab.Home,
-                    onClick = { onSelectTab(MusicdTab.Home) },
-                    icon = { Icon(Icons.Rounded.Home, contentDescription = null) },
-                    label = { Text("Home") },
-                )
-                NavigationBarItem(
-                    selected = state.selectedTab == MusicdTab.Library,
-                    onClick = { onSelectTab(MusicdTab.Library) },
-                    icon = { Icon(Icons.Rounded.Album, contentDescription = null) },
-                    label = { Text("Library") },
-                )
-                NavigationBarItem(
-                    selected = state.selectedTab == MusicdTab.Queue,
-                    onClick = { onSelectTab(MusicdTab.Queue) },
-                    icon = { Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null) },
-                    label = { Text("Queue") },
-                )
+            Column {
+                if (shouldShowMiniPlayer(state)) {
+                    MiniPlayerBar(
+                        state = state,
+                        onOpenQueue = { onSelectTab(MusicdTab.Queue) },
+                        onPlay = onPlay,
+                        onPause = onPause,
+                        onNext = onNext,
+                    )
+                }
+                NavigationBar(modifier = Modifier.navigationBarsPadding()) {
+                    NavigationBarItem(
+                        selected = state.selectedTab == MusicdTab.Home,
+                        onClick = { onSelectTab(MusicdTab.Home) },
+                        icon = { Icon(Icons.Rounded.Home, contentDescription = null) },
+                        label = { Text("Home") },
+                    )
+                    NavigationBarItem(
+                        selected = state.selectedTab == MusicdTab.Library,
+                        onClick = { onSelectTab(MusicdTab.Library) },
+                        icon = { Icon(Icons.Rounded.Album, contentDescription = null) },
+                        label = { Text("Library") },
+                    )
+                    NavigationBarItem(
+                        selected = state.selectedTab == MusicdTab.Queue,
+                        onClick = { onSelectTab(MusicdTab.Queue) },
+                        icon = { Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null) },
+                        label = { Text("Queue") },
+                    )
+                }
             }
         },
     ) { innerPadding ->
@@ -204,14 +311,20 @@ private fun MusicdRoot(
             Spacer(Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 AssistChip(
+                    onClick = onOpenServerEditor,
+                    label = { Text(serverLabel(state.baseUrl)) },
+                )
+                AssistChip(
                     onClick = onOpenRendererPicker,
+                    modifier = Modifier.weight(1f),
                     label = {
                         Text(
-                            state.renderers.firstOrNull { it.location == state.selectedRendererLocation }?.name
+                            state.renderers.firstOrNull { it.location == state.selectedRendererLocation }
+                                ?.let(::rendererDisplayName)
                                 ?: "Choose Renderer"
                         )
                     },
@@ -222,7 +335,21 @@ private fun MusicdRoot(
             }
             state.errorMessage?.let {
                 Spacer(Modifier.height(8.dp))
-                Text(it, color = MaterialTheme.colorScheme.error)
+                InlineMessage(
+                    text = it,
+                    color = MaterialTheme.colorScheme.error,
+                    actionLabel = "Dismiss",
+                    onAction = onDismissError,
+                )
+            }
+            state.warningMessage?.let {
+                Spacer(Modifier.height(8.dp))
+                InlineMessage(
+                    text = it,
+                    color = MaterialTheme.colorScheme.secondary,
+                    actionLabel = "Hide",
+                    onAction = onDismissWarning,
+                )
             }
             state.infoMessage?.let {
                 Spacer(Modifier.height(8.dp))
@@ -241,10 +368,17 @@ private fun MusicdRoot(
                     onPlayAlbum = onPlayAlbum,
                     onAppendAlbum = onAppendAlbum,
                     onPlayNextAlbum = onPlayNextAlbum,
+                    onOpenRendererPicker = onOpenRendererPicker,
+                    onDiscoverRenderers = onDiscoverRenderers,
+                    onOpenServerEditor = onOpenServerEditor,
                 )
                 MusicdTab.Library -> LibraryScreen(
                     state = state,
+                    onSelectLibraryBrowseMode = onSelectLibraryBrowseMode,
+                    onSelectLibrarySearchFacet = onSelectLibrarySearchFacet,
                     onSearchQueryChange = onSearchQueryChange,
+                    onOpenArtist = onOpenArtist,
+                    onCloseArtistDetail = onCloseArtistDetail,
                     onOpenAlbum = onOpenAlbum,
                     onCloseAlbumDetail = onCloseAlbumDetail,
                     onPlayTrack = onPlayTrack,
@@ -265,7 +399,76 @@ private fun MusicdRoot(
                     onMoveQueueEntryDown = onMoveQueueEntryDown,
                     onRemoveQueueEntry = onRemoveQueueEntry,
                     onClearQueue = onClearQueue,
+                    onOpenRendererPicker = onOpenRendererPicker,
+                    onDiscoverRenderers = onDiscoverRenderers,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniPlayerBar(
+    state: MusicdUiState,
+    onOpenQueue: () -> Unit,
+    onPlay: () -> Unit,
+    onPause: () -> Unit,
+    onNext: () -> Unit,
+) {
+    val track = state.nowPlaying?.currentTrack
+    val session = state.nowPlaying?.session
+    val progress = sessionProgress(session)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clickable(onClick = onOpenQueue),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ArtworkSquare(
+                    url = resolveUrl(state.baseUrl, track?.artworkUrl),
+                    modifier = Modifier.size(52.dp),
+                    fallbackText = track?.album?.ifBlank { track?.title.orEmpty() }.orEmpty(),
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        track?.title ?: "Nothing playing",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        listOfNotNull(track?.artist, track?.album).joinToString(" · ")
+                            .ifBlank { state.nowPlaying?.session?.transportState ?: "IDLE" },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                val isPlaying = session?.transportState == "PLAYING"
+                TextButton(onClick = if (isPlaying) onPause else onPlay) {
+                    Text(if (isPlaying) "Pause" else "Play")
+                }
+                TextButton(onClick = onNext) {
+                    Text("Next")
+                }
+            }
+            if (progress != null && session != null) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                PlaybackTimeRow(session = session)
             }
         }
     }
@@ -274,6 +477,7 @@ private fun MusicdRoot(
 @Composable
 private fun ServerSetupScreen(
     serverInput: String,
+    isConnecting: Boolean,
     errorMessage: String?,
     onServerInputChange: (String) -> Unit,
     onConnect: () -> Unit,
@@ -310,8 +514,8 @@ private fun ServerSetupScreen(
                     Text(it, color = MaterialTheme.colorScheme.error)
                 }
                 Spacer(Modifier.height(16.dp))
-                Button(onClick = onConnect, modifier = Modifier.fillMaxWidth()) {
-                    Text("Connect")
+                Button(onClick = onConnect, modifier = Modifier.fillMaxWidth(), enabled = !isConnecting) {
+                    Text(if (isConnecting) "Connecting..." else "Connect")
                 }
             }
         }
@@ -330,6 +534,9 @@ private fun HomeScreen(
     onPlayAlbum: (String) -> Unit,
     onAppendAlbum: (String) -> Unit,
     onPlayNextAlbum: (String) -> Unit,
+    onOpenRendererPicker: () -> Unit,
+    onDiscoverRenderers: () -> Unit,
+    onOpenServerEditor: () -> Unit,
 ) {
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
@@ -348,10 +555,19 @@ private fun HomeScreen(
                 )
             }
         }
+        if (state.renderers.isEmpty()) {
+            item {
+                EmptyRendererPanel(
+                    onDiscoverRenderers = onDiscoverRenderers,
+                    onChooseRenderer = onOpenRendererPicker,
+                    onEditServer = onOpenServerEditor,
+                )
+            }
+        }
         item {
             Text("Library spotlight", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         }
-        items(state.albums.take(6), key = { it.id }) { album ->
+        items(state.albums.take(6), key = { "spotlight-album-${it.id}" }) { album ->
             AlbumRow(
                 baseUrl = state.baseUrl,
                 album = album,
@@ -367,7 +583,11 @@ private fun HomeScreen(
 @Composable
 private fun LibraryScreen(
     state: MusicdUiState,
+    onSelectLibraryBrowseMode: (LibraryBrowseMode) -> Unit,
+    onSelectLibrarySearchFacet: (LibrarySearchFacet) -> Unit,
     onSearchQueryChange: (String) -> Unit,
+    onOpenArtist: (String) -> Unit,
+    onCloseArtistDetail: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
     onPlayTrack: (String) -> Unit,
@@ -378,24 +598,16 @@ private fun LibraryScreen(
     onPlayNextAlbum: (String) -> Unit,
 ) {
     val query = state.searchQuery.trim()
-    val normalizedQuery = query.lowercase()
-    val filteredAlbums = if (normalizedQuery.isBlank()) {
-        state.albums
-    } else {
-        state.albums.filter { album ->
-            album.title.lowercase().contains(normalizedQuery) ||
-                album.artist.lowercase().contains(normalizedQuery)
-        }
-    }
-    val filteredTracks = if (normalizedQuery.isBlank()) {
-        emptyList()
-    } else {
-        state.tracks.filter { track ->
-            track.title.lowercase().contains(normalizedQuery) ||
-                track.artist.lowercase().contains(normalizedQuery) ||
-                track.album.lowercase().contains(normalizedQuery)
-        }
-    }
+    val searchResults = rememberLibrarySearchResults(
+        query = query,
+        artists = state.artists,
+        albums = state.albums,
+        tracks = state.tracks,
+    )
+    val isSearching = query.isNotBlank()
+    var showAllArtistResults by remember(query) { mutableStateOf(false) }
+    var showAllAlbumResults by remember(query) { mutableStateOf(false) }
+    var showAllTrackResults by remember(query) { mutableStateOf(false) }
 
     state.selectedAlbumDetail?.let { album ->
         AlbumDetailScreen(
@@ -412,58 +624,329 @@ private fun LibraryScreen(
         return
     }
 
+    state.selectedArtistDetail?.let { artist ->
+        ArtistDetailScreen(
+            baseUrl = state.baseUrl,
+            artist = artist,
+            onBack = onCloseArtistDetail,
+            onOpenAlbum = onOpenAlbum,
+            onPlayAlbum = onPlayAlbum,
+            onAppendAlbum = onAppendAlbum,
+            onPlayNextAlbum = onPlayNextAlbum,
+        )
+        return
+    }
+
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Text("Library", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.libraryBrowseMode == LibraryBrowseMode.Artists,
+                    onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.Artists) },
+                    label = { Text("Artists") },
+                )
+                FilterChip(
+                    selected = state.libraryBrowseMode == LibraryBrowseMode.Albums,
+                    onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.Albums) },
+                    label = { Text("Albums") },
+                )
+            }
+            Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = state.searchQuery,
                 onValueChange = onSearchQueryChange,
-                label = { Text("Search albums or tracks") },
+                label = { Text("Search library") },
                 placeholder = { Text("Artist, album, or track") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                if (normalizedQuery.isBlank()) {
+                if (!isSearching && state.libraryBrowseMode == LibraryBrowseMode.Artists) {
+                    "Browse artists, then drill into their albums."
+                } else if (!isSearching) {
                     "Browse albums or search for a specific track."
                 } else {
-                    "${filteredAlbums.size} albums and ${filteredTracks.size} tracks match \"$query\"."
+                    "${searchResults.artists.size} artists, ${searchResults.albums.size} albums, and ${searchResults.tracks.size} tracks match \"$query\"."
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        item {
-            Text("Albums", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        }
-        items(filteredAlbums, key = { it.id }) { album ->
-            AlbumRow(
-                baseUrl = state.baseUrl,
-                album = album,
-                onOpenAlbum = { onOpenAlbum(album.id) },
-                onPlayAlbum = { onPlayAlbum(album.id) },
-                onAppendAlbum = { onAppendAlbum(album.id) },
-                onPlayNextAlbum = { onPlayNextAlbum(album.id) },
-            )
-        }
-        if (normalizedQuery.isNotBlank()) {
-            item {
-                Spacer(Modifier.height(6.dp))
-                Text("Tracks", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        if (isSearching) {
+            if (searchResults.isEmpty()) {
+                item {
+                    SearchEmptyState(query = query)
+                }
             }
-            items(filteredTracks.take(40), key = { it.id }) { track ->
-                TrackRow(
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = state.librarySearchFacet == LibrarySearchFacet.All,
+                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.All) },
+                        label = { Text("All") },
+                    )
+                    FilterChip(
+                        selected = state.librarySearchFacet == LibrarySearchFacet.Artists,
+                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Artists) },
+                        label = { Text("Artists") },
+                    )
+                    FilterChip(
+                        selected = state.librarySearchFacet == LibrarySearchFacet.Albums,
+                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Albums) },
+                        label = { Text("Albums") },
+                    )
+                    FilterChip(
+                        selected = state.librarySearchFacet == LibrarySearchFacet.Tracks,
+                        onClick = { onSelectLibrarySearchFacet(LibrarySearchFacet.Tracks) },
+                        label = { Text("Tracks") },
+                    )
+                }
+            }
+            if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Artists) {
+                val visibleArtists = if (showAllArtistResults) searchResults.artists else searchResults.artists.take(8)
+                item {
+                    SearchSectionHeader("Artists", searchResults.artists.size)
+                }
+                items(visibleArtists, key = { "search-artist-${it.id}" }) { artist ->
+                    ArtistRow(
+                        baseUrl = state.baseUrl,
+                        artist = artist,
+                        onOpenArtist = { onOpenArtist(artist.id) },
+                        onOpenAlbum = { onOpenAlbum(artist.firstAlbumId) },
+                        highlightQuery = query,
+                    )
+                }
+                item {
+                    SearchExpandRow(
+                        total = searchResults.artists.size,
+                        defaultVisible = 8,
+                        expanded = showAllArtistResults,
+                        onToggle = { showAllArtistResults = !showAllArtistResults },
+                    )
+                }
+            }
+            if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Albums) {
+                val visibleAlbums = if (showAllAlbumResults) searchResults.albums else searchResults.albums.take(12)
+                item {
+                    SearchSectionHeader("Albums", searchResults.albums.size)
+                }
+                items(visibleAlbums, key = { "search-album-${it.id}" }) { album ->
+                    AlbumRow(
+                        baseUrl = state.baseUrl,
+                        album = album,
+                        onOpenAlbum = { onOpenAlbum(album.id) },
+                        onPlayAlbum = { onPlayAlbum(album.id) },
+                        onAppendAlbum = { onAppendAlbum(album.id) },
+                        onPlayNextAlbum = { onPlayNextAlbum(album.id) },
+                        highlightQuery = query,
+                    )
+                }
+                item {
+                    SearchExpandRow(
+                        total = searchResults.albums.size,
+                        defaultVisible = 12,
+                        expanded = showAllAlbumResults,
+                        onToggle = { showAllAlbumResults = !showAllAlbumResults },
+                    )
+                }
+            }
+            if (state.librarySearchFacet == LibrarySearchFacet.All || state.librarySearchFacet == LibrarySearchFacet.Tracks) {
+                val visibleTracks = if (showAllTrackResults) searchResults.tracks else searchResults.tracks.take(20)
+                item {
+                    SearchSectionHeader("Tracks", searchResults.tracks.size)
+                }
+                items(visibleTracks, key = { "search-track-${it.id}" }) { track ->
+                    TrackRow(
+                        baseUrl = state.baseUrl,
+                        track = track,
+                        onPlayTrack = { onPlayTrack(track.id) },
+                        onAppendTrack = { onAppendTrack(track.id) },
+                        onPlayNextTrack = { onPlayNextTrack(track.id) },
+                        onOpenAlbum = { onOpenAlbum(track.albumId) },
+                        highlightQuery = query,
+                    )
+                }
+                item {
+                    SearchExpandRow(
+                        total = searchResults.tracks.size,
+                        defaultVisible = 20,
+                        expanded = showAllTrackResults,
+                        onToggle = { showAllTrackResults = !showAllTrackResults },
+                    )
+                }
+            }
+        } else if (state.libraryBrowseMode == LibraryBrowseMode.Artists) {
+            item {
+                Text("Artists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+            items(state.artists, key = { "artist-${it.id}" }) { artist ->
+                ArtistRow(
                     baseUrl = state.baseUrl,
-                    track = track,
-                    onPlayTrack = { onPlayTrack(track.id) },
-                    onAppendTrack = { onAppendTrack(track.id) },
-                    onPlayNextTrack = { onPlayNextTrack(track.id) },
-                    onOpenAlbum = { onOpenAlbum(track.albumId) },
+                    artist = artist,
+                    onOpenArtist = { onOpenArtist(artist.id) },
+                    onOpenAlbum = { onOpenAlbum(artist.firstAlbumId) },
+                    highlightQuery = null,
+                )
+            }
+        } else {
+            item {
+                Text("Albums", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+            items(state.albums, key = { "album-${it.id}" }) { album ->
+                AlbumRow(
+                    baseUrl = state.baseUrl,
+                    album = album,
+                    onOpenAlbum = { onOpenAlbum(album.id) },
+                    onPlayAlbum = { onPlayAlbum(album.id) },
+                    onAppendAlbum = { onAppendAlbum(album.id) },
+                    onPlayNextAlbum = { onPlayNextAlbum(album.id) },
+                    highlightQuery = null,
                 )
             }
         }
     }
+}
+
+@Composable
+private fun SearchSectionHeader(title: String, count: Int) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            count.toString(),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
+@Composable
+private fun SearchEmptyState(query: String) {
+    ElevatedPanel {
+        Text("No matches", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Nothing matched \"$query\" across artists, albums, or tracks.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun SearchExpandRow(
+    total: Int,
+    defaultVisible: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    if (total <= defaultVisible) {
+        return
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        TextButton(onClick = onToggle) {
+            Text(if (expanded) "Show fewer" else "Show more")
+        }
+    }
+}
+
+@Composable
+private fun rememberLibrarySearchResults(
+    query: String,
+    artists: List<ArtistSummaryDto>,
+    albums: List<AlbumSummaryDto>,
+    tracks: List<TrackSummaryDto>,
+): LibrarySearchResults = remember(query, artists, albums, tracks) {
+    val tokens = queryTokens(query)
+    if (tokens.isEmpty()) {
+        LibrarySearchResults(emptyList(), emptyList(), emptyList())
+    } else {
+        LibrarySearchResults(
+            artists = artists
+                .mapNotNull { artist -> scoredArtistResult(artist, tokens) }
+                .sortedByDescending { it.first }
+                .map { it.second },
+            albums = albums
+                .mapNotNull { album -> scoredAlbumResult(album, tokens) }
+                .sortedByDescending { it.first }
+                .map { it.second },
+            tracks = tracks
+                .mapNotNull { track -> scoredTrackResult(track, tokens) }
+                .sortedByDescending { it.first }
+                .map { it.second },
+        )
+    }
+}
+
+private fun queryTokens(query: String): List<String> =
+    query.lowercase()
+        .split(Regex("\\s+"))
+        .map(String::trim)
+        .filter(String::isNotBlank)
+
+private fun scoredArtistResult(
+    artist: ArtistSummaryDto,
+    tokens: List<String>,
+): Pair<Int, ArtistSummaryDto>? {
+    val fields = listOf(artist.name)
+    val score = scoreSearchFields(fields, tokens) ?: return null
+    return score to artist
+}
+
+private fun scoredAlbumResult(
+    album: AlbumSummaryDto,
+    tokens: List<String>,
+): Pair<Int, AlbumSummaryDto>? {
+    val fields = listOf(album.title, album.artist)
+    val score = scoreSearchFields(fields, tokens) ?: return null
+    return score to album
+}
+
+private fun scoredTrackResult(
+    track: TrackSummaryDto,
+    tokens: List<String>,
+): Pair<Int, TrackSummaryDto>? {
+    val fields = listOf(track.title, track.artist, track.album)
+    val score = scoreSearchFields(fields, tokens) ?: return null
+    return score to track
+}
+
+private fun scoreSearchFields(fields: List<String>, tokens: List<String>): Int? {
+    val normalizedFields = fields.map { it.lowercase() }
+    var score = 0
+    for (token in tokens) {
+        val tokenScore = normalizedFields.maxOfOrNull { field ->
+            when {
+                field == token -> 180
+                field.startsWith(token) -> 140
+                field.contains(token) -> 90
+                else -> 0
+            }
+        } ?: 0
+        if (tokenScore == 0) {
+            return null
+        }
+        score += tokenScore
+    }
+    val phrase = tokens.joinToString(" ")
+    if (phrase.isNotBlank()) {
+        score += normalizedFields.maxOfOrNull { field ->
+            when {
+                field == phrase -> 220
+                field.startsWith(phrase) -> 180
+                field.contains(phrase) -> 120
+                else -> 0
+            }
+        } ?: 0
+    }
+    return score
 }
 
 @Composable
@@ -478,7 +961,12 @@ private fun QueueScreen(
     onMoveQueueEntryDown: (Long) -> Unit,
     onRemoveQueueEntry: (Long) -> Unit,
     onClearQueue: () -> Unit,
+    onOpenRendererPicker: () -> Unit,
+    onDiscoverRenderers: () -> Unit,
 ) {
+    val entries = state.queue?.entries.orEmpty()
+    val currentEntryId = state.queue?.currentEntryId
+
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             ElevatedPanel {
@@ -493,18 +981,144 @@ private fun QueueScreen(
                     onPrevious = onPrevious,
                 )
                 Spacer(Modifier.height(14.dp))
-                OutlinedButton(onClick = onClearQueue, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = onClearQueue,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = entries.isNotEmpty(),
+                ) {
                     Text("Clear Queue")
                 }
             }
         }
-        items(state.queue?.entries.orEmpty(), key = { it.id }) { entry ->
+        if (state.renderers.isEmpty()) {
+            item {
+                EmptyRendererPanel(
+                    onDiscoverRenderers = onDiscoverRenderers,
+                    onChooseRenderer = onOpenRendererPicker,
+                    onEditServer = null,
+                )
+            }
+        }
+        itemsIndexed(entries, key = { _, entry -> entry.id }) { index, entry ->
+            val isCurrent = currentEntryId == entry.id || entry.entryStatus.equals("playing", ignoreCase = true)
             QueueEntryRow(
                 entry = entry,
+                isCurrent = isCurrent,
+                canMoveUp = !isCurrent && index > 0,
+                canMoveDown = !isCurrent && index < entries.lastIndex,
+                canRemove = !isCurrent,
                 onMoveUp = { onMoveQueueEntryUp(entry.id) },
                 onMoveDown = { onMoveQueueEntryDown(entry.id) },
                 onRemove = { onRemoveQueueEntry(entry.id) },
             )
+        }
+    }
+}
+
+@Composable
+private fun ServerEditorSheet(
+    serverInput: String,
+    connectedBaseUrl: String,
+    isConnecting: Boolean,
+    errorMessage: String?,
+    onServerInputChange: (String) -> Unit,
+    onConnect: () -> Unit,
+    onRetry: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Text("Server", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Point the app at your musicd server on the local network.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = serverInput,
+            onValueChange = onServerInputChange,
+            label = { Text("Server URL") },
+            placeholder = { Text("http://192.168.1.10:8787") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        if (connectedBaseUrl.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Current server: $connectedBaseUrl",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+        errorMessage?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(it, color = MaterialTheme.colorScheme.error)
+        }
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onConnect, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
+            Text(if (isConnecting) "Connecting..." else "Save and reconnect")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onRetry, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
+            Text("Retry current server")
+        }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
+            Text("Disconnect")
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun EmptyRendererPanel(
+    onDiscoverRenderers: () -> Unit,
+    onChooseRenderer: () -> Unit,
+    onEditServer: (() -> Unit)?,
+) {
+    ElevatedPanel {
+        Text("No renderer selected", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Discover devices on your network, or choose one from the saved renderer list.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(14.dp))
+        Button(onClick = onDiscoverRenderers, modifier = Modifier.fillMaxWidth()) {
+            Text("Discover Renderers")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onChooseRenderer, modifier = Modifier.fillMaxWidth()) {
+            Text("Choose Saved Renderer")
+        }
+        onEditServer?.let {
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = it, modifier = Modifier.fillMaxWidth()) {
+                Text("Edit Server")
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineMessage(
+    text: String,
+    color: androidx.compose.ui.graphics.Color,
+    actionLabel: String,
+    onAction: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = text,
+            color = color,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onAction) {
+            Text(actionLabel)
         }
     }
 }
@@ -517,43 +1131,221 @@ private fun RendererPickerSheet(
     onSelectRenderer: (String) -> Unit,
     onDiscoverRenderers: () -> Unit,
 ) {
-    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-        Text("Play on", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Switch the active renderer for queue and transport control.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val accentColor = Color(0xFFF5AF43)
+    val accentContainer = Color(0xFF4B3B2B)
+    val sheetBackground = Color(0xFF1F1F25)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(sheetBackground)
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .padding(top = 4.dp)
+                .background(
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.18f),
+                    shape = RoundedCornerShape(99.dp),
+                )
+                .size(width = 80.dp, height = 6.dp)
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(18.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Play on",
+                style = MaterialTheme.typography.displaySmall,
+                fontStyle = FontStyle.Italic,
+                fontWeight = FontWeight.Light,
+            )
+            Text(
+                text = "${renderers.size} AVAILABLE",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(20.dp))
+        if (renderers.isEmpty()) {
+            ElevatedPanel {
+                Text(
+                    "No saved renderers yet. Run discovery to look for devices on your network.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+        }
         renderers.forEach { renderer ->
+            val isSelected = renderer.location == selectedRendererLocation
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 10.dp)
+                    .padding(bottom = 14.dp)
                     .clickable { onSelectRenderer(renderer.location) },
                 colors = CardDefaults.cardColors(
-                    containerColor = if (renderer.location == selectedRendererLocation) {
-                        MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = if (isSelected) {
+                        accentContainer
                     } else {
-                        MaterialTheme.colorScheme.surface
+                        sheetBackground
                     }
                 ),
+                border = BorderStroke(
+                    width = if (isSelected) 1.5.dp else 1.dp,
+                    color = if (isSelected) accentColor.copy(alpha = 0.75f)
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                ),
+                shape = RoundedCornerShape(24.dp),
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(renderer.name, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        listOfNotNull(renderer.manufacturer, renderer.modelName, renderer.kind.uppercase())
-                            .joinToString(" · "),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(58.dp)
+                            .background(
+                                color = Color(0xFF17181F),
+                                shape = RoundedCornerShape(18.dp),
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                                shape = RoundedCornerShape(18.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Rounded.Speaker,
+                            contentDescription = null,
+                            tint = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            rendererDisplayName(renderer),
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            rendererDescriptor(renderer),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (isSelected) {
+                        Row(
+                            modifier = Modifier
+                                .background(accentColor, RoundedCornerShape(99.dp))
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(12.dp)
+                                    .background(Color(0xFF1B140D), CircleShape)
+                            )
+                            Text(
+                                "Active",
+                                color = Color(0xFF1B140D),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    } else {
+                        Text(
+                            "Tap to switch",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
-        OutlinedButton(onClick = onDiscoverRenderers, modifier = Modifier.fillMaxWidth()) {
-            Text(if (isDiscovering) "Scanning..." else "Scan for new renderers")
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onDiscoverRenderers)
+                .padding(vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (isDiscovering) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = accentColor,
+                )
+            } else {
+                Icon(
+                    Icons.Rounded.Add,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                if (isDiscovering) "Scanning for renderers..." else "Scan for new renderers",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Spacer(Modifier.height(24.dp))
     }
+}
+
+private fun rendererDescriptor(renderer: RendererDto): String {
+    val displayName = rendererDisplayName(renderer)
+    val parts = listOfNotNull(
+        renderer.manufacturer?.takeIf { it.isNotBlank() },
+        renderer.modelName?.takeIf { it.isNotBlank() && it != displayName },
+        renderer.kind.takeIf { it.isNotBlank() }?.uppercase(),
+    )
+    return parts.joinToString(" · ").ifBlank { "Renderer" }
+}
+
+private fun rendererDisplayName(renderer: RendererDto): String {
+    val name = renderer.name.trim()
+    val model = renderer.modelName?.trim().orEmpty()
+    val host = rendererLocationHost(renderer.location)
+    val nameLooksLikeFallback = name.isBlank() ||
+        name == renderer.location ||
+        looksLikeIpAddress(name) ||
+        host?.equals(name, ignoreCase = true) == true
+
+    return when {
+        !nameLooksLikeFallback -> name
+        model.isNotBlank() -> model
+        !host.isNullOrBlank() -> host
+        else -> "Renderer"
+    }
+}
+
+private fun rendererLocationHost(location: String): String? {
+    val remainder = location.substringAfter("://", location)
+    val authority = remainder.substringBefore('/').trim()
+    if (authority.isBlank()) {
+        return null
+    }
+    if (authority.startsWith('[')) {
+        val closing = authority.indexOf(']')
+        if (closing > 1) {
+            return authority.substring(1, closing)
+        }
+    }
+    return authority.substringBefore(':').takeIf { it.isNotBlank() }
+}
+
+private fun looksLikeIpAddress(value: String): Boolean {
+    val trimmed = value.trim()
+    return Regex("""^\d{1,3}(\.\d{1,3}){3}$""").matches(trimmed) ||
+        (trimmed.contains(':') && trimmed.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' || it == ':' })
 }
 
 @Composable
@@ -564,32 +1356,145 @@ private fun AlbumRow(
     onPlayAlbum: () -> Unit,
     onAppendAlbum: () -> Unit,
     onPlayNextAlbum: () -> Unit,
+    highlightQuery: String? = null,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onOpenAlbum)
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ArtworkSquare(url = resolveUrl(baseUrl, album.artworkUrl))
+            ArtworkSquare(
+                url = resolveUrl(baseUrl, album.artworkUrl),
+                modifier = Modifier.size(76.dp),
+                fallbackText = album.title,
+            )
             Column(modifier = Modifier.weight(1f)) {
-                Text(album.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(album.artist, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${album.trackCount} tracks", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onOpenAlbum) { Text("Details") }
-                    OutlinedButton(onClick = onPlayAlbum) { Text("Play Album") }
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HighlightedText(
+                    text = album.title,
+                    query = highlightQuery,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                HighlightedText(
+                    text = album.artist,
+                    query = highlightQuery,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "${album.trackCount} tracks",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedButton(onClick = onPlayAlbum) { Text("Play") }
                     TextButton(onClick = onPlayNextAlbum) { Text("Play Next") }
                     TextButton(onClick = onAppendAlbum) { Text("Add Queue") }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ArtistRow(
+    baseUrl: String,
+    artist: ArtistSummaryDto,
+    onOpenArtist: () -> Unit,
+    onOpenAlbum: () -> Unit,
+    highlightQuery: String? = null,
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenArtist)
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ArtworkSquare(
+                url = resolveUrl(baseUrl, artist.artworkUrl),
+                modifier = Modifier.size(76.dp),
+                fallbackText = artist.name,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                HighlightedText(
+                    text = artist.name,
+                    query = highlightQuery,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "${artist.albumCount} albums · ${artist.trackCount} tracks",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedButton(onClick = onOpenArtist) { Text("View") }
+                    TextButton(onClick = onOpenAlbum) { Text("Open First Album") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistDetailScreen(
+    baseUrl: String,
+    artist: ArtistDetailDto,
+    onBack: () -> Unit,
+    onOpenAlbum: (String) -> Unit,
+    onPlayAlbum: (String) -> Unit,
+    onAppendAlbum: (String) -> Unit,
+    onPlayNextAlbum: (String) -> Unit,
+) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            ElevatedPanel {
+                TextButton(onClick = onBack) { Text("Back to library") }
+                Spacer(Modifier.height(4.dp))
+                ArtworkSquare(
+                    url = resolveUrl(baseUrl, artist.artworkUrl),
+                    modifier = Modifier.fillMaxWidth(),
+                    fallbackText = artist.name,
+                )
+                Spacer(Modifier.height(14.dp))
+                Text(artist.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "${artist.albumCount} albums · ${artist.trackCount} tracks",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+        }
+        item {
+            Text("Albums", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        }
+        items(artist.albums, key = { it.id }) { album ->
+            AlbumRow(
+                baseUrl = baseUrl,
+                album = album,
+                onOpenAlbum = { onOpenAlbum(album.id) },
+                onPlayAlbum = { onPlayAlbum(album.id) },
+                onAppendAlbum = { onAppendAlbum(album.id) },
+                onPlayNextAlbum = { onPlayNextAlbum(album.id) },
+                highlightQuery = null,
+            )
         }
     }
 }
@@ -606,47 +1511,162 @@ private fun AlbumDetailScreen(
     onAppendTrack: (String) -> Unit,
     onPlayNextTrack: (String) -> Unit,
 ) {
+    val totalDurationLabel = albumTotalDurationLabel(album)
+    val secondaryMeta = listOfNotNull(
+        albumFormatLabel(album.tracks.firstOrNull()?.mimeType),
+        totalDurationLabel,
+    ).joinToString(" · ")
+
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             ElevatedPanel {
-                TextButton(onClick = onBack) { Text("Back to library") }
-                Spacer(Modifier.height(4.dp))
-                ArtworkSquare(
-                    url = resolveUrl(baseUrl, album.artworkUrl),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(14.dp))
-                Text(album.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                Text(album.artist, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    "${album.trackCount} tracks",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary,
-                )
-                Spacer(Modifier.height(14.dp))
-                Button(onClick = onPlayAlbum, modifier = Modifier.fillMaxWidth()) {
-                    Text("Play Album")
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    TextButton(onClick = onBack) { Text("Back to library") }
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onPlayNextAlbum, modifier = Modifier.weight(1f)) {
-                        Text("Play Next")
+                Spacer(Modifier.height(4.dp))
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    ArtworkSquare(
+                        url = resolveUrl(baseUrl, album.artworkUrl),
+                        modifier = Modifier.fillMaxWidth(0.8f),
+                        fallbackText = album.title,
+                        contentHeight = 280.dp,
+                    )
+                    Spacer(Modifier.height(18.dp))
+                    Text(
+                        text = album.title,
+                        style = MaterialTheme.typography.displaySmall,
+                        fontStyle = FontStyle.Italic,
+                        fontWeight = FontWeight.Light,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = listOf(album.artist, "${album.trackCount} tracks").joinToString(" · "),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    if (secondaryMeta.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = secondaryMeta,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.secondary,
+                            textAlign = TextAlign.Center,
+                        )
                     }
-                    OutlinedButton(onClick = onAppendAlbum, modifier = Modifier.weight(1f)) {
-                        Text("Add Queue")
+                    Spacer(Modifier.height(18.dp))
+                    Button(onClick = onPlayAlbum, modifier = Modifier.fillMaxWidth(0.58f)) {
+                        Text("Play Album")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onPlayNextAlbum) {
+                            Text("Play Next")
+                        }
+                        OutlinedButton(onClick = onAppendAlbum) {
+                            Text("Add Queue")
+                        }
                     }
                 }
             }
         }
         items(album.tracks, key = { it.id }) { track ->
-            TrackRow(
-                baseUrl = baseUrl,
+            AlbumTrackRow(
                 track = track,
                 onPlayTrack = { onPlayTrack(track.id) },
                 onAppendTrack = { onAppendTrack(track.id) },
                 onPlayNextTrack = { onPlayNextTrack(track.id) },
-                onOpenAlbum = null,
             )
+        }
+    }
+}
+
+@Composable
+private fun AlbumTrackRow(
+    track: TrackSummaryDto,
+    onPlayTrack: () -> Unit,
+    onAppendTrack: () -> Unit,
+    onPlayNextTrack: () -> Unit,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onPlayTrack)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = trackListNumberLabel(track),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text(
+                    text = track.title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                track.durationSeconds?.let { duration ->
+                    Text(
+                        text = formatDuration(duration),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            Icons.Rounded.MoreVert,
+                            contentDescription = "Track actions",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Play Next") },
+                            onClick = {
+                                menuExpanded = false
+                                onPlayNextTrack()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Add Queue") },
+                            onClick = {
+                                menuExpanded = false
+                                onAppendTrack()
+                            },
+                        )
+                    }
+                }
+            }
+            if (track.discNumber != null || track.artist.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = buildAlbumTrackMeta(track),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -659,6 +1679,7 @@ private fun TrackRow(
     onAppendTrack: () -> Unit,
     onPlayNextTrack: () -> Unit,
     onOpenAlbum: (() -> Unit)?,
+    highlightQuery: String? = null,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(
@@ -671,11 +1692,20 @@ private fun TrackRow(
             ArtworkSquare(
                 url = resolveUrl(baseUrl, track.artworkUrl),
                 modifier = Modifier.size(92.dp),
+                fallbackText = track.album.ifBlank { track.title },
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text(track.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    listOfNotNull(track.artist, track.album.takeIf { it.isNotBlank() }).joinToString(" · "),
+                HighlightedText(
+                    text = track.title,
+                    query = highlightQuery,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                HighlightedText(
+                    text = listOfNotNull(track.artist, track.album.takeIf { it.isNotBlank() }).joinToString(" · "),
+                    query = highlightQuery,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -707,12 +1737,33 @@ private fun TrackRow(
 @Composable
 private fun QueueEntryRow(
     entry: QueueEntryDto,
+    isCurrent: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    canRemove: Boolean,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isCurrent) {
+                MaterialTheme.colorScheme.surfaceVariant
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        )
+    ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            if (isCurrent) {
+                Text(
+                    "Playing now",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.secondary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(4.dp))
+            }
             Text(entry.title ?: "Unknown Track", fontWeight = FontWeight.SemiBold)
             Text(
                 listOfNotNull(entry.artist, entry.album).joinToString(" · "),
@@ -726,9 +1777,9 @@ private fun QueueEntryRow(
             )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onMoveUp) { Text("Up") }
-                TextButton(onClick = onMoveDown) { Text("Down") }
-                TextButton(onClick = onRemove) { Text("Remove") }
+                TextButton(onClick = onMoveUp, enabled = canMoveUp) { Text("Up") }
+                TextButton(onClick = onMoveDown, enabled = canMoveDown) { Text("Down") }
+                TextButton(onClick = onRemove, enabled = canRemove) { Text("Remove") }
             }
         }
     }
@@ -748,6 +1799,7 @@ private fun NowPlayingContent(
         ArtworkSquare(
             url = resolveUrl(state.baseUrl, track?.artworkUrl),
             modifier = Modifier.weight(0.34f),
+            fallbackText = track?.album?.ifBlank { track?.title.orEmpty() }.orEmpty(),
         )
         Column(modifier = Modifier.weight(0.66f)) {
             Text(track?.title ?: "Nothing playing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -761,6 +1813,17 @@ private fun NowPlayingContent(
                 color = MaterialTheme.colorScheme.secondary,
                 style = MaterialTheme.typography.labelLarge,
             )
+            state.nowPlaying?.session?.let { session ->
+                val progress = sessionProgress(session)
+                if (progress != null) {
+                    Spacer(Modifier.height(10.dp))
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    PlaybackTimeRow(session = session)
+                }
+            }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onPrevious) { Text("Prev") }
@@ -777,7 +1840,36 @@ private fun NowPlayingContent(
 }
 
 @Composable
-private fun ArtworkSquare(url: String?, modifier: Modifier = Modifier) {
+private fun PlaybackTimeRow(session: io.musicd.android.data.SessionDto) {
+    val elapsed = session.positionSeconds?.let(::formatDuration) ?: "--:--"
+    val total = session.durationSeconds?.let(::formatDuration) ?: "--:--"
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            elapsed,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            total,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ArtworkSquare(
+    url: String?,
+    modifier: Modifier = Modifier,
+    fallbackText: String = "No Artwork",
+    contentHeight: Dp = 120.dp,
+) {
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(22.dp),
@@ -789,18 +1881,126 @@ private fun ArtworkSquare(url: String?, modifier: Modifier = Modifier) {
                 contentDescription = null,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(120.dp),
+                    .height(contentHeight),
             )
         } else {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(120.dp),
+                    .height(contentHeight),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("No Art", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = placeholderLabel(fallbackText),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(12.dp),
+                )
             }
         }
+    }
+}
+
+private fun placeholderLabel(text: String): String =
+    text.trim().ifBlank { "No Artwork" }
+
+private fun trackListNumberLabel(track: TrackSummaryDto): String =
+    track.trackNumber?.toString() ?: "•"
+
+private fun buildAlbumTrackMeta(track: TrackSummaryDto): String =
+    listOfNotNull(
+        track.discNumber?.takeIf { it > 1 }?.let { "Disc $it" },
+        track.artist.takeIf { it.isNotBlank() },
+    ).joinToString(" · ")
+
+private fun albumFormatLabel(mimeType: String?): String? =
+    when (mimeType?.lowercase()) {
+        "audio/flac" -> "FLAC"
+        "audio/mpeg", "audio/mp3" -> "MP3"
+        "audio/aac" -> "AAC"
+        "audio/ogg" -> "Ogg"
+        "audio/wav", "audio/wave", "audio/x-wav" -> "WAV"
+        "audio/mp4", "audio/x-m4a", "audio/alac" -> "MP4"
+        else -> null
+    }
+
+private fun albumTotalDurationLabel(album: AlbumDetailDto): String? {
+    val durations = album.tracks.mapNotNull { it.durationSeconds }
+    if (durations.isEmpty()) {
+        return null
+    }
+    return formatDuration(durations.sum())
+}
+
+@Composable
+private fun HighlightedText(
+    text: String,
+    query: String?,
+    color: Color,
+    modifier: Modifier = Modifier,
+    fontWeight: FontWeight? = null,
+    maxLines: Int = Int.MAX_VALUE,
+    overflow: TextOverflow = TextOverflow.Clip,
+) {
+    Text(
+        text = buildHighlightedText(
+            text = text,
+            query = query,
+            defaultColor = color,
+            highlightColor = MaterialTheme.colorScheme.primary,
+            baseFontWeight = fontWeight,
+        ),
+        modifier = modifier,
+        maxLines = maxLines,
+        overflow = overflow,
+    )
+}
+
+private fun buildHighlightedText(
+    text: String,
+    query: String?,
+    defaultColor: Color,
+    highlightColor: Color,
+    baseFontWeight: FontWeight?,
+) = buildAnnotatedString {
+    val normalizedText = text.lowercase()
+    val tokens = queryTokens(query.orEmpty())
+    if (text.isBlank() || tokens.isEmpty()) {
+        pushStyle(SpanStyle(color = defaultColor, fontWeight = baseFontWeight))
+        append(text)
+        pop()
+        return@buildAnnotatedString
+    }
+
+    val highlightMask = BooleanArray(text.length)
+    tokens.forEach { token ->
+        var startIndex = normalizedText.indexOf(token)
+        while (startIndex >= 0) {
+            val endIndex = (startIndex + token.length).coerceAtMost(highlightMask.size)
+            for (index in startIndex until endIndex) {
+                highlightMask[index] = true
+            }
+            startIndex = normalizedText.indexOf(token, startIndex + 1)
+        }
+    }
+
+    var index = 0
+    while (index < text.length) {
+        val highlighted = highlightMask[index]
+        val segmentStart = index
+        while (index < text.length && highlightMask[index] == highlighted) {
+            index += 1
+        }
+        pushStyle(
+            SpanStyle(
+                color = if (highlighted) highlightColor else defaultColor,
+                fontWeight = if (highlighted) FontWeight.SemiBold else baseFontWeight,
+            )
+        )
+        append(text.substring(segmentStart, index))
+        pop()
     }
 }
 
@@ -817,6 +2017,16 @@ private fun formatDuration(totalSeconds: Long): String {
     return "%d:%02d".format(minutes, seconds)
 }
 
+private fun shouldShowMiniPlayer(state: MusicdUiState): Boolean =
+    state.nowPlaying?.currentTrack != null || !state.queue?.entries.isNullOrEmpty()
+
+private fun sessionProgress(session: io.musicd.android.data.SessionDto?): Float? {
+    val position = session?.positionSeconds?.toFloat() ?: return null
+    val duration = session.durationSeconds?.toFloat() ?: return null
+    if (duration <= 0f) return null
+    return (position / duration).coerceIn(0f, 1f)
+}
+
 private fun resolveUrl(baseUrl: String, path: String?): String? {
     if (path.isNullOrBlank()) {
         return null
@@ -826,6 +2036,13 @@ private fun resolveUrl(baseUrl: String, path: String?): String? {
     }
     return "${baseUrl.trimEnd('/')}/${path.trimStart('/')}"
 }
+
+private fun serverLabel(baseUrl: String): String =
+    if (baseUrl.isBlank()) {
+        "Set Server"
+    } else {
+        baseUrl.removePrefix("http://").removePrefix("https://")
+    }
 
 @Composable
 private fun ElevatedPanel(content: @Composable ColumnScope.() -> Unit) {

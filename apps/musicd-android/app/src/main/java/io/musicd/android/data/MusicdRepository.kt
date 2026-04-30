@@ -3,6 +3,7 @@ package io.musicd.android.data
 import android.content.Context
 import androidx.core.content.edit
 import io.musicd.android.data.AlbumDetailDto
+import io.musicd.android.data.ArtistDetailDto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -24,13 +25,30 @@ class MusicdRepository(
         prefs.edit { putString(KEY_RENDERER_LOCATION, rendererLocation) }
     }
 
+    fun clearBaseUrl() {
+        prefs.edit { remove(KEY_BASE_URL) }
+    }
+
+    fun clearRendererLocation() {
+        prefs.edit { remove(KEY_RENDERER_LOCATION) }
+    }
+
     suspend fun getAlbums(baseUrl: String): List<AlbumSummaryDto> = withContext(Dispatchers.IO) {
         api.getAlbums(baseUrl.normalizeBaseUrl())
+    }
+
+    suspend fun getArtists(baseUrl: String): List<ArtistSummaryDto> = withContext(Dispatchers.IO) {
+        api.getArtists(baseUrl.normalizeBaseUrl())
     }
 
     suspend fun getAlbumDetail(baseUrl: String, albumId: String): AlbumDetailDto =
         withContext(Dispatchers.IO) {
             api.getAlbumDetail(baseUrl.normalizeBaseUrl(), albumId)
+        }
+
+    suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
+        withContext(Dispatchers.IO) {
+            api.getArtistDetail(baseUrl.normalizeBaseUrl(), artistId)
         }
 
     suspend fun getTracks(baseUrl: String): List<TrackSummaryDto> = withContext(Dispatchers.IO) {
