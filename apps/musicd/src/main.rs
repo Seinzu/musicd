@@ -49,6 +49,7 @@ struct AlbumSummary {
     artist: String,
     track_count: usize,
     artwork_track_id: Option<String>,
+    artwork: Option<TrackArtwork>,
     artwork_url: Option<String>,
     first_track_id: String,
 }
@@ -2293,7 +2294,7 @@ fn handle_album_artwork_request(
     state: &ServiceState,
 ) -> io::Result<()> {
     let album_id = request.path.trim_start_matches("/artwork/album/");
-    let Some(artwork_path) = state.album_artwork_override_path(album_id) else {
+    let Some(artwork_path) = state.album_artwork_path(album_id) else {
         return respond_not_found(writer, request.method == "HEAD");
     };
 
@@ -4935,6 +4936,9 @@ impl Database {
                     artist_name TEXT NOT NULL,
                     track_count INTEGER NOT NULL,
                     artwork_track_id TEXT,
+                    artwork_cache_key TEXT,
+                    artwork_source TEXT,
+                    artwork_mime_type TEXT,
                     first_track_id TEXT NOT NULL
                 );
 
@@ -5032,6 +5036,9 @@ impl Database {
         ensure_column(&connection, "albums", "artist_name", "TEXT")?;
         ensure_column(&connection, "albums", "track_count", "INTEGER")?;
         ensure_column(&connection, "albums", "artwork_track_id", "TEXT")?;
+        ensure_column(&connection, "albums", "artwork_cache_key", "TEXT")?;
+        ensure_column(&connection, "albums", "artwork_source", "TEXT")?;
+        ensure_column(&connection, "albums", "artwork_mime_type", "TEXT")?;
         ensure_column(&connection, "albums", "first_track_id", "TEXT")?;
         ensure_column(&connection, "artists", "album_count", "INTEGER")?;
         ensure_column(&connection, "artists", "track_count", "INTEGER")?;
@@ -5173,12 +5180,25 @@ impl Database {
             let mut statement = transaction
                 .prepare(
                     "INSERT INTO albums
-                     (id, artist_id, title, artist_name, track_count, artwork_track_id, first_track_id)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (id, artist_id, title, artist_name, track_count, artwork_track_id,
+                      artwork_cache_key, artwork_source, artwork_mime_type, first_track_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
             for album in &albums {
+                let artwork_cache_key = album
+                    .artwork
+                    .as_ref()
+                    .map(|artwork| artwork.cache_key.clone());
+                let artwork_source = album
+                    .artwork
+                    .as_ref()
+                    .map(|artwork| artwork.source.clone());
+                let artwork_mime_type = album
+                    .artwork
+                    .as_ref()
+                    .map(|artwork| artwork.mime_type.clone());
                 statement
                     .execute(params![
                         album.id,
@@ -5187,6 +5207,9 @@ impl Database {
                         album.artist,
                         album.track_count,
                         album.artwork_track_id,
+                        artwork_cache_key,
+                        artwork_source,
+                        artwork_mime_type,
                         album.first_track_id,
                     ])
                     .map_err(db_error)?;
@@ -5320,32 +5343,6 @@ impl Database {
             overrides.push(row.map_err(db_error)?);
         }
         Ok(overrides)
-    }
-
-    fn load_album_artwork_override(
-        &self,
-        album_id: &str,
-    ) -> io::Result<Option<AlbumArtworkOverride>> {
-        let connection = self.connection()?;
-        connection
-            .query_row(
-                "SELECT album_id, cache_key, source, mime_type, musicbrainz_release_id, applied_unix
-                 FROM album_artwork_overrides
-                 WHERE album_id = ?1",
-                [album_id],
-                |row| {
-                    Ok(AlbumArtworkOverride {
-                        album_id: row.get(0)?,
-                        cache_key: row.get(1)?,
-                        source: row.get(2)?,
-                        mime_type: row.get(3)?,
-                        musicbrainz_release_id: row.get(4)?,
-                        applied_unix: row.get(5)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(db_error)
     }
 
     fn upsert_album_artwork_override(&self, override_record: &AlbumArtworkOverride) -> io::Result<()> {
@@ -6870,14 +6867,13 @@ impl ServiceState {
             .map(|artwork| artwork_cache_path(&self.config.config_path, &artwork.cache_key))
     }
 
-    fn album_artwork_override_path(&self, album_id: &str) -> Option<PathBuf> {
-        self.database
-            .load_album_artwork_override(album_id)
-            .ok()
-            .flatten()
-            .map(|override_record| {
-                artwork_cache_path(&self.config.config_path, &override_record.cache_key)
-            })
+    fn album_artwork_path(&self, album_id: &str) -> Option<PathBuf> {
+        self.find_album(album_id).and_then(|album| {
+            album
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork_cache_path(&self.config.config_path, &artwork.cache_key))
+        })
     }
 
     fn artwork_url_for_track(&self, track: &LibraryTrack) -> Option<String> {
@@ -6889,10 +6885,8 @@ impl ServiceState {
             ));
         }
 
-        self.database
-            .load_album_artwork_override(&track.album_id)
-            .ok()
-            .flatten()
+        self.find_album(&track.album_id)
+            .filter(|album| album.artwork.is_some())
             .map(|_| {
                 format!(
                     "{}/artwork/album/{}",
@@ -7639,10 +7633,14 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
         .filter_map(|(album_id, mut album_tracks)| {
             album_tracks.sort_by(compare_track_album_order);
             let first_track = album_tracks.first()?.clone();
+            let album_artwork_url = format!("/artwork/album/{album_id}");
             let artwork_track_id = album_tracks
                 .iter()
                 .find(|track| track.artwork.is_some())
                 .map(|track| track.id.clone());
+            let artwork = album_tracks
+                .iter()
+                .find_map(|track| track.artwork.clone());
             Some(AlbumSummary {
                 id: album_id,
                 artist_id: stable_artist_id(&first_track.artist),
@@ -7650,9 +7648,8 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
                 artist: first_track.artist.clone(),
                 track_count: album_tracks.len(),
                 artwork_track_id: artwork_track_id.clone(),
-                artwork_url: artwork_track_id
-                    .as_ref()
-                    .map(|track_id| format!("/artwork/track/{track_id}")),
+                artwork: artwork.clone(),
+                artwork_url: artwork.map(|_| album_artwork_url),
                 first_track_id: first_track.id.clone(),
             })
         })
@@ -7666,17 +7663,25 @@ fn apply_album_artwork_overrides(
     albums: &mut [AlbumSummary],
     overrides: &[AlbumArtworkOverride],
 ) {
-    let override_urls = overrides
+    let override_records = overrides
         .iter()
         .map(|override_record| {
             (
                 override_record.album_id.clone(),
-                format!("/artwork/album/{}", override_record.album_id),
+                (
+                    TrackArtwork {
+                        cache_key: override_record.cache_key.clone(),
+                        source: override_record.source.clone(),
+                        mime_type: override_record.mime_type.clone(),
+                    },
+                    format!("/artwork/album/{}", override_record.album_id),
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
     for album in albums {
-        if let Some(override_url) = override_urls.get(&album.id) {
+        if let Some((override_artwork, override_url)) = override_records.get(&album.id) {
+            album.artwork = Some(override_artwork.clone());
             album.artwork_url = Some(override_url.clone());
         }
     }
@@ -8535,7 +8540,8 @@ fn load_tracks_from_connection(connection: &Connection) -> io::Result<Vec<Librar
 fn load_albums_from_connection(connection: &Connection) -> io::Result<Vec<AlbumSummary>> {
     let mut statement = connection
         .prepare(
-            "SELECT id, artist_id, title, artist_name, track_count, artwork_track_id, first_track_id
+            "SELECT id, artist_id, title, artist_name, track_count, artwork_track_id,
+                    artwork_cache_key, artwork_source, artwork_mime_type, first_track_id
              FROM albums
              ORDER BY artist_name ASC, title ASC, id ASC",
         )
@@ -8543,6 +8549,18 @@ fn load_albums_from_connection(connection: &Connection) -> io::Result<Vec<AlbumS
     let rows = statement
         .query_map([], |row| {
             let artwork_track_id = row.get::<_, Option<String>>(5)?;
+            let artwork = match (
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+            ) {
+                (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
+                    cache_key,
+                    source,
+                    mime_type,
+                }),
+                _ => None,
+            };
             Ok(AlbumSummary {
                 id: row.get(0)?,
                 artist_id: row.get(1)?,
@@ -8550,9 +8568,13 @@ fn load_albums_from_connection(connection: &Connection) -> io::Result<Vec<AlbumS
                 artist: row.get(3)?,
                 track_count: row.get(4)?,
                 artwork_track_id: artwork_track_id.clone(),
-                artwork_url: artwork_track_id
-                    .map(|track_id| format!("/artwork/track/{track_id}")),
-                first_track_id: row.get(6)?,
+                artwork: artwork.clone(),
+                artwork_url: if artwork.is_some() {
+                    Some(format!("/artwork/album/{}", row.get::<_, String>(0)?))
+                } else {
+                    None
+                },
+                first_track_id: row.get(9)?,
             })
         })
         .map_err(db_error)?;
@@ -8576,11 +8598,24 @@ fn rebuild_normalized_library_tables(connection: &Connection) -> io::Result<()> 
         let mut statement = transaction
             .prepare(
                 "INSERT INTO albums
-                 (id, artist_id, title, artist_name, track_count, artwork_track_id, first_track_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (id, artist_id, title, artist_name, track_count, artwork_track_id,
+                  artwork_cache_key, artwork_source, artwork_mime_type, first_track_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .map_err(db_error)?;
         for album in &albums {
+            let artwork_cache_key = album
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork.cache_key.clone());
+            let artwork_source = album
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork.source.clone());
+            let artwork_mime_type = album
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork.mime_type.clone());
             statement
                 .execute(params![
                     album.id,
@@ -8589,6 +8624,9 @@ fn rebuild_normalized_library_tables(connection: &Connection) -> io::Result<()> 
                     album.artist,
                     album.track_count,
                     album.artwork_track_id,
+                    artwork_cache_key,
+                    artwork_source,
+                    artwork_mime_type,
                     album.first_track_id,
                 ])
                 .map_err(db_error)?;
@@ -9976,6 +10014,11 @@ mod tests {
         first.artist = "Radiohead".to_string();
         first.album = "In Rainbows".to_string();
         first.album_id = stable_album_id(&first.artist, &first.album);
+        first.artwork = Some(super::TrackArtwork {
+            cache_key: "cover.jpg".to_string(),
+            source: "Embedded artwork".to_string(),
+            mime_type: "image/jpeg".to_string(),
+        });
 
         let mut second = sample_track("track-2", Some(1), Some(2), "Bodysnatchers");
         second.artist = "Radiohead".to_string();
@@ -10002,9 +10045,19 @@ mod tests {
             .iter()
             .find(|album| album.id == stable_album_id("Radiohead", "In Rainbows"))
             .expect("in rainbows album should exist");
+        let expected_artwork_url =
+            format!("/artwork/album/{}", stable_album_id("Radiohead", "In Rainbows"));
         assert_eq!(in_rainbows.artist_id, stable_artist_id("Radiohead"));
         assert_eq!(in_rainbows.track_count, 2);
         assert_eq!(in_rainbows.first_track_id, "track-1");
+        assert_eq!(in_rainbows.artwork_url.as_deref(), Some(expected_artwork_url.as_str()));
+        assert_eq!(
+            in_rainbows
+                .artwork
+                .as_ref()
+                .map(|artwork| artwork.cache_key.as_str()),
+            Some("cover.jpg")
+        );
 
         let artists = database.load_artists().expect("artists should load");
         assert_eq!(artists.len(), 1);
