@@ -13,10 +13,15 @@ What is included:
 
 What is not included yet:
 
-- Gradle wrapper files
 - release signing config
 - tablet/foldable layouts
 - queue editing gestures
-- search and album-detail flows
+- background playback / media session integration
 
-This environment did not have `gradle` installed, so the wrapper could not be generated here. The easiest next step is to open this project in Android Studio and let it finish sync / wrapper setup there.
+Build locally:
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+CI now also builds and uploads the debug APK from GitHub Actions through `.github/workflows/android-debug-apk.yml`.
