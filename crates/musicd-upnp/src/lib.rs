@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 const MEDIA_RENDERER_ST: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 const RENDERING_CONTROL_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
+const PLAYLIST_EXTENSION_SERVICE: &str = "urn:UuVol-com:service:PlaylistExtension:1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamResource {
@@ -53,6 +54,13 @@ pub struct RendererDescription {
     pub model_name: Option<String>,
     pub av_transport_control_url: String,
     pub rendering_control_url: Option<String>,
+    pub capabilities: RendererCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RendererCapabilities {
+    pub av_transport_actions: Option<Vec<String>>,
+    pub has_playlist_extension_service: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +106,15 @@ impl RendererDescription {
         let rendering_control_url = device
             .find_service(RENDERING_CONTROL_SERVICE)
             .map(|service| service.control_url.clone());
+        let av_transport_actions = device
+            .find_service(AV_TRANSPORT_SERVICE)
+            .and_then(|service| service.scpd_url.as_deref())
+            .map(fetch_service_actions)
+            .transpose()
+            .ok()
+            .flatten();
+        let has_playlist_extension_service =
+            Some(device.find_service(PLAYLIST_EXTENSION_SERVICE).is_some());
 
         Ok(Self {
             location: device.location,
@@ -107,7 +124,43 @@ impl RendererDescription {
             model_name: device.model_name,
             av_transport_control_url,
             rendering_control_url,
+            capabilities: RendererCapabilities {
+                av_transport_actions,
+                has_playlist_extension_service,
+            },
         })
+    }
+}
+
+impl RendererCapabilities {
+    pub fn supports_action(&self, action: &str) -> Option<bool> {
+        self.av_transport_actions
+            .as_ref()
+            .map(|actions| actions.iter().any(|candidate| candidate == action))
+    }
+
+    pub fn supports_set_next_av_transport_uri(&self) -> Option<bool> {
+        self.supports_action("SetNextAVTransportURI")
+    }
+
+    pub fn supports_pause(&self) -> Option<bool> {
+        self.supports_action("Pause")
+    }
+
+    pub fn supports_stop(&self) -> Option<bool> {
+        self.supports_action("Stop")
+    }
+
+    pub fn supports_next(&self) -> Option<bool> {
+        self.supports_action("Next")
+    }
+
+    pub fn supports_previous(&self) -> Option<bool> {
+        self.supports_action("Previous")
+    }
+
+    pub fn supports_seek(&self) -> Option<bool> {
+        self.supports_action("Seek")
     }
 }
 
@@ -182,6 +235,28 @@ pub fn fetch_device_description(location: &str) -> io::Result<DeviceDescription>
 
 pub fn inspect_renderer(location: &str) -> io::Result<RendererDescription> {
     RendererDescription::from_device(fetch_device_description(location)?)
+}
+
+fn fetch_service_actions(scpd_url: &str) -> io::Result<Vec<String>> {
+    let response = http_request("GET", scpd_url, &[("Accept", "application/xml")], None)?;
+    if response.status_code != 200 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "service description request failed with HTTP {} {}",
+                response.status_code, response.reason_phrase
+            ),
+        ));
+    }
+
+    let body = String::from_utf8(response.body).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("service description body was not valid UTF-8: {error}"),
+        )
+    })?;
+
+    Ok(parse_service_actions(&body))
 }
 
 pub fn set_av_transport_uri(control_url: &str, resource: &StreamResource) -> io::Result<()> {
@@ -638,6 +713,20 @@ fn parse_device_description(location: &str, xml: &str) -> io::Result<DeviceDescr
     })
 }
 
+fn parse_service_actions(xml: &str) -> Vec<String> {
+    let action_list = extract_first_tag(xml, "actionList").unwrap_or(xml);
+    let mut actions = extract_all_tag_blocks(action_list, "action")
+        .into_iter()
+        .filter_map(|action_xml| extract_first_tag(action_xml, "name"))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    actions.sort();
+    actions.dedup();
+    actions
+}
+
 fn http_request(
     method: &str,
     url: &str,
@@ -964,6 +1053,22 @@ impl fmt::Display for RendererDescription {
         if let Some(control_url) = &self.rendering_control_url {
             writeln!(formatter, "RenderingControl: {control_url}")?;
         }
+        if let Some(has_playlist_extension_service) =
+            self.capabilities.has_playlist_extension_service
+        {
+            writeln!(
+                formatter,
+                "Playlist extension: {}",
+                if has_playlist_extension_service {
+                    "available"
+                } else {
+                    "not advertised"
+                }
+            )?;
+        }
+        if let Some(actions) = &self.capabilities.av_transport_actions {
+            writeln!(formatter, "AVTransport actions: {}", actions.join(", "))?;
+        }
         Ok(())
     }
 }
@@ -976,8 +1081,8 @@ mod tests {
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
         build_stop_envelope, decode_chunked_body, is_transition_not_available_fault,
         parse_device_description, parse_http_response, parse_http_url,
-        parse_position_info_response, parse_ssdp_response, parse_transport_info_response,
-        resolve_url,
+        parse_position_info_response, parse_service_actions, parse_ssdp_response,
+        parse_transport_info_response, resolve_url,
     };
     use std::collections::HashMap;
 
@@ -1095,6 +1200,29 @@ mod tests {
         assert_eq!(
             description.services[0].control_url,
             "http://192.168.1.55:49152/upnp/control/avtransport1"
+        );
+    }
+
+    #[test]
+    fn parses_service_actions_sorted_and_unique() {
+        let xml = r#"
+<scpd>
+  <actionList>
+    <action><name>Pause</name></action>
+    <action><name>SetNextAVTransportURI</name></action>
+    <action><name>Pause</name></action>
+    <action><name>Next</name></action>
+  </actionList>
+</scpd>
+        "#;
+
+        assert_eq!(
+            parse_service_actions(xml),
+            vec![
+                "Next".to_string(),
+                "Pause".to_string(),
+                "SetNextAVTransportURI".to_string()
+            ]
         );
     }
 

@@ -15,9 +15,9 @@ use lofty::read_from_path;
 use lofty::tag::Accessor;
 use musicd_core::AppConfig;
 use musicd_upnp::{
-    StreamResource, TransportSnapshot, discover_renderers, get_transport_snapshot,
-    inspect_renderer, next, pause, play, play_stream, previous, set_av_transport_uri,
-    set_next_av_transport_uri, stop,
+    RendererCapabilities, StreamResource, TransportSnapshot, discover_renderers,
+    get_transport_snapshot, inspect_renderer, next, pause, play, play_stream, previous,
+    set_av_transport_uri, set_next_av_transport_uri, stop,
 };
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
@@ -171,6 +171,10 @@ struct RendererRecord {
     manufacturer: Option<String>,
     model_name: Option<String>,
     av_transport_control_url: Option<String>,
+    capabilities: RendererCapabilities,
+    last_checked_unix: i64,
+    last_reachable_unix: Option<i64>,
+    last_error: Option<String>,
     last_seen_unix: i64,
 }
 
@@ -322,9 +326,7 @@ impl RendererBackend for UpnpRendererBackend {
         cached: Option<&RendererRecord>,
         renderer_location: &str,
     ) -> io::Result<RendererRecord> {
-        if let Some(renderer) =
-            cached.filter(|renderer| renderer.av_transport_control_url.is_some())
-        {
+        if let Some(renderer) = cached.filter(|renderer| !renderer_needs_refresh(renderer)) {
             return Ok(renderer.clone());
         }
 
@@ -339,6 +341,10 @@ impl RendererBackend for UpnpRendererBackend {
             manufacturer: renderer.manufacturer,
             model_name: renderer.model_name,
             av_transport_control_url: Some(renderer.av_transport_control_url),
+            capabilities: renderer.capabilities,
+            last_checked_unix: now_unix_timestamp(),
+            last_reachable_unix: Some(now_unix_timestamp()),
+            last_error: None,
             last_seen_unix: now_unix_timestamp(),
         })
     }
@@ -4615,7 +4621,7 @@ fn render_album_artwork_candidates_json(state: &ServiceState, request: &HttpRequ
 }
 
 fn render_renderers_json(state: &ServiceState) -> String {
-    let renderers = state.renderer_snapshot();
+    let renderers = state.enriched_renderer_snapshot();
     let selected = state
         .database
         .last_selected_renderer_location()
@@ -4647,10 +4653,7 @@ fn render_now_playing_json(state: &ServiceState, request: &HttpRequest) -> Strin
     let renderer_location =
         state.preferred_renderer_location(request_value(request, "renderer_location"));
     let renderer_json = state
-        .database
-        .load_renderer(&renderer_location)
-        .ok()
-        .flatten()
+        .enriched_renderer_record(&renderer_location)
         .map(|renderer| renderer_record_json(&renderer, true))
         .unwrap_or_else(|| "null".to_string());
     let current_track_json = current_track_json_for_renderer(state, &renderer_location);
@@ -4790,6 +4793,8 @@ fn render_discovery_json(state: &ServiceState) -> String {
                     details.manufacturer.as_deref(),
                     details.model_name.as_deref(),
                     Some(&details.av_transport_control_url),
+                    Some(&details.capabilities),
+                    None,
                 );
                 renderer_record_json(
                     &RendererRecord {
@@ -4798,6 +4803,10 @@ fn render_discovery_json(state: &ServiceState) -> String {
                         manufacturer: details.manufacturer,
                         model_name: details.model_name,
                         av_transport_control_url: Some(details.av_transport_control_url),
+                        capabilities: details.capabilities,
+                        last_checked_unix: now_unix_timestamp(),
+                        last_reachable_unix: Some(now_unix_timestamp()),
+                        last_error: None,
                         last_seen_unix: now_unix_timestamp(),
                     },
                     false,
@@ -4805,7 +4814,15 @@ fn render_discovery_json(state: &ServiceState) -> String {
             }
             Err(error) => {
                 let name = renderer.server.as_deref().unwrap_or("Unknown renderer");
-                let _ = state.remember_renderer_details(&renderer.location, name, None, None, None);
+                let _ = state.remember_renderer_details(
+                    &renderer.location,
+                    name,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&error.to_string()),
+                );
                 format!(
                     r#"{{"location":"{}","name":"{}","kind":"{}","error":"{}"}}"#,
                     json_escape(&renderer.location),
@@ -4876,13 +4893,30 @@ fn track_summary_json(track: &LibraryTrack) -> String {
 }
 
 fn renderer_record_json(renderer: &RendererRecord, selected: bool) -> String {
+    let av_transport_actions_json = renderer
+        .capabilities
+        .av_transport_actions
+        .as_ref()
+        .map(|actions| string_list_json(actions));
     format!(
-        r#"{{"location":"{}","name":"{}","manufacturer":{},"model_name":{},"av_transport_control_url":{},"last_seen_unix":{},"selected":{},"kind":"{}"}}"#,
+        r#"{{"location":"{}","name":"{}","manufacturer":{},"model_name":{},"av_transport_control_url":{},"capabilities":{{"av_transport_actions":{},"supports_set_next_av_transport_uri":{},"supports_pause":{},"supports_stop":{},"supports_next":{},"supports_previous":{},"supports_seek":{},"has_playlist_extension_service":{}}},"health":{{"last_checked_unix":{},"last_reachable_unix":{},"last_error":{},"reachable":{}}},"last_seen_unix":{},"selected":{},"kind":"{}"}}"#,
         json_escape(&renderer.location),
         json_escape(&renderer.name),
         option_string_json(renderer.manufacturer.as_deref()),
         option_string_json(renderer.model_name.as_deref()),
         option_string_json(renderer.av_transport_control_url.as_deref()),
+        option_json_fragment(av_transport_actions_json.as_deref()),
+        option_bool_json(renderer.capabilities.supports_set_next_av_transport_uri()),
+        option_bool_json(renderer.capabilities.supports_pause()),
+        option_bool_json(renderer.capabilities.supports_stop()),
+        option_bool_json(renderer.capabilities.supports_next()),
+        option_bool_json(renderer.capabilities.supports_previous()),
+        option_bool_json(renderer.capabilities.supports_seek()),
+        option_bool_json(renderer.capabilities.has_playlist_extension_service),
+        renderer.last_checked_unix,
+        option_i64_json(renderer.last_reachable_unix),
+        option_string_json(renderer.last_error.as_deref()),
+        bool_json(renderer.last_error.is_none() && renderer.last_reachable_unix.is_some()),
         renderer.last_seen_unix,
         bool_json(selected),
         renderer_kind_name(renderer_kind_for_location(&renderer.location)),
@@ -4957,6 +4991,11 @@ impl Database {
                     manufacturer TEXT,
                     model_name TEXT,
                     av_transport_control_url TEXT,
+                    av_transport_actions_json TEXT,
+                    has_playlist_extension_service INTEGER,
+                    last_checked_unix INTEGER NOT NULL DEFAULT 0,
+                    last_reachable_unix INTEGER,
+                    last_error TEXT,
                     last_seen_unix INTEGER NOT NULL DEFAULT 0
                 );
 
@@ -5044,6 +5083,42 @@ impl Database {
         ensure_column(&connection, "artists", "track_count", "INTEGER")?;
         ensure_column(&connection, "artists", "artwork_track_id", "TEXT")?;
         ensure_column(&connection, "artists", "first_album_id", "TEXT")?;
+        ensure_column(
+            &connection,
+            "renderers",
+            "av_transport_actions_json",
+            "TEXT",
+        )?;
+        ensure_column(
+            &connection,
+            "renderers",
+            "has_playlist_extension_service",
+            "INTEGER",
+        )?;
+        ensure_column(
+            &connection,
+            "renderers",
+            "last_checked_unix",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(&connection, "renderers", "last_reachable_unix", "INTEGER")?;
+        ensure_column(&connection, "renderers", "last_error", "TEXT")?;
+        connection
+            .execute(
+                "UPDATE renderers
+                 SET last_reachable_unix = last_seen_unix
+                 WHERE last_reachable_unix IS NULL AND last_seen_unix > 0",
+                [],
+            )
+            .map_err(db_error)?;
+        connection
+            .execute(
+                "UPDATE renderers
+                 SET last_checked_unix = last_seen_unix
+                 WHERE last_checked_unix = 0 AND last_seen_unix > 0",
+                [],
+            )
+            .map_err(db_error)?;
         ensure_column(
             &connection,
             "playback_sessions",
@@ -5191,10 +5266,7 @@ impl Database {
                     .artwork
                     .as_ref()
                     .map(|artwork| artwork.cache_key.clone());
-                let artwork_source = album
-                    .artwork
-                    .as_ref()
-                    .map(|artwork| artwork.source.clone());
+                let artwork_source = album.artwork.as_ref().map(|artwork| artwork.source.clone());
                 let artwork_mime_type = album
                     .artwork
                     .as_ref()
@@ -5283,7 +5355,9 @@ impl Database {
         let selected = self.last_selected_renderer_location()?;
         let mut statement = connection
             .prepare(
-                "SELECT location, name, manufacturer, model_name, av_transport_control_url, last_seen_unix
+                "SELECT location, name, manufacturer, model_name, av_transport_control_url,
+                        av_transport_actions_json, has_playlist_extension_service,
+                        last_checked_unix, last_reachable_unix, last_error, last_seen_unix
                  FROM renderers
                  ORDER BY last_seen_unix DESC, name ASC",
             )
@@ -5296,7 +5370,14 @@ impl Database {
                     manufacturer: row.get(2)?,
                     model_name: row.get(3)?,
                     av_transport_control_url: row.get(4)?,
-                    last_seen_unix: row.get(5)?,
+                    capabilities: RendererCapabilities {
+                        av_transport_actions: parse_renderer_actions_json(row.get(5)?),
+                        has_playlist_extension_service: row.get(6)?,
+                    },
+                    last_checked_unix: row.get(7)?,
+                    last_reachable_unix: row.get(8)?,
+                    last_error: row.get(9)?,
+                    last_seen_unix: row.get(10)?,
                 })
             })
             .map_err(db_error)?;
@@ -5345,7 +5426,10 @@ impl Database {
         Ok(overrides)
     }
 
-    fn upsert_album_artwork_override(&self, override_record: &AlbumArtworkOverride) -> io::Result<()> {
+    fn upsert_album_artwork_override(
+        &self,
+        override_record: &AlbumArtworkOverride,
+    ) -> io::Result<()> {
         let connection = self.connection()?;
         connection
             .execute(
@@ -5375,7 +5459,9 @@ impl Database {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT location, name, manufacturer, model_name, av_transport_control_url, last_seen_unix
+                "SELECT location, name, manufacturer, model_name, av_transport_control_url,
+                        av_transport_actions_json, has_playlist_extension_service,
+                        last_checked_unix, last_reachable_unix, last_error, last_seen_unix
                  FROM renderers
                  WHERE location = ?",
                 [location],
@@ -5386,7 +5472,14 @@ impl Database {
                         manufacturer: row.get(2)?,
                         model_name: row.get(3)?,
                         av_transport_control_url: row.get(4)?,
-                        last_seen_unix: row.get(5)?,
+                        capabilities: RendererCapabilities {
+                            av_transport_actions: parse_renderer_actions_json(row.get(5)?),
+                            has_playlist_extension_service: row.get(6)?,
+                        },
+                        last_checked_unix: row.get(7)?,
+                        last_reachable_unix: row.get(8)?,
+                        last_error: row.get(9)?,
+                        last_seen_unix: row.get(10)?,
                     })
                 },
             )
@@ -5396,16 +5489,25 @@ impl Database {
 
     fn upsert_renderer(&self, renderer: &RendererRecord) -> io::Result<()> {
         let connection = self.connection()?;
+        let av_transport_actions_json =
+            renderer_actions_json(&renderer.capabilities.av_transport_actions);
         connection
             .execute(
                 "INSERT INTO renderers
-                 (location, name, manufacturer, model_name, av_transport_control_url, last_seen_unix)
-                 VALUES (?, ?, ?, ?, ?, ?)
+                 (location, name, manufacturer, model_name, av_transport_control_url,
+                  av_transport_actions_json, has_playlist_extension_service, last_checked_unix,
+                  last_reachable_unix, last_error, last_seen_unix)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(location) DO UPDATE SET
                     name = excluded.name,
                     manufacturer = COALESCE(excluded.manufacturer, renderers.manufacturer),
                     model_name = COALESCE(excluded.model_name, renderers.model_name),
                     av_transport_control_url = COALESCE(excluded.av_transport_control_url, renderers.av_transport_control_url),
+                    av_transport_actions_json = COALESCE(excluded.av_transport_actions_json, renderers.av_transport_actions_json),
+                    has_playlist_extension_service = COALESCE(excluded.has_playlist_extension_service, renderers.has_playlist_extension_service),
+                    last_checked_unix = excluded.last_checked_unix,
+                    last_reachable_unix = COALESCE(excluded.last_reachable_unix, renderers.last_reachable_unix),
+                    last_error = excluded.last_error,
                     last_seen_unix = excluded.last_seen_unix",
                 params![
                     renderer.location,
@@ -5413,6 +5515,11 @@ impl Database {
                     renderer.manufacturer,
                     renderer.model_name,
                     renderer.av_transport_control_url,
+                    av_transport_actions_json,
+                    renderer.capabilities.has_playlist_extension_service,
+                    renderer.last_checked_unix,
+                    renderer.last_reachable_unix,
+                    renderer.last_error,
                     renderer.last_seen_unix
                 ],
             )
@@ -6690,7 +6797,10 @@ impl ServiceState {
         let mut albums = self.database.load_albums().unwrap_or_default();
         apply_album_artwork_overrides(
             &mut albums,
-            &self.database.list_album_artwork_overrides().unwrap_or_default(),
+            &self
+                .database
+                .list_album_artwork_overrides()
+                .unwrap_or_default(),
         );
         albums
     }
@@ -6700,7 +6810,10 @@ impl ServiceState {
         let mut albums = self.database.load_albums().unwrap_or_default();
         apply_album_artwork_overrides(
             &mut albums,
-            &self.database.list_album_artwork_overrides().unwrap_or_default(),
+            &self
+                .database
+                .list_album_artwork_overrides()
+                .unwrap_or_default(),
         );
         hydrate_artist_artwork_urls(&mut artists, &albums);
         artists
@@ -6787,6 +6900,38 @@ impl ServiceState {
         self.database.list_renderers().unwrap_or_default()
     }
 
+    fn enriched_renderer_snapshot(&self) -> Vec<RendererRecord> {
+        self.renderer_snapshot()
+            .into_iter()
+            .map(|renderer| {
+                self.enrich_renderer_record_if_needed(&renderer)
+                    .unwrap_or(renderer)
+            })
+            .collect()
+    }
+
+    fn enriched_renderer_record(&self, renderer_location: &str) -> Option<RendererRecord> {
+        self.database
+            .load_renderer(renderer_location)
+            .ok()
+            .flatten()
+            .map(|renderer| {
+                self.enrich_renderer_record_if_needed(&renderer)
+                    .unwrap_or(renderer)
+            })
+    }
+
+    fn enrich_renderer_record_if_needed(
+        &self,
+        renderer: &RendererRecord,
+    ) -> io::Result<RendererRecord> {
+        if !renderer_needs_refresh(renderer) {
+            return Ok(renderer.clone());
+        }
+        let resolved = self.resolve_renderer(&renderer.location)?;
+        Ok(resolved)
+    }
+
     fn preferred_renderer_location(&self, requested: Option<&str>) -> String {
         requested
             .map(str::trim)
@@ -6805,7 +6950,8 @@ impl ServiceState {
     fn remember_renderer_location(&self, location: &str) -> io::Result<()> {
         if let Some(existing) = self.database.load_renderer(location)? {
             if !renderer_name_looks_like_location(&existing.name, location) {
-                self.database.set_last_selected_renderer_location(location)?;
+                self.database
+                    .set_last_selected_renderer_location(location)?;
                 return Ok(());
             }
         }
@@ -6818,17 +6964,25 @@ impl ServiceState {
                     details.manufacturer.as_deref(),
                     details.model_name.as_deref(),
                     Some(&details.av_transport_control_url),
+                    Some(&details.capabilities),
+                    None,
                 );
             }
         }
 
         let renderer = RendererRecord {
             location: location.to_string(),
-            name: renderer_location_host(location).unwrap_or(location).to_string(),
+            name: renderer_location_host(location)
+                .unwrap_or(location)
+                .to_string(),
             manufacturer: None,
             model_name: None,
             av_transport_control_url: None,
-            last_seen_unix: now_unix_timestamp(),
+            capabilities: RendererCapabilities::default(),
+            last_checked_unix: 0,
+            last_reachable_unix: None,
+            last_error: None,
+            last_seen_unix: 0,
         };
         self.database.upsert_renderer(&renderer)?;
         self.database.set_last_selected_renderer_location(location)
@@ -6841,14 +6995,37 @@ impl ServiceState {
         manufacturer: Option<&str>,
         model_name: Option<&str>,
         av_transport_control_url: Option<&str>,
+        capabilities: Option<&RendererCapabilities>,
+        last_error: Option<&str>,
     ) -> io::Result<()> {
+        let existing = self.database.load_renderer(location)?;
+        let now = now_unix_timestamp();
+        let last_reachable_unix = if last_error.is_none() {
+            Some(now)
+        } else {
+            existing
+                .as_ref()
+                .and_then(|renderer| renderer.last_reachable_unix)
+        };
+        let last_seen_unix = last_reachable_unix.unwrap_or(0);
         let renderer = RendererRecord {
             location: location.to_string(),
             name: normalized_renderer_name(location, name, model_name),
             manufacturer: manufacturer.map(ToString::to_string),
             model_name: model_name.map(ToString::to_string),
             av_transport_control_url: av_transport_control_url.map(ToString::to_string),
-            last_seen_unix: now_unix_timestamp(),
+            capabilities: capabilities
+                .cloned()
+                .or_else(|| {
+                    existing
+                        .as_ref()
+                        .map(|renderer| renderer.capabilities.clone())
+                })
+                .unwrap_or_default(),
+            last_checked_unix: now,
+            last_reachable_unix,
+            last_error: last_error.map(ToString::to_string),
+            last_seen_unix,
         };
         self.database.upsert_renderer(&renderer)?;
         self.database.set_last_selected_renderer_location(location)
@@ -6858,6 +7035,43 @@ impl ServiceState {
         self.database.upsert_renderer(renderer)?;
         self.database
             .set_last_selected_renderer_location(&renderer.location)
+    }
+
+    fn mark_renderer_reachable(&self, renderer: &RendererRecord) -> io::Result<()> {
+        let mut updated = renderer.clone();
+        let now = now_unix_timestamp();
+        updated.last_checked_unix = now;
+        updated.last_reachable_unix = Some(now);
+        updated.last_seen_unix = now;
+        updated.last_error = None;
+        self.database.upsert_renderer(&updated)
+    }
+
+    fn mark_renderer_unreachable(
+        &self,
+        renderer_location: &str,
+        error: &io::Error,
+    ) -> io::Result<()> {
+        let mut renderer =
+            self.database
+                .load_renderer(renderer_location)?
+                .unwrap_or(RendererRecord {
+                    location: renderer_location.to_string(),
+                    name: renderer_location_host(renderer_location)
+                        .unwrap_or(renderer_location)
+                        .to_string(),
+                    manufacturer: None,
+                    model_name: None,
+                    av_transport_control_url: None,
+                    capabilities: RendererCapabilities::default(),
+                    last_checked_unix: 0,
+                    last_reachable_unix: None,
+                    last_error: None,
+                    last_seen_unix: 0,
+                });
+        renderer.last_checked_unix = now_unix_timestamp();
+        renderer.last_error = Some(error.to_string());
+        self.database.upsert_renderer(&renderer)
     }
 
     fn track_artwork_path(&self, track: &LibraryTrack) -> Option<PathBuf> {
@@ -6921,7 +7135,10 @@ impl ServiceState {
         let downloaded = download_artwork_candidate(&client, &candidate.image_url)?;
         let cache_key = stable_track_id(&format!("mb-release:{}:{}", album.id, release_id));
         let extension = image_extension_for_mime(&downloaded.mime_type).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "unsupported remote artwork MIME type")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported remote artwork MIME type",
+            )
         })?;
         let destination = self
             .config
@@ -6951,9 +7168,16 @@ impl ServiceState {
 
     fn resolve_renderer(&self, renderer_location: &str) -> io::Result<RendererRecord> {
         let cached = self.database.load_renderer(renderer_location)?;
-        let renderer = self
+        let renderer = match self
             .renderer_backend(renderer_location)?
-            .resolve_renderer(cached.as_ref(), renderer_location)?;
+            .resolve_renderer(cached.as_ref(), renderer_location)
+        {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                let _ = self.mark_renderer_unreachable(renderer_location, &error);
+                return Err(error);
+            }
+        };
         if cached.as_ref() != Some(&renderer) {
             let _ = self.remember_renderer_record(&renderer);
         }
@@ -7114,9 +7338,19 @@ impl ServiceState {
 
     fn refresh_transport_state(&self, renderer_location: &str) -> io::Result<TransportSnapshot> {
         let renderer = self.resolve_renderer(renderer_location)?;
-        let snapshot = self
+        let snapshot = match self
             .renderer_backend(renderer_location)?
-            .transport_snapshot(&renderer)?;
+            .transport_snapshot(&renderer)
+        {
+            Ok(snapshot) => {
+                let _ = self.mark_renderer_reachable(&renderer);
+                snapshot
+            }
+            Err(error) => {
+                let _ = self.mark_renderer_unreachable(renderer_location, &error);
+                return Err(error);
+            }
+        };
         self.database.record_transport_snapshot(
             renderer_location,
             &snapshot.transport_info.transport_state,
@@ -7198,7 +7432,10 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
-        self.renderer_backend(renderer_location)?.play(&renderer)?;
+        if let Err(error) = self.renderer_backend(renderer_location)?.play(&renderer) {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database.set_queue_status(
             renderer_location,
@@ -7211,7 +7448,10 @@ impl ServiceState {
     fn pause_renderer(&self, renderer_location: &str) -> io::Result<String> {
         let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("pause-request", format!("renderer={renderer_location}"));
-        self.renderer_backend(renderer_location)?.pause(&renderer)?;
+        if let Err(error) = self.renderer_backend(renderer_location)?.pause(&renderer) {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
         let snapshot = self.wait_for_transport_state(
             renderer_location,
             &["PAUSED_PLAYBACK", "STOPPED", "NO_MEDIA_PRESENT"],
@@ -7248,7 +7488,10 @@ impl ServiceState {
     fn stop_renderer(&self, renderer_location: &str) -> io::Result<String> {
         let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("stop-request", format!("renderer={renderer_location}"));
-        self.renderer_backend(renderer_location)?.stop(&renderer)?;
+        if let Err(error) = self.renderer_backend(renderer_location)?.stop(&renderer) {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database
             .mark_next_queue_entry_preloaded(renderer_location, None)?;
@@ -7278,7 +7521,10 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
-        self.renderer_backend(renderer_location)?.next(&renderer)?;
+        if let Err(error) = self.renderer_backend(renderer_location)?.next(&renderer) {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database.set_queue_status(
             renderer_location,
@@ -7307,8 +7553,13 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
-        self.renderer_backend(renderer_location)?
-            .previous(&renderer)?;
+        if let Err(error) = self
+            .renderer_backend(renderer_location)?
+            .previous(&renderer)
+        {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database.set_queue_status(
             renderer_location,
@@ -7344,8 +7595,18 @@ impl ServiceState {
             io::Error::new(io::ErrorKind::NotFound, "queued next track not found")
         })?;
         let resource = self.stream_resource_for_track(&track);
-        self.renderer_backend(renderer_location)?
-            .preload_next(renderer, &resource)?;
+        if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
+            self.database
+                .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            return Ok(());
+        }
+        if let Err(error) = self
+            .renderer_backend(renderer_location)?
+            .preload_next(renderer, &resource)
+        {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
         self.database
             .mark_next_queue_entry_preloaded(renderer_location, Some(next_entry.id))?;
         self.debug_log(
@@ -7433,7 +7694,7 @@ impl ServiceState {
             .play_stream(&renderer, &resource)
         {
             Ok(()) => {
-                let _ = self.remember_renderer_record(&renderer);
+                let _ = self.mark_renderer_reachable(&renderer);
                 self.database.mark_queue_play_started(
                     renderer_location,
                     current_entry.id,
@@ -7457,6 +7718,7 @@ impl ServiceState {
                 ))
             }
             Err(error) => {
+                let _ = self.mark_renderer_unreachable(renderer_location, &error);
                 let _ = self.database.mark_queue_play_error(
                     renderer_location,
                     Some(current_entry.id),
@@ -7489,8 +7751,12 @@ impl ServiceState {
             .renderer_backend(renderer_location)?
             .transport_snapshot(&renderer)
         {
-            Ok(snapshot) => snapshot,
+            Ok(snapshot) => {
+                let _ = self.mark_renderer_reachable(&renderer);
+                snapshot
+            }
             Err(error) => {
+                let _ = self.mark_renderer_unreachable(renderer_location, &error);
                 let _ = self
                     .database
                     .record_transport_poll_error(renderer_location, &error.to_string());
@@ -7638,9 +7904,7 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
                 .iter()
                 .find(|track| track.artwork.is_some())
                 .map(|track| track.id.clone());
-            let artwork = album_tracks
-                .iter()
-                .find_map(|track| track.artwork.clone());
+            let artwork = album_tracks.iter().find_map(|track| track.artwork.clone());
             Some(AlbumSummary {
                 id: album_id,
                 artist_id: stable_artist_id(&first_track.artist),
@@ -7659,10 +7923,7 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
     albums
 }
 
-fn apply_album_artwork_overrides(
-    albums: &mut [AlbumSummary],
-    overrides: &[AlbumArtworkOverride],
-) {
+fn apply_album_artwork_overrides(albums: &mut [AlbumSummary], overrides: &[AlbumArtworkOverride]) {
     let override_records = overrides
         .iter()
         .map(|override_record| {
@@ -8356,6 +8617,24 @@ fn normalized_renderer_name(location: &str, name: &str, model_name: Option<&str>
     trimmed_name.to_string()
 }
 
+fn renderer_needs_refresh(renderer: &RendererRecord) -> bool {
+    matches!(renderer_kind_for_location(&renderer.location), RendererKind::Upnp)
+        && (renderer.av_transport_control_url.is_none()
+            || renderer.capabilities.av_transport_actions.is_none()
+            || renderer.capabilities.has_playlist_extension_service.is_none()
+            || renderer_name_looks_like_location(&renderer.name, &renderer.location))
+}
+
+fn renderer_actions_json(actions: &Option<Vec<String>>) -> Option<String> {
+    actions
+        .as_ref()
+        .and_then(|actions| serde_json::to_string(actions).ok())
+}
+
+fn parse_renderer_actions_json(value: Option<String>) -> Option<Vec<String>> {
+    value.and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+}
+
 fn renderer_name_looks_like_location(name: &str, location: &str) -> bool {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -8591,8 +8870,12 @@ fn rebuild_normalized_library_tables(connection: &Connection) -> io::Result<()> 
     let albums = build_album_summaries(&tracks);
     let artists = build_artist_summaries_from_albums(&tracks, &albums);
     let transaction = connection.unchecked_transaction().map_err(db_error)?;
-    transaction.execute("DELETE FROM albums", []).map_err(db_error)?;
-    transaction.execute("DELETE FROM artists", []).map_err(db_error)?;
+    transaction
+        .execute("DELETE FROM albums", [])
+        .map_err(db_error)?;
+    transaction
+        .execute("DELETE FROM artists", [])
+        .map_err(db_error)?;
 
     {
         let mut statement = transaction
@@ -8608,10 +8891,7 @@ fn rebuild_normalized_library_tables(connection: &Connection) -> io::Result<()> 
                 .artwork
                 .as_ref()
                 .map(|artwork| artwork.cache_key.clone());
-            let artwork_source = album
-                .artwork
-                .as_ref()
-                .map(|artwork| artwork.source.clone());
+            let artwork_source = album.artwork.as_ref().map(|artwork| artwork.source.clone());
             let artwork_mime_type = album
                 .artwork
                 .as_ref()
@@ -9190,12 +9470,31 @@ fn option_i64_json(value: Option<i64>) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
+fn option_bool_json(value: Option<bool>) -> String {
+    value.map(bool_json).unwrap_or_else(|| "null".to_string())
+}
+
 fn bool_json(value: bool) -> String {
     if value {
         "true".to_string()
     } else {
         "false".to_string()
     }
+}
+
+fn string_list_json(values: &[String]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| format!(r#""{}""#, json_escape(value)))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn option_json_fragment(value: Option<&str>) -> String {
+    value.unwrap_or("null").to_string()
 }
 
 fn option_string_json(value: Option<&str>) -> String {
@@ -9381,16 +9680,15 @@ mod tests {
     use super::{
         Database, LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
         RendererBackends, RendererKind, ServiceState, artwork_name_priority,
-        build_artist_summaries, cleanup_track_label, compare_track_album_order,
-        decode_id3v1_text, infer_artist_and_album, infer_disc_and_track_numbers,
-        infer_image_mime_from_bytes, next_queue_entry_after, parse_query_string,
-        parse_range_header, parse_request_form, parse_vorbis_comment_block,
-        previous_queue_entry_before, queue_status_for_transport, renderer_kind_for_location,
-        should_adopt_preloaded_next_entry, should_auto_advance, should_skip_entry, stable_album_id,
-        stable_artist_id, stable_track_id,
+        build_artist_summaries, cleanup_track_label, compare_track_album_order, decode_id3v1_text,
+        infer_artist_and_album, infer_disc_and_track_numbers, infer_image_mime_from_bytes,
+        next_queue_entry_after, parse_query_string, parse_range_header, parse_request_form,
+        parse_vorbis_comment_block, previous_queue_entry_before, queue_status_for_transport,
+        renderer_kind_for_location, should_adopt_preloaded_next_entry, should_auto_advance,
+        should_skip_entry, stable_album_id, stable_artist_id, stable_track_id,
     };
     use musicd_core::AppConfig;
-    use musicd_upnp::{PositionInfo, TransportInfo, TransportSnapshot};
+    use musicd_upnp::{PositionInfo, RendererCapabilities, TransportInfo, TransportSnapshot};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10045,12 +10343,17 @@ mod tests {
             .iter()
             .find(|album| album.id == stable_album_id("Radiohead", "In Rainbows"))
             .expect("in rainbows album should exist");
-        let expected_artwork_url =
-            format!("/artwork/album/{}", stable_album_id("Radiohead", "In Rainbows"));
+        let expected_artwork_url = format!(
+            "/artwork/album/{}",
+            stable_album_id("Radiohead", "In Rainbows")
+        );
         assert_eq!(in_rainbows.artist_id, stable_artist_id("Radiohead"));
         assert_eq!(in_rainbows.track_count, 2);
         assert_eq!(in_rainbows.first_track_id, "track-1");
-        assert_eq!(in_rainbows.artwork_url.as_deref(), Some(expected_artwork_url.as_str()));
+        assert_eq!(
+            in_rainbows.artwork_url.as_deref(),
+            Some(expected_artwork_url.as_str())
+        );
         assert_eq!(
             in_rainbows
                 .artwork
@@ -10068,6 +10371,84 @@ mod tests {
             artists[0].first_album_id,
             stable_album_id("Radiohead", "In Rainbows")
         );
+    }
+
+    #[test]
+    fn persists_renderer_capabilities_and_health() {
+        let config_path = temp_config_path("renderer-capabilities");
+        let database = Database::open(&config_path).expect("database should open");
+
+        database
+            .upsert_renderer(&super::RendererRecord {
+                location: "http://192.168.1.55:49152/description.xml".to_string(),
+                name: "CXN V2".to_string(),
+                manufacturer: Some("Cambridge Audio".to_string()),
+                model_name: Some("CXN V2".to_string()),
+                av_transport_control_url: Some(
+                    "http://192.168.1.55:49152/upnp/control/avtransport1".to_string(),
+                ),
+                capabilities: RendererCapabilities {
+                    av_transport_actions: Some(vec![
+                        "Next".to_string(),
+                        "Pause".to_string(),
+                        "SetNextAVTransportURI".to_string(),
+                    ]),
+                    has_playlist_extension_service: Some(true),
+                },
+                last_checked_unix: 100,
+                last_reachable_unix: Some(95),
+                last_error: Some("timed out".to_string()),
+                last_seen_unix: 95,
+            })
+            .expect("renderer should persist");
+
+        let renderer = database
+            .load_renderer("http://192.168.1.55:49152/description.xml")
+            .expect("renderer should load")
+            .expect("renderer record should exist");
+        assert_eq!(renderer.name, "CXN V2");
+        assert_eq!(
+            renderer.capabilities.supports_set_next_av_transport_uri(),
+            Some(true)
+        );
+        assert_eq!(renderer.capabilities.supports_pause(), Some(true));
+        assert_eq!(renderer.capabilities.supports_previous(), Some(false));
+        assert_eq!(
+            renderer.capabilities.has_playlist_extension_service,
+            Some(true)
+        );
+        assert_eq!(renderer.last_checked_unix, 100);
+        assert_eq!(renderer.last_reachable_unix, Some(95));
+        assert_eq!(renderer.last_error.as_deref(), Some("timed out"));
+        assert_eq!(renderer.last_seen_unix, 95);
+    }
+
+    #[test]
+    fn renderer_refresh_targets_incomplete_upnp_records() {
+        let complete = super::RendererRecord {
+            location: "http://192.168.1.55:49152/description.xml".to_string(),
+            name: "CXN V2".to_string(),
+            manufacturer: Some("Cambridge Audio".to_string()),
+            model_name: Some("CXN V2".to_string()),
+            av_transport_control_url: Some("http://renderer/avtransport".to_string()),
+            capabilities: RendererCapabilities {
+                av_transport_actions: Some(vec!["Pause".to_string()]),
+                has_playlist_extension_service: Some(true),
+            },
+            last_checked_unix: 100,
+            last_reachable_unix: Some(100),
+            last_error: None,
+            last_seen_unix: 100,
+        };
+        assert!(!super::renderer_needs_refresh(&complete));
+
+        let mut missing_actions = complete.clone();
+        missing_actions.capabilities.av_transport_actions = None;
+        assert!(super::renderer_needs_refresh(&missing_actions));
+
+        let mut fallback_name = complete.clone();
+        fallback_name.name = fallback_name.location.clone();
+        assert!(super::renderer_needs_refresh(&fallback_name));
     }
 
     fn sample_track(

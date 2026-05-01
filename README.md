@@ -53,11 +53,9 @@ The Rust workspace currently provides:
 
 ## Suggested next steps
 
-1. normalize artwork and library data into album/artist tables instead of track-level fallbacks
-2. add queue state and transport status polling under `/config`
-3. persist richer renderer capabilities and connection health
-4. add MusicBrainz and Cover Art Archive enrichment on top of the local index
-5. expand the controller UI beyond the single-page MVP
+1. expand MusicBrainz and Cover Art Archive enrichment beyond manual artwork selection into stored release links and broader metadata matching
+2. add a real live-update channel such as `SSE` for queue/session changes instead of relying only on polling
+3. keep polishing the Android controller with local cache, media-session integration, and release packaging
 
 ## Service mode
 
