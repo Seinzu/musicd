@@ -172,6 +172,7 @@ def release_plan(name: str, current_version: str, tag_prefix: str) -> dict[str, 
             "next_version": current_version,
             "matched_commits": [],
             "note": f"No {tag_prefix}<semver> tag found yet. Treat {current_version} as the baseline release.",
+            "tag_prefix": tag_prefix,
         }
 
     commits = collect_commits(since_tag=tag)
@@ -197,6 +198,7 @@ def release_plan(name: str, current_version: str, tag_prefix: str) -> dict[str, 
         "next_version": bump_version(current_version, bump),
         "matched_commits": matched,
         "note": note,
+        "tag_prefix": tag_prefix,
     }
 
 
@@ -249,10 +251,86 @@ def build_result() -> dict[str, object]:
     }
 
 
+def tag_plan(result: dict[str, object]) -> list[dict[str, str]]:
+    tags: list[dict[str, str]] = []
+    for component in ("api", "app"):
+        plan = result[component]
+        last_tag = plan["last_tag"]
+        current_version = plan["current_version"]
+        next_version = plan["next_version"]
+        tag_prefix = plan["tag_prefix"]
+        recommended_bump = plan["recommended_bump"]
+
+        if last_tag is None:
+            tags.append(
+                {
+                    "component": component,
+                    "tag": f"{tag_prefix}{current_version}",
+                    "kind": "baseline",
+                    "version": current_version,
+                    "reason": f"Create the first {component} release tag at the current baseline.",
+                }
+            )
+            continue
+
+        if recommended_bump == "none" or next_version == current_version:
+            continue
+
+        tags.append(
+            {
+                "component": component,
+                "tag": f"{tag_prefix}{next_version}",
+                "kind": "release",
+                "version": next_version,
+                "reason": f"{recommended_bump} bump from {last_tag}.",
+            }
+        )
+    return tags
+
+
+def render_tag_plan_markdown(planned_tags: list[dict[str, str]]) -> str:
+    if not planned_tags:
+        return "## Tag Plan\n\nNo new tags are required from the current scoped commit history.\n"
+
+    lines = [
+        "## Tag Plan",
+        "",
+        "| Component | Tag | Kind | Reason |",
+        "| --- | --- | --- | --- |",
+    ]
+    for item in planned_tags:
+        lines.append(
+            f"| {item['component']} | `{item['tag']}` | {item['kind']} | {item['reason']} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def create_tags(planned_tags: list[dict[str, str]]) -> None:
+    if not planned_tags:
+        return
+
+    existing_tags = set(list_tags("api-v") + list_tags("app-v"))
+    for item in planned_tags:
+        tag = item["tag"]
+        if tag in existing_tags:
+            raise RuntimeError(f"Refusing to create tag {tag}: it already exists.")
+        message = f"{item['component']} {item['version']}"
+        subprocess.run(
+            ["git", "tag", "-a", tag, "-m", message],
+            cwd=ROOT,
+            check=True,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Calculate next app/api versions from scoped conventional commits.")
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    parser.add_argument("--tag-plan", action="store_true", help="Print the app/api Git tags that should be created next.")
+    parser.add_argument("--create-tags", action="store_true", help="Create the planned Git tags on HEAD.")
     args = parser.parse_args()
+
+    if args.create_tags and not args.tag_plan:
+        args.tag_plan = True
 
     try:
         result = build_result()
@@ -260,7 +338,22 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
-    if args.format == "json":
+    if args.tag_plan:
+        planned_tags = tag_plan(result)
+        if args.create_tags:
+            try:
+                create_tags(planned_tags)
+            except (RuntimeError, subprocess.CalledProcessError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+
+        if args.format == "json":
+            print(json.dumps({"versions": result, "tags": planned_tags}, indent=2))
+        else:
+            print(render_markdown(result), end="")
+            print()
+            print(render_tag_plan_markdown(planned_tags), end="")
+    elif args.format == "json":
         print(json.dumps(result, indent=2))
     else:
         print(render_markdown(result), end="")

@@ -55,7 +55,31 @@ Examples:
 ```bash
 python3 scripts/next_versions.py --format json
 python3 scripts/next_versions.py --format markdown
+python3 scripts/next_versions.py --tag-plan --format markdown
+python3 scripts/next_versions.py --tag-plan --create-tags --format markdown
 ```
+
+## Tag creation
+
+`scripts/next_versions.py` can now also decide which Git tags should be created next from the scoped conventional commits since the last component tag.
+
+Dry-run the next tags:
+
+```bash
+python3 scripts/next_versions.py --tag-plan --format markdown
+```
+
+Create the tags on the current `HEAD` commit:
+
+```bash
+python3 scripts/next_versions.py --tag-plan --create-tags --format markdown
+```
+
+Behavior:
+
+- if no `api-v...` or `app-v...` tag exists yet, it proposes the current baseline tag such as `api-v1.0.0`
+- if scoped commits since the last tag imply a bump, it proposes the next semver tag for that component
+- if no scoped bump is needed, it creates nothing for that component
 
 ## Docker publishing
 
