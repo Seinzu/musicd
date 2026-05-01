@@ -543,12 +543,13 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         repository.transportStop(baseUrl, renderer)
     }
 
-    fun transportNext() = transportAction { baseUrl, renderer ->
-        repository.transportNext(baseUrl, renderer)
-    }
-
-    fun transportPrevious() = transportAction { baseUrl, renderer ->
-        repository.transportPrevious(baseUrl, renderer)
+    fun transportNext() {
+        if (!canRequestPlaybackNavigation(uiState.value)) {
+            return
+        }
+        transportAction { baseUrl, renderer ->
+            repository.transportNext(baseUrl, renderer)
+        }
     }
 
     fun playTrack(trackId: String) {
@@ -663,6 +664,15 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun transportPrevious() {
+        if (!canRequestPlaybackNavigation(uiState.value)) {
+            return
+        }
+        transportAction { baseUrl, renderer ->
+            repository.transportPrevious(baseUrl, renderer)
+        }
+    }
+
     private fun queueMutationAction(
         fallbackMessage: String,
         action: suspend (String, String) -> Any,
@@ -755,6 +765,11 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
 private fun normalizeLibraryName(value: String): String =
     value.trim().lowercase()
+
+private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
+    state.queue?.entries?.isNotEmpty() == true ||
+        state.nowPlaying?.currentTrack != null ||
+        state.nowPlaying?.session?.queueEntryId != null
 
 private data class Quintuple<A, B, C, D, E>(
     val first: A,

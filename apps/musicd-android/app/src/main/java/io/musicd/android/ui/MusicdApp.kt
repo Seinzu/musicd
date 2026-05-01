@@ -467,6 +467,7 @@ private fun MiniPlayerBar(
 ) {
     val track = state.nowPlaying?.currentTrack
     val session = state.nowPlaying?.session
+    val canNavigatePlayback = canRequestPlaybackNavigation(state)
     val progress = sessionProgress(session)
     Card(
         modifier = Modifier
@@ -512,7 +513,7 @@ private fun MiniPlayerBar(
                         contentDescription = if (isPlaying) "Pause" else "Play",
                     )
                 }
-                OutlinedIconButton(onClick = onNext) {
+                OutlinedIconButton(onClick = onNext, enabled = canNavigatePlayback) {
                     Icon(Icons.Rounded.SkipNext, contentDescription = "Next")
                 }
             }
@@ -1187,6 +1188,7 @@ private fun QueueScreen(
     onDiscoverRenderers: () -> Unit,
 ) {
     val entries = state.queue?.entries.orEmpty()
+    val canNavigatePlayback = canRequestPlaybackNavigation(state)
     val currentEntryId = state.queue?.currentEntryId
     val currentEntry = entries.firstOrNull {
         it.id == currentEntryId || isCurrentQueueEntryStatus(it.entryStatus)
@@ -1298,7 +1300,7 @@ private fun QueueScreen(
                     )
                     Spacer(Modifier.height(14.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = onPrevious) {
+                        OutlinedButton(onClick = onPrevious, enabled = canNavigatePlayback) {
                             Icon(Icons.Rounded.SkipPrevious, contentDescription = "Previous")
                         }
                         FilledIconButton(onClick = onPlay) {
@@ -1310,7 +1312,7 @@ private fun QueueScreen(
                         OutlinedIconButton(onClick = onStop) {
                             Icon(Icons.Rounded.Stop, contentDescription = "Stop")
                         }
-                        OutlinedIconButton(onClick = onNext) {
+                        OutlinedIconButton(onClick = onNext, enabled = canNavigatePlayback) {
                             Icon(Icons.Rounded.SkipNext, contentDescription = "Next")
                         }
                     }
@@ -2403,6 +2405,11 @@ private fun isUpcomingQueueEntryStatus(status: String?): Boolean =
         else -> false
     }
 
+private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
+    state.queue?.entries?.isNotEmpty() == true ||
+        state.nowPlaying?.currentTrack != null ||
+        state.nowPlaying?.session?.queueEntryId != null
+
 private fun humanizeTransportState(state: String?): String =
     when (state?.trim()?.uppercase()) {
         null, "", "IDLE" -> "Idle"
@@ -2427,6 +2434,7 @@ private fun NowPlayingContent(
     onNext: () -> Unit,
     onPrevious: () -> Unit,
 ) {
+    val canNavigatePlayback = canRequestPlaybackNavigation(state)
     val track = state.nowPlaying?.currentTrack
     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         ArtworkSquare(
@@ -2459,7 +2467,7 @@ private fun NowPlayingContent(
             }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedIconButton(onClick = onPrevious) {
+                OutlinedIconButton(onClick = onPrevious, enabled = canNavigatePlayback) {
                     Icon(Icons.Rounded.SkipPrevious, contentDescription = "Previous")
                 }
                 FilledIconButton(onClick = onPlay) {
@@ -2471,7 +2479,7 @@ private fun NowPlayingContent(
                 OutlinedIconButton(onClick = onStop) {
                     Icon(Icons.Rounded.Stop, contentDescription = "Stop")
                 }
-                OutlinedIconButton(onClick = onNext) {
+                OutlinedIconButton(onClick = onNext, enabled = canNavigatePlayback) {
                     Icon(Icons.Rounded.SkipNext, contentDescription = "Next")
                 }
             }
