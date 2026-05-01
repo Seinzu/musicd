@@ -638,12 +638,13 @@ fn parse_device_description(location: &str, xml: &str) -> io::Result<DeviceDescr
         .map(str::to_string)
         .unwrap_or_else(|| base_url(location));
 
-    let device_section = extract_first_tag(xml, "device").ok_or_else(|| {
+    let root_device_section = extract_first_balanced_tag(xml, "device").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "device description was missing a <device> section",
         )
     })?;
+    let device_section = select_renderer_device_section(root_device_section);
 
     let friendly_name = extract_first_tag(device_section, "friendlyName")
         .ok_or_else(|| {
@@ -711,6 +712,25 @@ fn parse_device_description(location: &str, xml: &str) -> io::Result<DeviceDescr
         model_name,
         services,
     })
+}
+
+fn select_renderer_device_section<'a>(root_device_section: &'a str) -> &'a str {
+    if device_section_is_media_renderer(root_device_section) {
+        return root_device_section;
+    }
+
+    let device_list = extract_first_tag(root_device_section, "deviceList").unwrap_or("");
+    extract_all_balanced_tag_blocks(device_list, "device")
+        .into_iter()
+        .find(|device_section| device_section_is_media_renderer(device_section))
+        .unwrap_or(root_device_section)
+}
+
+fn device_section_is_media_renderer(device_section: &str) -> bool {
+    extract_first_tag(device_section, "deviceType")
+        .map(str::trim)
+        .map(|device_type| device_type == MEDIA_RENDERER_ST)
+        .unwrap_or(false)
 }
 
 fn parse_service_actions(xml: &str) -> Vec<String> {
@@ -986,6 +1006,10 @@ fn extract_first_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     Some(&xml[start..end])
 }
 
+fn extract_first_balanced_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+    find_balanced_tag_content_range(xml, tag, 0).map(|(start, end, _)| &xml[start..end])
+}
+
 fn extract_all_tag_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
     let open_tag = format!("<{tag}>");
     let close_tag = format!("</{tag}>");
@@ -1003,6 +1027,57 @@ fn extract_all_tag_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
     }
 
     blocks
+}
+
+fn extract_all_balanced_tag_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
+    let mut blocks = Vec::new();
+    let mut search_start = 0;
+
+    while let Some((content_start, content_end, next_search_start)) =
+        find_balanced_tag_content_range(xml, tag, search_start)
+    {
+        blocks.push(&xml[content_start..content_end]);
+        search_start = next_search_start;
+    }
+
+    blocks
+}
+
+fn find_balanced_tag_content_range(
+    xml: &str,
+    tag: &str,
+    search_start: usize,
+) -> Option<(usize, usize, usize)> {
+    let open_tag = format!("<{tag}>");
+    let close_tag = format!("</{tag}>");
+    let open_len = open_tag.len();
+    let close_len = close_tag.len();
+
+    let open_index = xml[search_start..].find(&open_tag)? + search_start;
+    let content_start = open_index + open_len;
+    let mut cursor = content_start;
+    let mut depth = 1usize;
+
+    while depth > 0 {
+        let next_open = xml[cursor..].find(&open_tag).map(|index| index + cursor);
+        let next_close = xml[cursor..].find(&close_tag).map(|index| index + cursor)?;
+
+        if let Some(next_open_index) = next_open {
+            if next_open_index < next_close {
+                depth += 1;
+                cursor = next_open_index + open_len;
+                continue;
+            }
+        }
+
+        depth -= 1;
+        if depth == 0 {
+            return Some((content_start, next_close, next_close + close_len));
+        }
+        cursor = next_close + close_len;
+    }
+
+    None
 }
 
 fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
@@ -1082,7 +1157,7 @@ mod tests {
         build_stop_envelope, decode_chunked_body, is_transition_not_available_fault,
         parse_device_description, parse_http_response, parse_http_url,
         parse_position_info_response, parse_service_actions, parse_ssdp_response,
-        parse_transport_info_response, resolve_url,
+        parse_transport_info_response, resolve_url, select_renderer_device_section,
     };
     use std::collections::HashMap;
 
@@ -1204,6 +1279,59 @@ mod tests {
     }
 
     #[test]
+    fn prefers_nested_media_renderer_device_when_present() {
+        let xml = r#"<?xml version="1.0"?>
+<root>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
+    <friendlyName>Top Level ZonePlayer</friendlyName>
+    <manufacturer>Sonos, Inc.</manufacturer>
+    <modelName>SYMFONISK Table lamp</modelName>
+    <deviceList>
+      <device>
+        <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+        <friendlyName>Bedroom - SYMFONISK Table lamp Media Renderer</friendlyName>
+        <manufacturer>Sonos, Inc.</manufacturer>
+        <modelName>SYMFONISK Table lamp</modelName>
+        <serviceList>
+          <service>
+            <serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>
+            <serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>
+            <controlURL>/MediaRenderer/AVTransport/Control</controlURL>
+            <eventSubURL>/MediaRenderer/AVTransport/Event</eventSubURL>
+            <SCPDURL>/xml/AVTransport1.xml</SCPDURL>
+          </service>
+          <service>
+            <serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>
+            <serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>
+            <controlURL>/MediaRenderer/RenderingControl/Control</controlURL>
+            <eventSubURL>/MediaRenderer/RenderingControl/Event</eventSubURL>
+            <SCPDURL>/xml/RenderingControl1.xml</SCPDURL>
+          </service>
+        </serviceList>
+      </device>
+    </deviceList>
+  </device>
+</root>"#;
+
+        let description =
+            parse_device_description("http://192.168.1.251:1400/xml/device_description.xml", xml)
+                .unwrap();
+        assert_eq!(
+            description.friendly_name,
+            "Bedroom - SYMFONISK Table lamp Media Renderer"
+        );
+        assert_eq!(
+            description.device_type,
+            "urn:schemas-upnp-org:device:MediaRenderer:1"
+        );
+        assert_eq!(
+            description.services[0].control_url,
+            "http://192.168.1.251:1400/MediaRenderer/AVTransport/Control"
+        );
+    }
+
+    #[test]
     fn parses_service_actions_sorted_and_unique() {
         let xml = r#"
 <scpd>
@@ -1223,6 +1351,27 @@ mod tests {
                 "Pause".to_string(),
                 "SetNextAVTransportURI".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn selects_nested_renderer_section() {
+        let xml = r#"
+<device>
+  <deviceType>urn:schemas-upnp-org:device:ZonePlayer:1</deviceType>
+  <deviceList>
+    <device>
+      <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+      <friendlyName>Renderer Child</friendlyName>
+    </device>
+  </deviceList>
+</device>
+        "#;
+
+        let section = select_renderer_device_section(xml);
+        assert_eq!(
+            super::extract_first_tag(section, "friendlyName"),
+            Some("Renderer Child")
         );
     }
 
