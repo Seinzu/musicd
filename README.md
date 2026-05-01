@@ -25,6 +25,7 @@ That is much more realistic than trying to recreate all of Roon's RAAT-like beha
 - `docs/mvp-plan.md`: phased implementation plan
 - `docs/queue-plan.md`: queue and transport progression plan
 - `docs/unraid.md`: Docker packaging and Unraid deployment notes
+- `docs/versioning.md`: split app/api versioning and conventional commit rules
 - `apps/musicd`: starter service binary
 - `apps/musicd-android`: Android controller scaffold and API client shell
 - `crates/musicd-core`: domain models and shared config
@@ -127,3 +128,12 @@ cargo run -p musicd -- play-file \
 See [docs/unraid.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/unraid.md) for the recommended Docker packaging model, path mappings, environment variables, and example Unraid settings.
 
 If you publish the image through GitHub Actions, the workflow emits both moving tags for deployment (`edge` from `main`, `latest` from release tags) and immutable tags (`sha-<commit>` plus semver release tags). For Unraid, use a moving tag in the template if you want the WebUI to notice updates.
+
+## Versioning
+
+The repository is now on a first-pass split release model:
+
+- `api`: `1.0.0`
+- `app`: `1.0.0`
+
+Scoped conventional commits like `feat(api): ...` and `fix(app): ...` now feed a version-planning workflow. See [docs/versioning.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/versioning.md) for the tag names, bump rules, and examples.

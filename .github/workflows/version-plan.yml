@@ -1,0 +1,25 @@
+name: Version Plan
+
+on:
+  pull_request:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  version-plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Print version plan
+        run: python3 scripts/next_versions.py --format json
+
+      - name: Publish version summary
+        run: python3 scripts/next_versions.py --format markdown >> "$GITHUB_STEP_SUMMARY"

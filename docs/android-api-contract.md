@@ -109,6 +109,28 @@ Each track in `tracks[]` includes:
 - `duration_seconds`
 - `artwork_url`
 
+### `GET /api/albums/<album_id>/artwork/candidates`
+
+Searches MusicBrainz/Cover Art Archive for likely artwork matches for an album.
+
+Returns:
+
+- `album`
+- `candidates[]`
+
+Each candidate includes:
+
+- `release_id`
+- `release_group_id`
+- `title`
+- `artist`
+- `date`
+- `country`
+- `score`
+- `thumbnail_url`
+- `image_url`
+- `source`
+
 ### `GET /api/artists`
 
 Returns artist summaries.
@@ -244,6 +266,19 @@ Behavior:
 - replaces the queue with the selected track
 - starts playback
 
+### `POST /api/albums/artwork/select`
+
+Fields:
+
+- `album_id`
+- `release_id`
+
+Behavior:
+
+- fetches the selected release’s front artwork from the Cover Art Archive
+- caches it under `/config/artwork`
+- persists an album-level artwork override for future scans
+
 ### `POST /api/play-album`
 
 Fields:
@@ -349,6 +384,10 @@ Fields:
 ### `GET /artwork/track/<track_id>`
 
 Returns track artwork bytes when available.
+
+### `GET /artwork/album/<album_id>`
+
+Returns album-level override artwork bytes when a manual MusicBrainz-backed selection has been saved.
 
 ### `GET /stream/track/<track_id>`
 

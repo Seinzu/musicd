@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "musicd"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "lofty",
  "musicd-core",
@@ -567,11 +567,11 @@ dependencies = [
 
 [[package]]
 name = "musicd-core"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "musicd-upnp"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "ogg_pager"
