@@ -4142,10 +4142,7 @@ fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> Stri
             fields: Vec::new(),
             notes: vec![format!("Failed to inspect embedded metadata: {error}")],
         });
-    let artwork_url = track
-        .artwork
-        .as_ref()
-        .map(|_| format!("/artwork/track/{}", track.id));
+    let artwork_url = state.relative_artwork_url_for_track(&track);
 
     let inferred_rows = [
         ("Track ID", track.id.clone()),
@@ -4519,29 +4516,26 @@ fn render_detail_error_page(message: &str) -> String {
 
 fn render_tracks_json(state: &ServiceState) -> String {
     let tracks = state.tracks_snapshot();
+    let album_artwork_by_id = state
+        .albums_snapshot()
+        .into_iter()
+        .filter_map(|album| album.artwork_url.map(|artwork_url| (album.id, artwork_url)))
+        .collect::<HashMap<_, _>>();
     let entries = tracks
         .into_iter()
         .map(|track| {
-            let artwork_url = track
-                .artwork
-                .as_ref()
-                .map(|_| format!("/artwork/track/{}", track.id))
-                .unwrap_or_default();
-            format!(
-                r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"path":"{}","mime_type":"{}","size":{},"artwork_url":"{}"}}"#,
-                json_escape(&track.id),
-                json_escape(&track.album_id),
-                json_escape(&track.title),
-                json_escape(&track.artist),
-                json_escape(&track.album),
-                option_u32_json(track.disc_number),
-                option_u32_json(track.track_number),
-                option_u64_json(track.duration_seconds),
-                json_escape(&track.relative_path),
-                json_escape(&track.mime_type),
-                track.file_size,
-                json_escape(&artwork_url),
-            )
+            let fallback_artwork_url =
+                album_artwork_by_id.get(&track.album_id).map(String::as_str);
+            let summary_json = track_summary_json(&track, fallback_artwork_url);
+            if let Some(stripped) = summary_json.strip_suffix('}') {
+                format!(
+                    r#"{stripped},"path":"{}","size":{}}}"#,
+                    json_escape(&track.relative_path),
+                    track.file_size,
+                )
+            } else {
+                summary_json
+            }
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -4579,7 +4573,7 @@ fn render_album_detail_json(state: &ServiceState, request: &HttpRequest) -> Stri
     let tracks = state.tracks_for_album(&album.id);
     let tracks_json = tracks
         .into_iter()
-        .map(|track| track_summary_json(&track))
+        .map(|track| track_summary_json(&track, album.artwork_url.as_deref()))
         .collect::<Vec<_>>()
         .join(",");
     format!(
@@ -4917,7 +4911,12 @@ fn current_track_for_renderer(
 
 fn current_track_json_for_renderer(state: &ServiceState, renderer_location: &str) -> String {
     current_track_for_renderer(state, renderer_location)
-        .map(|track| track_summary_json(&track))
+        .map(|track| {
+            let fallback_artwork_url = state
+                .find_album(&track.album_id)
+                .and_then(|album| album.artwork_url);
+            track_summary_json(&track, fallback_artwork_url.as_deref())
+        })
         .unwrap_or_else(|| "null".to_string())
 }
 
@@ -4936,11 +4935,12 @@ fn queue_summary_json_for_renderer(state: &ServiceState, renderer_location: &str
     }
 }
 
-fn track_summary_json(track: &LibraryTrack) -> String {
-    let artwork_url = track
-        .artwork
-        .as_ref()
-        .map(|_| format!("/artwork/track/{}", track.id));
+fn track_summary_json(track: &LibraryTrack, fallback_album_artwork_url: Option<&str>) -> String {
+    let artwork_url = if track.artwork.is_some() {
+        Some(format!("/artwork/track/{}", track.id))
+    } else {
+        fallback_album_artwork_url.map(ToString::to_string)
+    };
     format!(
         r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{},"mime_type":"{}"}}"#,
         json_escape(&track.id),
@@ -7163,23 +7163,23 @@ impl ServiceState {
     }
 
     fn artwork_url_for_track(&self, track: &LibraryTrack) -> Option<String> {
-        if track.artwork.is_some() {
-            return Some(format!(
-                "{}/artwork/track/{}",
+        self.relative_artwork_url_for_track(track).map(|artwork_url| {
+            format!(
+                "{}/{}",
                 self.config.base_url.trim_end_matches('/'),
-                track.id
-            ));
+                artwork_url.trim_start_matches('/')
+            )
+        })
+    }
+
+    fn relative_artwork_url_for_track(&self, track: &LibraryTrack) -> Option<String> {
+        if track.artwork.is_some() {
+            return Some(format!("/artwork/track/{}", track.id));
         }
 
         self.find_album(&track.album_id)
             .filter(|album| album.artwork.is_some())
-            .map(|_| {
-                format!(
-                    "{}/artwork/album/{}",
-                    self.config.base_url.trim_end_matches('/'),
-                    track.album_id
-                )
-            })
+            .map(|_| format!("/artwork/album/{}", track.album_id))
     }
 
     fn search_album_artwork_candidates(
