@@ -44,6 +44,7 @@ struct LibraryTrack {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AlbumSummary {
     id: String,
+    artist_id: String,
     title: String,
     artist: String,
     track_count: usize,
@@ -4927,6 +4928,25 @@ impl Database {
                     artwork_mime_type TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS albums (
+                    id TEXT PRIMARY KEY,
+                    artist_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    artist_name TEXT NOT NULL,
+                    track_count INTEGER NOT NULL,
+                    artwork_track_id TEXT,
+                    first_track_id TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS artists (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    album_count INTEGER NOT NULL,
+                    track_count INTEGER NOT NULL,
+                    artwork_track_id TEXT,
+                    first_album_id TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS renderers (
                     location TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -5007,6 +5027,16 @@ impl Database {
         ensure_column(&connection, "tracks", "artwork_cache_key", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_source", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_mime_type", "TEXT")?;
+        ensure_column(&connection, "albums", "artist_id", "TEXT")?;
+        ensure_column(&connection, "albums", "title", "TEXT")?;
+        ensure_column(&connection, "albums", "artist_name", "TEXT")?;
+        ensure_column(&connection, "albums", "track_count", "INTEGER")?;
+        ensure_column(&connection, "albums", "artwork_track_id", "TEXT")?;
+        ensure_column(&connection, "albums", "first_track_id", "TEXT")?;
+        ensure_column(&connection, "artists", "album_count", "INTEGER")?;
+        ensure_column(&connection, "artists", "track_count", "INTEGER")?;
+        ensure_column(&connection, "artists", "artwork_track_id", "TEXT")?;
+        ensure_column(&connection, "artists", "first_album_id", "TEXT")?;
         ensure_column(
             &connection,
             "playback_sessions",
@@ -5019,6 +5049,9 @@ impl Database {
             "musicbrainz_release_id",
             "TEXT",
         )?;
+        if table_is_empty(&connection, "albums")? && !table_is_empty(&connection, "tracks")? {
+            rebuild_normalized_library_tables(&connection)?;
+        }
         Ok(())
     }
 
@@ -5081,10 +5114,18 @@ impl Database {
     }
 
     fn save_library(&self, library: &Library) -> io::Result<()> {
+        let albums = build_album_summaries(&library.tracks);
+        let artists = build_artist_summaries_from_albums(&library.tracks, &albums);
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(db_error)?;
         transaction
             .execute("DELETE FROM tracks", [])
+            .map_err(db_error)?;
+        transaction
+            .execute("DELETE FROM albums", [])
+            .map_err(db_error)?;
+        transaction
+            .execute("DELETE FROM artists", [])
             .map_err(db_error)?;
         {
             let mut statement = transaction
@@ -5128,8 +5169,90 @@ impl Database {
                     .map_err(db_error)?;
             }
         }
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO albums
+                     (id, artist_id, title, artist_name, track_count, artwork_track_id, first_track_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                )
+                .map_err(db_error)?;
+
+            for album in &albums {
+                statement
+                    .execute(params![
+                        album.id,
+                        album.artist_id,
+                        album.title,
+                        album.artist,
+                        album.track_count,
+                        album.artwork_track_id,
+                        album.first_track_id,
+                    ])
+                    .map_err(db_error)?;
+            }
+        }
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO artists
+                     (id, name, album_count, track_count, artwork_track_id, first_album_id)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .map_err(db_error)?;
+
+            for artist in &artists {
+                statement
+                    .execute(params![
+                        artist.id,
+                        artist.name,
+                        artist.album_count,
+                        artist.track_count,
+                        artist.artwork_track_id,
+                        artist.first_album_id,
+                    ])
+                    .map_err(db_error)?;
+            }
+        }
         transaction.commit().map_err(db_error)?;
         Ok(())
+    }
+
+    fn load_albums(&self) -> io::Result<Vec<AlbumSummary>> {
+        let connection = self.connection()?;
+        load_albums_from_connection(&connection)
+    }
+
+    fn load_artists(&self) -> io::Result<Vec<ArtistSummary>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, name, album_count, track_count, artwork_track_id, first_album_id
+                 FROM artists
+                 ORDER BY name ASC, id ASC",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                let artwork_track_id = row.get::<_, Option<String>>(4)?;
+                Ok(ArtistSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    album_count: row.get(2)?,
+                    track_count: row.get(3)?,
+                    artwork_track_id: artwork_track_id.clone(),
+                    artwork_url: artwork_track_id
+                        .map(|track_id| format!("/artwork/track/{track_id}")),
+                    first_album_id: row.get(5)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        let mut artists = Vec::new();
+        for row in rows {
+            artists.push(row.map_err(db_error)?);
+        }
+        Ok(artists)
     }
 
     fn list_renderers(&self) -> io::Result<Vec<RendererRecord>> {
@@ -6567,12 +6690,7 @@ impl ServiceState {
     }
 
     fn albums_snapshot(&self) -> Vec<AlbumSummary> {
-        let tracks = self
-            .library
-            .lock()
-            .map(|library| library.tracks.clone())
-            .unwrap_or_default();
-        let mut albums = build_album_summaries(&tracks);
+        let mut albums = self.database.load_albums().unwrap_or_default();
         apply_album_artwork_overrides(
             &mut albums,
             &self.database.list_album_artwork_overrides().unwrap_or_default(),
@@ -6581,17 +6699,14 @@ impl ServiceState {
     }
 
     fn artists_snapshot(&self) -> Vec<ArtistSummary> {
-        let tracks = self
-            .library
-            .lock()
-            .map(|library| library.tracks.clone())
-            .unwrap_or_default();
-        let mut albums = build_album_summaries(&tracks);
+        let mut artists = self.database.load_artists().unwrap_or_default();
+        let mut albums = self.database.load_albums().unwrap_or_default();
         apply_album_artwork_overrides(
             &mut albums,
             &self.database.list_album_artwork_overrides().unwrap_or_default(),
         );
-        build_artist_summaries_from_albums(&tracks, &albums)
+        hydrate_artist_artwork_urls(&mut artists, &albums);
+        artists
     }
 
     fn find_track(&self, track_id: &str) -> Option<LibraryTrack> {
@@ -6637,12 +6752,9 @@ impl ServiceState {
     }
 
     fn albums_for_artist(&self, artist_id: &str) -> Vec<AlbumSummary> {
-        if self.find_artist(artist_id).is_none() {
-            return Vec::new();
-        }
         self.albums_snapshot()
             .into_iter()
-            .filter(|album| stable_artist_id(&album.artist) == artist_id)
+            .filter(|album| album.artist_id == artist_id)
             .collect()
     }
 
@@ -7533,6 +7645,7 @@ fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
                 .map(|track| track.id.clone());
             Some(AlbumSummary {
                 id: album_id,
+                artist_id: stable_artist_id(&first_track.artist),
                 title: first_track.album.clone(),
                 artist: first_track.artist.clone(),
                 track_count: album_tracks.len(),
@@ -7565,6 +7678,24 @@ fn apply_album_artwork_overrides(
     for album in albums {
         if let Some(override_url) = override_urls.get(&album.id) {
             album.artwork_url = Some(override_url.clone());
+        }
+    }
+}
+
+fn hydrate_artist_artwork_urls(artists: &mut [ArtistSummary], albums: &[AlbumSummary]) {
+    let artwork_by_artist = albums
+        .iter()
+        .filter_map(|album| {
+            album
+                .artwork_url
+                .as_ref()
+                .map(|artwork_url| (album.artist_id.clone(), artwork_url.clone()))
+        })
+        .collect::<HashMap<_, _>>();
+
+    for artist in artists {
+        if let Some(artwork_url) = artwork_by_artist.get(&artist.id) {
+            artist.artwork_url = Some(artwork_url.clone());
         }
     }
 }
@@ -7615,6 +7746,7 @@ fn build_artist_summaries_from_albums(
     artists
 }
 
+#[allow(dead_code)]
 fn build_artist_summaries(tracks: &[LibraryTrack]) -> Vec<ArtistSummary> {
     let albums = build_album_summaries(tracks);
     build_artist_summaries_from_albums(tracks, &albums)
@@ -8335,8 +8467,158 @@ fn ensure_column(
     Ok(())
 }
 
+fn table_is_empty(connection: &Connection, table: &str) -> io::Result<bool> {
+    let query = format!("SELECT 1 FROM {table} LIMIT 1");
+    connection
+        .query_row(&query, [], |_| Ok(()))
+        .optional()
+        .map(|row| row.is_none())
+        .map_err(db_error)
+}
+
 fn db_error(error: rusqlite::Error) -> io::Error {
     io::Error::other(format!("sqlite error: {error}"))
+}
+
+fn load_tracks_from_connection(connection: &Connection) -> io::Result<Vec<LibraryTrack>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, album_id, title, artist, album, disc_number, track_number,
+                    duration_seconds, relative_path, path, mime_type, file_size,
+                    artwork_cache_key, artwork_source, artwork_mime_type
+             FROM tracks
+             ORDER BY artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
+        )
+        .map_err(db_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            let artist: String = row.get(3)?;
+            let album: String = row.get(4)?;
+            Ok(LibraryTrack {
+                id: row.get(0)?,
+                album_id: row
+                    .get::<_, Option<String>>(1)?
+                    .unwrap_or_else(|| stable_album_id(&artist, &album)),
+                title: row.get(2)?,
+                artist,
+                album,
+                disc_number: row.get(5)?,
+                track_number: row.get(6)?,
+                duration_seconds: row.get(7)?,
+                relative_path: row.get(8)?,
+                path: PathBuf::from(row.get::<_, String>(9)?),
+                mime_type: row.get(10)?,
+                file_size: row.get(11)?,
+                artwork: match (
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
+                ) {
+                    (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
+                        cache_key,
+                        source,
+                        mime_type,
+                    }),
+                    _ => None,
+                },
+            })
+        })
+        .map_err(db_error)?;
+
+    let mut tracks = Vec::new();
+    for row in rows {
+        tracks.push(row.map_err(db_error)?);
+    }
+    Ok(tracks)
+}
+
+fn load_albums_from_connection(connection: &Connection) -> io::Result<Vec<AlbumSummary>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, artist_id, title, artist_name, track_count, artwork_track_id, first_track_id
+             FROM albums
+             ORDER BY artist_name ASC, title ASC, id ASC",
+        )
+        .map_err(db_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            let artwork_track_id = row.get::<_, Option<String>>(5)?;
+            Ok(AlbumSummary {
+                id: row.get(0)?,
+                artist_id: row.get(1)?,
+                title: row.get(2)?,
+                artist: row.get(3)?,
+                track_count: row.get(4)?,
+                artwork_track_id: artwork_track_id.clone(),
+                artwork_url: artwork_track_id
+                    .map(|track_id| format!("/artwork/track/{track_id}")),
+                first_track_id: row.get(6)?,
+            })
+        })
+        .map_err(db_error)?;
+
+    let mut albums = Vec::new();
+    for row in rows {
+        albums.push(row.map_err(db_error)?);
+    }
+    Ok(albums)
+}
+
+fn rebuild_normalized_library_tables(connection: &Connection) -> io::Result<()> {
+    let tracks = load_tracks_from_connection(connection)?;
+    let albums = build_album_summaries(&tracks);
+    let artists = build_artist_summaries_from_albums(&tracks, &albums);
+    let transaction = connection.unchecked_transaction().map_err(db_error)?;
+    transaction.execute("DELETE FROM albums", []).map_err(db_error)?;
+    transaction.execute("DELETE FROM artists", []).map_err(db_error)?;
+
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO albums
+                 (id, artist_id, title, artist_name, track_count, artwork_track_id, first_track_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .map_err(db_error)?;
+        for album in &albums {
+            statement
+                .execute(params![
+                    album.id,
+                    album.artist_id,
+                    album.title,
+                    album.artist,
+                    album.track_count,
+                    album.artwork_track_id,
+                    album.first_track_id,
+                ])
+                .map_err(db_error)?;
+        }
+    }
+
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO artists
+                 (id, name, album_count, track_count, artwork_track_id, first_album_id)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .map_err(db_error)?;
+        for artist in &artists {
+            statement
+                .execute(params![
+                    artist.id,
+                    artist.name,
+                    artist.album_count,
+                    artist.track_count,
+                    artist.artwork_track_id,
+                    artist.first_album_id,
+                ])
+                .map_err(db_error)?;
+        }
+    }
+
+    transaction.commit().map_err(db_error)?;
+    Ok(())
 }
 
 fn inspect_embedded_metadata(path: &Path) -> io::Result<EmbeddedMetadata> {
@@ -9683,6 +9965,56 @@ mod tests {
         assert_eq!(history[0].track_id, "track-2");
         assert_eq!(history[0].renderer_location, "renderer-1");
         assert_eq!(history[0].queue_entry_id, Some(second_entry));
+    }
+
+    #[test]
+    fn persists_normalized_albums_and_artists() {
+        let config_path = temp_config_path("normalized-library");
+        let database = Database::open(&config_path).expect("database should open");
+
+        let mut first = sample_track("track-1", Some(1), Some(1), "15 Step");
+        first.artist = "Radiohead".to_string();
+        first.album = "In Rainbows".to_string();
+        first.album_id = stable_album_id(&first.artist, &first.album);
+
+        let mut second = sample_track("track-2", Some(1), Some(2), "Bodysnatchers");
+        second.artist = "Radiohead".to_string();
+        second.album = "In Rainbows".to_string();
+        second.album_id = stable_album_id(&second.artist, &second.album);
+
+        let mut third = sample_track("track-3", Some(1), Some(1), "Everything In Its Right Place");
+        third.artist = "Radiohead".to_string();
+        third.album = "Kid A".to_string();
+        third.album_id = stable_album_id(&third.artist, &third.album);
+
+        let library = super::Library {
+            scan_root: PathBuf::from("/music"),
+            tracks: vec![first.clone(), second.clone(), third.clone()],
+        };
+
+        database
+            .save_library(&library)
+            .expect("library should be persisted");
+
+        let albums = database.load_albums().expect("albums should load");
+        assert_eq!(albums.len(), 2);
+        let in_rainbows = albums
+            .iter()
+            .find(|album| album.id == stable_album_id("Radiohead", "In Rainbows"))
+            .expect("in rainbows album should exist");
+        assert_eq!(in_rainbows.artist_id, stable_artist_id("Radiohead"));
+        assert_eq!(in_rainbows.track_count, 2);
+        assert_eq!(in_rainbows.first_track_id, "track-1");
+
+        let artists = database.load_artists().expect("artists should load");
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists[0].id, stable_artist_id("Radiohead"));
+        assert_eq!(artists[0].album_count, 2);
+        assert_eq!(artists[0].track_count, 3);
+        assert_eq!(
+            artists[0].first_album_id,
+            stable_album_id("Radiohead", "In Rainbows")
+        );
     }
 
     fn sample_track(
