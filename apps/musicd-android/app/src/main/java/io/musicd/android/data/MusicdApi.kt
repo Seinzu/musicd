@@ -170,6 +170,13 @@ data class NowPlayingDto(
 )
 
 @Serializable
+data class PlaybackEventDto(
+    @SerialName("renderer_location") val rendererLocation: String,
+    @SerialName("now_playing") val nowPlaying: NowPlayingDto,
+    val queue: QueueDto,
+)
+
+@Serializable
 data class MutationResponseDto(
     val ok: Boolean,
     val message: String? = null,
@@ -369,6 +376,83 @@ class MusicdApi(
         "$baseUrl/api/queue/clear",
         mapOf("renderer_location" to rendererLocation),
     )
+
+    fun observePlaybackEvents(
+        baseUrl: String,
+        rendererLocation: String,
+        onEvent: (PlaybackEventDto) -> Unit,
+    ) {
+        val request = Request.Builder()
+            .url("$baseUrl/api/events?renderer_location=${rendererLocation.encodeForUrl()}")
+            .addHeader("Accept", "text/event-stream")
+            .get()
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    response.requireSuccessfulBody(json)
+                    return
+                }
+                val reader = response.body?.charStream()?.buffered()
+                    ?: throw MusicdApiException.InvalidResponse("musicd returned an empty event stream.")
+                var eventName: String? = null
+                val dataLines = mutableListOf<String>()
+                reader.useLines { lines ->
+                    lines.forEach { line ->
+                        when {
+                            line.isEmpty() -> {
+                                if (eventName == "playback" && dataLines.isNotEmpty()) {
+                                    val payload = dataLines.joinToString("\n")
+                                    onEvent(
+                                        decodeBody<PlaybackEventDto>(payload)
+                                    )
+                                }
+                                eventName = null
+                                dataLines.clear()
+                            }
+                            line.startsWith(":") -> Unit
+                            line.startsWith("event:") -> {
+                                eventName = line.substringAfter(':').trim()
+                            }
+                            line.startsWith("data:") -> {
+                                dataLines += line.substringAfter(':').trimStart()
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (error: MusicdApiException) {
+            throw error
+        } catch (error: UnknownHostException) {
+            throw MusicdApiException.Network(
+                "Couldn't find that server. Check the address and try again.",
+                error,
+            )
+        } catch (error: ConnectException) {
+            throw MusicdApiException.Network(
+                "Couldn't connect to musicd at that address.",
+                error,
+            )
+        } catch (error: SocketTimeoutException) {
+            throw MusicdApiException.Network(
+                "musicd took too long to respond.",
+                error,
+            )
+        } catch (error: UnknownServiceException) {
+            val message = if (error.message.orEmpty().contains("CLEARTEXT", ignoreCase = true)) {
+                "This server must use a normal http:// LAN address."
+            } else {
+                "The server connection type is not supported."
+            }
+            throw MusicdApiException.Network(message, error)
+        } catch (error: IOException) {
+            throw MusicdApiException.Network(
+                "Network error while listening to musicd events.",
+                error,
+            )
+        }
+    }
 
     private suspend inline fun <reified T> get(url: String): T {
         val request = Request.Builder().url(url).get().build()

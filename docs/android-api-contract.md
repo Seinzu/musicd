@@ -181,6 +181,18 @@ Each item includes:
 - `manufacturer`
 - `model_name`
 - `av_transport_control_url`
+- `capabilities.av_transport_actions`
+- `capabilities.supports_set_next_av_transport_uri`
+- `capabilities.supports_pause`
+- `capabilities.supports_stop`
+- `capabilities.supports_next`
+- `capabilities.supports_previous`
+- `capabilities.supports_seek`
+- `capabilities.has_playlist_extension_service`
+- `health.last_checked_unix`
+- `health.last_reachable_unix`
+- `health.last_error`
+- `health.reachable`
 - `last_seen_unix`
 - `selected`
 - `kind`
@@ -192,6 +204,18 @@ Runs discovery and returns discovered renderers.
 ### `POST /api/renderers/discover`
 
 Same behavior as the `GET` route, but easier for app-side “refresh” actions.
+
+### `GET /api/events?renderer_location=<location>`
+
+Returns a server-sent events stream for queue and now-playing updates for a renderer.
+
+The stream emits `playback` events with JSON payloads shaped like:
+
+- `renderer_location`
+- `now_playing`
+- `queue`
+
+This is intended for long-lived controller subscriptions so clients can react to transport and queue changes without polling.
 
 ## Queue and session endpoints
 

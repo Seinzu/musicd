@@ -94,7 +94,6 @@ import io.musicd.android.data.RendererDto
 import io.musicd.android.data.TrackSummaryDto
 import java.time.LocalDate
 import java.time.LocalTime
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.random.Random
 
@@ -118,16 +117,12 @@ fun MusicdApp(viewModel: MusicdViewModel) {
     val lifecycleState by lifecycleOwner.lifecycle.currentStateAsState()
 
     LaunchedEffect(state.connected, state.selectedRendererLocation, state.isConnecting, lifecycleState) {
-        if (!state.connected || state.selectedRendererLocation.isBlank() || state.isConnecting) {
-            return@LaunchedEffect
-        }
-        if (!lifecycleState.isAtLeast(Lifecycle.State.STARTED)) {
-            return@LaunchedEffect
-        }
-        while (true) {
-            viewModel.refreshPlaybackState()
-            delay(2_500)
-        }
+        viewModel.updatePlaybackEventSubscription(
+            state.connected &&
+                state.selectedRendererLocation.isNotBlank() &&
+                !state.isConnecting &&
+                lifecycleState.isAtLeast(Lifecycle.State.STARTED)
+        )
     }
 
     if (!state.connected) {

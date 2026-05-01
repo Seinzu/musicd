@@ -12,14 +12,18 @@ import io.musicd.android.data.MusicdApiException
 import io.musicd.android.data.MusicdRepository
 import io.musicd.android.data.MutationResponseDto
 import io.musicd.android.data.NowPlayingDto
+import io.musicd.android.data.PlaybackEventDto
 import io.musicd.android.data.QueueDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.ServerInfoDto
 import io.musicd.android.data.TrackSummaryDto
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class MusicdTab {
@@ -75,6 +79,8 @@ data class MusicdUiState(
 
 class MusicdViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = MusicdRepository(application)
+    private var playbackEventsJob: Job? = null
+    private var playbackEventsKey: String? = null
     private val _uiState = MutableStateFlow(
         MusicdUiState(serverInput = repository.loadBaseUrl()),
     )
@@ -267,6 +273,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnectServer() {
+        stopPlaybackEventSubscription()
         repository.clearBaseUrl()
         repository.clearRendererLocation()
         _uiState.update {
@@ -295,6 +302,54 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun selectTab(tab: MusicdTab) {
         _uiState.update { it.copy(selectedTab = tab) }
+    }
+
+    fun updatePlaybackEventSubscription(enabled: Boolean) {
+        val state = uiState.value
+        val shouldRun = enabled &&
+            state.connected &&
+            !state.isConnecting &&
+            state.baseUrl.isNotBlank() &&
+            state.selectedRendererLocation.isNotBlank()
+        if (!shouldRun) {
+            stopPlaybackEventSubscription()
+            return
+        }
+
+        val baseUrl = state.baseUrl
+        val rendererLocation = state.selectedRendererLocation
+        val desiredKey = "$baseUrl|$rendererLocation"
+        if (playbackEventsKey == desiredKey && playbackEventsJob?.isActive == true) {
+            return
+        }
+
+        playbackEventsJob?.cancel()
+        playbackEventsKey = desiredKey
+        playbackEventsJob = viewModelScope.launch {
+            while (isActive) {
+                try {
+                    repository.observePlaybackEvents(baseUrl, rendererLocation) { event ->
+                        applyPlaybackEvent(baseUrl, rendererLocation, event)
+                    }
+                    if (!isActive || playbackEventsKey != desiredKey) {
+                        break
+                    }
+                    delay(1_000)
+                } catch (error: Throwable) {
+                    if (!isActive || playbackEventsKey != desiredKey) {
+                        break
+                    }
+                    _uiState.update {
+                        if (it.baseUrl == baseUrl && it.selectedRendererLocation == rendererLocation) {
+                            it.copy(warningMessage = connectionErrorMessage(error))
+                        } else {
+                            it
+                        }
+                    }
+                    delay(3_000)
+                }
+            }
+        }
     }
 
     fun toggleRendererPicker(show: Boolean) {
@@ -760,6 +815,30 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun dismissWarning() {
         _uiState.update { it.copy(warningMessage = null) }
+    }
+
+    private fun stopPlaybackEventSubscription() {
+        playbackEventsJob?.cancel()
+        playbackEventsJob = null
+        playbackEventsKey = null
+    }
+
+    private fun applyPlaybackEvent(
+        baseUrl: String,
+        rendererLocation: String,
+        event: PlaybackEventDto,
+    ) {
+        _uiState.update {
+            if (it.baseUrl != baseUrl || it.selectedRendererLocation != rendererLocation) {
+                it
+            } else {
+                it.copy(
+                    nowPlaying = event.nowPlaying,
+                    queue = event.queue,
+                    warningMessage = null,
+                )
+            }
+        }
     }
 }
 

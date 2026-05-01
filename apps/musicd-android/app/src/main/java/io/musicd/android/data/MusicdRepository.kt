@@ -169,6 +169,14 @@ class MusicdRepository(
         api.clearQueue(baseUrl.normalizeBaseUrl(), rendererLocation)
     }
 
+    suspend fun observePlaybackEvents(
+        baseUrl: String,
+        rendererLocation: String,
+        onEvent: (PlaybackEventDto) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        api.observePlaybackEvents(baseUrl.normalizeBaseUrl(), rendererLocation, onEvent)
+    }
+
     suspend fun transportPause(baseUrl: String, rendererLocation: String): MutationResponseDto =
         transport(baseUrl, "/api/transport/pause", rendererLocation)
 
