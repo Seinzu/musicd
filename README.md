@@ -84,6 +84,7 @@ The service also exposes:
 - `GET /health`
 - `GET /api/albums`
 - `GET /api/queue?renderer_location=<location>`
+- `GET /api/events?renderer_location=<location>`
 - `GET /api/tracks`
 - `GET /api/tracks/<track_id>`
 - `GET /artwork/track/<track_id>`

@@ -17,6 +17,7 @@ import io.musicd.android.data.QueueDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.ServerInfoDto
 import io.musicd.android.data.TrackSummaryDto
+import io.musicd.android.playback.MusicdPlaybackNotificationService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -81,6 +82,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     private val repository = MusicdRepository(application)
     private var playbackEventsJob: Job? = null
     private var playbackEventsKey: String? = null
+    private var tracksLoadJob: Job? = null
     private val _uiState = MutableStateFlow(
         MusicdUiState(serverInput = repository.loadBaseUrl()),
     )
@@ -107,6 +109,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     it.librarySearchFacet
                 },
             )
+        }
+        if (value.isNotBlank()) {
+            ensureTracksLoaded()
         }
     }
 
@@ -147,7 +152,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             loadServerData(
                 baseUrl = normalized,
-                onSuccess = { serverInfo, renderers, artists, albums, tracks, nowPlaying, queue ->
+                onSuccess = { serverInfo, renderers, artists, albums, nowPlaying, queue ->
                     repository.saveBaseUrl(normalized)
                     _uiState.update {
                         it.copy(
@@ -158,7 +163,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             renderers = renderers,
                             artists = artists,
                             albums = albums,
-                            tracks = tracks,
+                            tracks = emptyList(),
                             selectedRendererLocation = nowPlaying?.rendererLocation
                                 ?: chooseRendererLocation(
                                     currentSelection = it.selectedRendererLocation,
@@ -174,6 +179,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             infoMessage = "Connected to musicd.",
                         )
                     }
+                    if (uiState.value.selectedTab == MusicdTab.Library || uiState.value.searchQuery.isNotBlank()) {
+                        ensureTracksLoaded()
+                    }
+                    syncPlaybackNotificationService()
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -196,7 +205,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
             loadServerData(
                 baseUrl = baseUrl,
-                onSuccess = { serverInfo, renderers, artists, albums, tracks, nowPlaying, queue ->
+                onSuccess = { serverInfo, renderers, artists, albums, nowPlaying, queue ->
                     _uiState.update {
                         val selectedRendererLocation = nowPlaying?.rendererLocation
                             ?: chooseRendererLocation(
@@ -210,7 +219,6 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             renderers = renderers,
                             artists = artists,
                             albums = albums,
-                            tracks = tracks,
                             selectedRendererLocation = selectedRendererLocation,
                             nowPlaying = nowPlaying,
                             queue = queue,
@@ -224,6 +232,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             },
                         )
                     }
+                    if (uiState.value.selectedTab == MusicdTab.Library || uiState.value.searchQuery.isNotBlank()) {
+                        ensureTracksLoaded(force = true)
+                    }
+                    syncPlaybackNotificationService()
                 },
                 onFailure = { error ->
                     _uiState.update {
@@ -243,7 +255,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun loadServerData(
         baseUrl: String,
-        onSuccess: (ServerInfoDto, List<RendererDto>, List<ArtistSummaryDto>, List<AlbumSummaryDto>, List<TrackSummaryDto>, NowPlayingDto?, QueueDto?) -> Unit,
+        onSuccess: (ServerInfoDto, List<RendererDto>, List<ArtistSummaryDto>, List<AlbumSummaryDto>, NowPlayingDto?, QueueDto?) -> Unit,
         onFailure: (Throwable) -> Unit,
     ) {
         runCatching {
@@ -251,7 +263,6 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             val renderers = repository.getRenderers(baseUrl)
             val artists = repository.getArtists(baseUrl)
             val albums = repository.getAlbums(baseUrl)
-            val tracks = repository.getTracks(baseUrl)
             val rendererLocation = chooseRendererLocation(
                 currentSelection = uiState.value.selectedRendererLocation,
                 savedSelection = repository.loadRendererLocation(),
@@ -259,9 +270,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             )
             val nowPlaying = rendererLocation?.let { repository.getNowPlaying(baseUrl, it) }
             val queue = rendererLocation?.let { repository.getQueue(baseUrl, it) }
-            Septuple(serverInfo, renderers, artists, albums, tracks, nowPlaying, queue)
-        }.onSuccess { (serverInfo, renderers, artists, albums, tracks, nowPlaying, queue) ->
-            onSuccess(serverInfo, renderers, artists, albums, tracks, nowPlaying, queue)
+            Sextuple(serverInfo, renderers, artists, albums, nowPlaying, queue)
+        }.onSuccess { (serverInfo, renderers, artists, albums, nowPlaying, queue) ->
+            onSuccess(serverInfo, renderers, artists, albums, nowPlaying, queue)
         }.onFailure(onFailure)
     }
 
@@ -274,6 +285,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun disconnectServer() {
         stopPlaybackEventSubscription()
+        MusicdPlaybackNotificationService.stop(getApplication())
         repository.clearBaseUrl()
         repository.clearRendererLocation()
         _uiState.update {
@@ -302,6 +314,46 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun selectTab(tab: MusicdTab) {
         _uiState.update { it.copy(selectedTab = tab) }
+        if (tab == MusicdTab.Library) {
+            ensureTracksLoaded()
+        }
+    }
+
+    private fun ensureTracksLoaded(force: Boolean = false) {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        if (!state.connected || baseUrl.isBlank()) return
+        if (!force && state.tracks.isNotEmpty()) return
+        if (tracksLoadJob?.isActive == true) return
+
+        tracksLoadJob = viewModelScope.launch {
+            runCatching { repository.getTracks(baseUrl) }
+                .onSuccess { tracks ->
+                    _uiState.update {
+                        if (it.connected && it.baseUrl == baseUrl) {
+                            it.copy(
+                                tracks = tracks,
+                                warningMessage = if (it.warningMessage == TRACKS_WARNING_MESSAGE) {
+                                    null
+                                } else {
+                                    it.warningMessage
+                                },
+                            )
+                        } else {
+                            it
+                        }
+                    }
+                }
+                .onFailure {
+                    _uiState.update {
+                        if (it.connected && it.baseUrl == baseUrl) {
+                            it.copy(warningMessage = TRACKS_WARNING_MESSAGE)
+                        } else {
+                            it
+                        }
+                    }
+                }
+        }
     }
 
     fun updatePlaybackEventSubscription(enabled: Boolean) {
@@ -365,6 +417,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 infoMessage = "Renderer updated.",
             )
         }
+        syncPlaybackNotificationService()
         refreshPlaybackSurfaces()
     }
 
@@ -619,6 +672,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             runCatching { repository.playTrack(baseUrl, rendererLocation, trackId) }
                 .onSuccess { response ->
                     _uiState.update { it.copy(infoMessage = response.message) }
+                    syncPlaybackNotificationService()
                     refreshPlaybackSurfaces()
                 }
                 .onFailure { error ->
@@ -644,6 +698,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             runCatching { repository.playAlbum(baseUrl, rendererLocation, albumId) }
                 .onSuccess { response ->
                     _uiState.update { it.copy(infoMessage = response.message) }
+                    syncPlaybackNotificationService()
                     refreshPlaybackSurfaces()
                 }
                 .onFailure { error ->
@@ -706,6 +761,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
             runCatching { action(baseUrl, rendererLocation) }
                 .onSuccess {
+                    syncPlaybackNotificationService()
                     refreshPlaybackSurfaces()
                 }
                 .onFailure { error ->
@@ -744,6 +800,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 .onSuccess { result ->
                     val message = extractMutationMessage(result) ?: fallbackMessage
                     _uiState.update { it.copy(infoMessage = message) }
+                    syncPlaybackNotificationService()
                     refreshPlaybackSurfaces()
                 }
                 .onFailure { error ->
@@ -823,6 +880,22 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         playbackEventsKey = null
     }
 
+    private fun syncPlaybackNotificationService() {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        val rendererLocation = state.selectedRendererLocation
+        if (!state.connected || baseUrl.isBlank() || rendererLocation.isBlank()) {
+            MusicdPlaybackNotificationService.stop(getApplication())
+            return
+        }
+        MusicdPlaybackNotificationService.start(
+            context = getApplication(),
+            baseUrl = baseUrl,
+            rendererLocation = rendererLocation,
+            serverName = state.serverName,
+        )
+    }
+
     private fun applyPlaybackEvent(
         baseUrl: String,
         rendererLocation: String,
@@ -849,6 +922,8 @@ private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
     state.queue?.entries?.isNotEmpty() == true ||
         state.nowPlaying?.currentTrack != null ||
         state.nowPlaying?.session?.queueEntryId != null
+
+private const val TRACKS_WARNING_MESSAGE = "Track library unavailable right now."
 
 private data class Quintuple<A, B, C, D, E>(
     val first: A,
