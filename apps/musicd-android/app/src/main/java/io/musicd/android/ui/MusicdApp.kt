@@ -85,15 +85,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.currentStateAsState
 import coil.compose.AsyncImage
 import io.musicd.android.data.AlbumDetailDto
+import io.musicd.android.data.AlbumArtworkCandidateDto
 import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.QueueEntryDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.TrackSummaryDto
+import java.time.LocalDate
 import java.time.LocalTime
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.random.Random
 
 private data class LibrarySearchResults(
     val artists: List<ArtistSummaryDto>,
@@ -169,6 +172,9 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onOpenAlbum = viewModel::openAlbum,
         onOpenAlbumPreservingArtist = { albumId -> viewModel.openAlbum(albumId, preserveArtistContext = true) },
         onCloseAlbumDetail = viewModel::closeAlbumDetail,
+        onOpenAlbumArtworkPicker = viewModel::openAlbumArtworkPicker,
+        onDismissAlbumArtworkPicker = viewModel::dismissAlbumArtworkPicker,
+        onApplyAlbumArtwork = viewModel::applyAlbumArtwork,
         onPlayTrack = viewModel::playTrack,
         onPlayAlbum = viewModel::playAlbum,
         onAppendTrack = viewModel::appendTrack,
@@ -214,6 +220,9 @@ private fun MusicdRoot(
     onOpenAlbum: (String) -> Unit,
     onOpenAlbumPreservingArtist: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
+    onOpenAlbumArtworkPicker: () -> Unit,
+    onDismissAlbumArtworkPicker: () -> Unit,
+    onApplyAlbumArtwork: (String) -> Unit,
     onPlayTrack: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
     onAppendTrack: (String) -> Unit,
@@ -262,6 +271,22 @@ private fun MusicdRoot(
                 isDiscovering = state.isDiscovering,
                 onSelectRenderer = onSelectRenderer,
                 onDiscoverRenderers = onDiscoverRenderers,
+            )
+        }
+    }
+
+    if (state.showAlbumArtworkPicker) {
+        ModalBottomSheet(
+            onDismissRequest = onDismissAlbumArtworkPicker,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            AlbumArtworkPickerSheet(
+                album = state.selectedAlbumDetail,
+                candidates = state.albumArtworkCandidates,
+                isSearching = state.isSearchingAlbumArtwork,
+                isApplying = state.isApplyingAlbumArtwork,
+                errorMessage = state.albumArtworkErrorMessage,
+                onSelectCandidate = onApplyAlbumArtwork,
             )
         }
     }
@@ -405,6 +430,7 @@ private fun MusicdRoot(
                     onOpenAlbum = onOpenAlbum,
                     onOpenAlbumPreservingArtist = onOpenAlbumPreservingArtist,
                     onCloseAlbumDetail = onCloseAlbumDetail,
+                    onOpenAlbumArtworkPicker = onOpenAlbumArtworkPicker,
                     onPlayTrack = onPlayTrack,
                     onPlayAlbum = onPlayAlbum,
                     onAppendTrack = onAppendTrack,
@@ -570,6 +596,31 @@ private fun HomeScreen(
     onDiscoverRenderers: () -> Unit,
     onOpenServerEditor: () -> Unit,
 ) {
+    val spotlightDay = LocalDate.now()
+    val spotlightAlbums = remember(state.albums, spotlightDay) {
+        val eligibleAlbums = state.albums.filter { it.trackCount > 3 }
+        if (eligibleAlbums.isEmpty()) {
+            state.albums.take(3)
+        } else {
+            val dailySeed = eligibleAlbums
+                .map { it.id }
+                .sorted()
+                .joinToString("|")
+                .plus("|")
+                .plus(spotlightDay.toString())
+                .hashCode()
+            val maxCount = minOf(5, eligibleAlbums.size)
+            val minCount = minOf(3, maxCount)
+            val random = Random(dailySeed)
+            val targetCount = if (minCount == maxCount) {
+                maxCount
+            } else {
+                random.nextInt(minCount, maxCount + 1)
+            }
+            eligibleAlbums.shuffled(random).take(targetCount)
+        }
+    }
+
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             ElevatedPanel {
@@ -599,7 +650,7 @@ private fun HomeScreen(
         item {
             Text("Library spotlight", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         }
-        items(state.albums.take(6), key = { "spotlight-album-${it.id}" }) { album ->
+        items(spotlightAlbums, key = { "spotlight-album-${it.id}" }) { album ->
             AlbumRow(
                 baseUrl = state.baseUrl,
                 album = album,
@@ -631,6 +682,7 @@ private fun LibraryScreen(
     onOpenAlbum: (String) -> Unit,
     onOpenAlbumPreservingArtist: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
+    onOpenAlbumArtworkPicker: () -> Unit,
     onPlayTrack: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
     onAppendTrack: (String) -> Unit,
@@ -682,6 +734,7 @@ private fun LibraryScreen(
             onAppendTrack = onAppendTrack,
             onPlayNextTrack = onPlayNextTrack,
             onOpenArtistByName = onOpenArtistByName,
+            onOpenArtworkPicker = onOpenAlbumArtworkPicker,
         )
         return
     }
@@ -1762,6 +1815,7 @@ private fun AlbumDetailScreen(
     onBack: () -> Unit,
     backLabel: String,
     onOpenArtist: (() -> Unit)?,
+    onOpenArtworkPicker: () -> Unit,
     onPlayAlbum: () -> Unit,
     onAppendAlbum: () -> Unit,
     onPlayNextAlbum: () -> Unit,
@@ -1787,12 +1841,34 @@ private fun AlbumDetailScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    ArtworkSquare(
-                        url = resolveUrl(baseUrl, album.artworkUrl),
-                        modifier = Modifier.fillMaxWidth(0.8f),
-                        fallbackText = album.title,
-                        contentHeight = 280.dp,
-                    )
+                    val hasArtwork = album.artworkUrl.isNotBlank()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth(0.8f)
+                            .then(
+                                if (!hasArtwork) {
+                                    Modifier.clickable(onClick = onOpenArtworkPicker)
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        ArtworkSquare(
+                            url = resolveUrl(baseUrl, album.artworkUrl),
+                            modifier = Modifier.fillMaxWidth(),
+                            fallbackText = album.title,
+                            contentHeight = 280.dp,
+                        )
+                        if (!hasArtwork) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Tap to find artwork",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                        }
+                    }
                     Spacer(Modifier.height(18.dp))
                     Text(
                         text = album.title,
@@ -1847,6 +1923,115 @@ private fun AlbumDetailScreen(
                 onOpenArtist = { onOpenArtistByName(track.artist) },
             )
         }
+    }
+}
+
+@Composable
+private fun AlbumArtworkPickerSheet(
+    album: AlbumDetailDto?,
+    candidates: List<AlbumArtworkCandidateDto>,
+    isSearching: Boolean,
+    isApplying: Boolean,
+    errorMessage: String?,
+    onSelectCandidate: (String) -> Unit,
+) {
+    Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Text("Find artwork", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            album?.let { "Search results for ${it.artist} · ${it.title}" }
+                ?: "Search results for this album.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(16.dp))
+        when {
+            isSearching -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Text("Searching MusicBrainz and Cover Art Archive…")
+                }
+            }
+            !errorMessage.isNullOrBlank() -> {
+                Text(errorMessage, color = MaterialTheme.colorScheme.error)
+            }
+            candidates.isEmpty() -> {
+                Text(
+                    "No matching artwork candidates were found for this album.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            else -> {
+                candidates.forEach { candidate ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp)
+                            .clickable(enabled = !isApplying) { onSelectCandidate(candidate.releaseId) },
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        shape = RoundedCornerShape(22.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AsyncImage(
+                                model = candidate.thumbnailUrl,
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(84.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.surface,
+                                        RoundedCornerShape(18.dp),
+                                    ),
+                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    candidate.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    listOfNotNull(
+                                        candidate.artist.takeIf { it.isNotBlank() },
+                                        candidate.date,
+                                        candidate.country,
+                                    ).joinToString(" · "),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "Match score ${candidate.score}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (isApplying) {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("Saving artwork…")
+            }
+        }
+        Spacer(Modifier.height(20.dp))
     }
 }
 

@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.musicd.android.data.AlbumDetailDto
+import io.musicd.android.data.AlbumArtworkCandidateDto
 import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
@@ -57,6 +58,11 @@ data class MusicdUiState(
     val tracks: List<TrackSummaryDto> = emptyList(),
     val selectedArtistDetail: ArtistDetailDto? = null,
     val selectedAlbumDetail: AlbumDetailDto? = null,
+    val showAlbumArtworkPicker: Boolean = false,
+    val albumArtworkCandidates: List<AlbumArtworkCandidateDto> = emptyList(),
+    val isSearchingAlbumArtwork: Boolean = false,
+    val isApplyingAlbumArtwork: Boolean = false,
+    val albumArtworkErrorMessage: String? = null,
     val queue: QueueDto? = null,
     val showRendererPicker: Boolean = false,
     val isConnecting: Boolean = false,
@@ -338,6 +344,106 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun closeAlbumDetail() {
         _uiState.update { it.copy(selectedAlbumDetail = null) }
+    }
+
+    fun openAlbumArtworkPicker() {
+        val baseUrl = uiState.value.baseUrl
+        val album = uiState.value.selectedAlbumDetail ?: return
+        if (baseUrl.isBlank()) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    showAlbumArtworkPicker = true,
+                    albumArtworkCandidates = emptyList(),
+                    isSearchingAlbumArtwork = true,
+                    isApplyingAlbumArtwork = false,
+                    albumArtworkErrorMessage = null,
+                )
+            }
+
+            runCatching { repository.getAlbumArtworkCandidates(baseUrl, album.id) }
+                .onSuccess { response ->
+                    _uiState.update {
+                        it.copy(
+                            showAlbumArtworkPicker = true,
+                            albumArtworkCandidates = response.candidates,
+                            isSearchingAlbumArtwork = false,
+                            albumArtworkErrorMessage = response.error,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            isSearchingAlbumArtwork = false,
+                            albumArtworkErrorMessage = connectionErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun dismissAlbumArtworkPicker() {
+        _uiState.update {
+            it.copy(
+                showAlbumArtworkPicker = false,
+                albumArtworkCandidates = emptyList(),
+                isSearchingAlbumArtwork = false,
+                isApplyingAlbumArtwork = false,
+                albumArtworkErrorMessage = null,
+            )
+        }
+    }
+
+    fun applyAlbumArtwork(releaseId: String) {
+        val baseUrl = uiState.value.baseUrl
+        val album = uiState.value.selectedAlbumDetail ?: return
+        if (baseUrl.isBlank()) return
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isApplyingAlbumArtwork = true,
+                    albumArtworkErrorMessage = null,
+                    errorMessage = null,
+                    warningMessage = null,
+                )
+            }
+
+            runCatching {
+                repository.selectAlbumArtwork(baseUrl, album.id, releaseId)
+                val albums = repository.getAlbums(baseUrl)
+                val artists = repository.getArtists(baseUrl)
+                val refreshedAlbum = repository.getAlbumDetail(baseUrl, album.id)
+                val refreshedArtist = uiState.value.selectedArtistDetail?.let { selectedArtist ->
+                    repository.getArtistDetail(baseUrl, selectedArtist.id)
+                }
+                Quadruple(albums, artists, refreshedAlbum, refreshedArtist)
+            }.onSuccess { (albums, artists, refreshedAlbum, refreshedArtist) ->
+                _uiState.update {
+                    it.copy(
+                        albums = albums,
+                        artists = artists,
+                        selectedAlbumDetail = refreshedAlbum,
+                        selectedArtistDetail = refreshedArtist ?: it.selectedArtistDetail,
+                        showAlbumArtworkPicker = false,
+                        albumArtworkCandidates = emptyList(),
+                        isSearchingAlbumArtwork = false,
+                        isApplyingAlbumArtwork = false,
+                        albumArtworkErrorMessage = null,
+                        infoMessage = "Album artwork updated.",
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isApplyingAlbumArtwork = false,
+                        albumArtworkErrorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
+        }
     }
 
     fun openArtist(artistId: String) {
@@ -656,6 +762,13 @@ private data class Quintuple<A, B, C, D, E>(
     val third: C,
     val fourth: D,
     val fifth: E,
+)
+
+private data class Quadruple<A, B, C, D>(
+    val first: A,
+    val second: B,
+    val third: C,
+    val fourth: D,
 )
 
 private data class Sextuple<A, B, C, D, E, F>(

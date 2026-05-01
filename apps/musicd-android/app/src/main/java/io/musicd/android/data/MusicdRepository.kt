@@ -3,6 +3,7 @@ package io.musicd.android.data
 import android.content.Context
 import androidx.core.content.edit
 import io.musicd.android.data.AlbumDetailDto
+import io.musicd.android.data.AlbumArtworkCandidatesResponseDto
 import io.musicd.android.data.ArtistDetailDto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -50,6 +51,13 @@ class MusicdRepository(
             api.getAlbumDetail(baseUrl.normalizeBaseUrl(), albumId)
         }
 
+    suspend fun getAlbumArtworkCandidates(
+        baseUrl: String,
+        albumId: String,
+    ): AlbumArtworkCandidatesResponseDto = withContext(Dispatchers.IO) {
+        api.getAlbumArtworkCandidates(baseUrl.normalizeBaseUrl(), albumId)
+    }
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
         withContext(Dispatchers.IO) {
             api.getArtistDetail(baseUrl.normalizeBaseUrl(), artistId)
@@ -95,6 +103,14 @@ class MusicdRepository(
         albumId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
         api.playAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId)
+    }
+
+    suspend fun selectAlbumArtwork(
+        baseUrl: String,
+        albumId: String,
+        releaseId: String,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.selectAlbumArtwork(baseUrl.normalizeBaseUrl(), albumId, releaseId)
     }
 
     suspend fun appendTrack(

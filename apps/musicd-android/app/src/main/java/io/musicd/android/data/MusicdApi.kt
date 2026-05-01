@@ -80,6 +80,27 @@ data class AlbumDetailDto(
 )
 
 @Serializable
+data class AlbumArtworkCandidateDto(
+    @SerialName("release_id") val releaseId: String,
+    @SerialName("release_group_id") val releaseGroupId: String? = null,
+    val title: String,
+    val artist: String,
+    val date: String? = null,
+    val country: String? = null,
+    val score: Int = 0,
+    @SerialName("thumbnail_url") val thumbnailUrl: String,
+    @SerialName("image_url") val imageUrl: String,
+    val source: String,
+)
+
+@Serializable
+data class AlbumArtworkCandidatesResponseDto(
+    val album: AlbumSummaryDto? = null,
+    val candidates: List<AlbumArtworkCandidateDto> = emptyList(),
+    val error: String? = null,
+)
+
+@Serializable
 data class ArtistDetailDto(
     val id: String,
     val name: String,
@@ -201,6 +222,12 @@ class MusicdApi(
     suspend fun getAlbumDetail(baseUrl: String, albumId: String): AlbumDetailDto =
         get("$baseUrl/api/albums/${albumId.encodeForUrl()}")
 
+    suspend fun getAlbumArtworkCandidates(
+        baseUrl: String,
+        albumId: String,
+    ): AlbumArtworkCandidatesResponseDto =
+        get("$baseUrl/api/albums/${albumId.encodeForUrl()}/artwork/candidates")
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
         get("$baseUrl/api/artists/${artistId.encodeForUrl()}")
 
@@ -246,6 +273,18 @@ class MusicdApi(
         mapOf(
             "renderer_location" to rendererLocation,
             "album_id" to albumId,
+        ),
+    )
+
+    suspend fun selectAlbumArtwork(
+        baseUrl: String,
+        albumId: String,
+        releaseId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/albums/artwork/select",
+        mapOf(
+            "album_id" to albumId,
+            "release_id" to releaseId,
         ),
     )
 
