@@ -4867,7 +4867,7 @@ fn render_discovery_json(state: &ServiceState) -> String {
 
     let entries = renderers
         .into_iter()
-        .map(|renderer| match inspect_renderer(&renderer.location) {
+        .filter_map(|renderer| match inspect_renderer(&renderer.location) {
             Ok(details) => {
                 let _ = state.remember_renderer_details(
                     &details.location,
@@ -4878,7 +4878,7 @@ fn render_discovery_json(state: &ServiceState) -> String {
                     Some(&details.capabilities),
                     None,
                 );
-                renderer_record_json(
+                Some(renderer_record_json(
                     &RendererRecord {
                         location: details.location,
                         name: details.friendly_name,
@@ -4892,27 +4892,9 @@ fn render_discovery_json(state: &ServiceState) -> String {
                         last_seen_unix: now_unix_timestamp(),
                     },
                     false,
-                )
+                ))
             }
-            Err(error) => {
-                let name = renderer.server.as_deref().unwrap_or("Unknown renderer");
-                let _ = state.remember_renderer_details(
-                    &renderer.location,
-                    name,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(&error.to_string()),
-                );
-                format!(
-                    r#"{{"location":"{}","name":"{}","kind":"{}","error":"{}"}}"#,
-                    json_escape(&renderer.location),
-                    json_escape(name),
-                    renderer_kind_name(renderer_kind_for_location(&renderer.location)),
-                    json_escape(&error.to_string()),
-                )
-            }
+            Err(_) => None,
         })
         .collect::<Vec<_>>()
         .join(",");
@@ -6985,9 +6967,11 @@ impl ServiceState {
     fn enriched_renderer_snapshot(&self) -> Vec<RendererRecord> {
         self.renderer_snapshot()
             .into_iter()
-            .map(|renderer| {
-                self.enrich_renderer_record_if_needed(&renderer)
-                    .unwrap_or(renderer)
+            .filter_map(|renderer| {
+                let renderer = self
+                    .enrich_renderer_record_if_needed(&renderer)
+                    .unwrap_or(renderer);
+                renderer_is_viable(&renderer).then_some(renderer)
             })
             .collect()
     }
@@ -6997,9 +6981,11 @@ impl ServiceState {
             .load_renderer(renderer_location)
             .ok()
             .flatten()
-            .map(|renderer| {
-                self.enrich_renderer_record_if_needed(&renderer)
-                    .unwrap_or(renderer)
+            .and_then(|renderer| {
+                let renderer = self
+                    .enrich_renderer_record_if_needed(&renderer)
+                    .unwrap_or(renderer);
+                renderer_is_viable(&renderer).then_some(renderer)
             })
     }
 
@@ -7050,6 +7036,10 @@ impl ServiceState {
                     None,
                 );
             }
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "location did not resolve to a playable UPnP media renderer",
+            ));
         }
 
         let renderer = RendererRecord {
@@ -8712,6 +8702,13 @@ fn renderer_needs_refresh(renderer: &RendererRecord) -> bool {
         || renderer_name_looks_like_location(&renderer.name, &renderer.location))
 }
 
+fn renderer_is_viable(renderer: &RendererRecord) -> bool {
+    match renderer_kind_for_location(&renderer.location) {
+        RendererKind::Upnp => renderer.av_transport_control_url.is_some(),
+        RendererKind::Sonos => true,
+    }
+}
+
 fn renderer_actions_json(actions: &Option<Vec<String>>) -> Option<String> {
     actions
         .as_ref()
@@ -9771,8 +9768,9 @@ mod tests {
         infer_artist_and_album, infer_disc_and_track_numbers, infer_image_mime_from_bytes,
         next_queue_entry_after, parse_query_string, parse_range_header, parse_request_form,
         parse_vorbis_comment_block, previous_queue_entry_before, queue_status_for_transport,
-        renderer_kind_for_location, should_adopt_preloaded_next_entry, should_auto_advance,
-        should_skip_entry, stable_album_id, stable_artist_id, stable_track_id,
+        renderer_is_viable, renderer_kind_for_location, should_adopt_preloaded_next_entry,
+        should_auto_advance, should_skip_entry, stable_album_id, stable_artist_id,
+        stable_track_id,
     };
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, RendererCapabilities, TransportInfo, TransportSnapshot};
@@ -10536,6 +10534,27 @@ mod tests {
         let mut fallback_name = complete.clone();
         fallback_name.name = fallback_name.location.clone();
         assert!(super::renderer_needs_refresh(&fallback_name));
+    }
+
+    #[test]
+    fn rejects_non_playable_upnp_renderer_records() {
+        let invalid = super::RendererRecord {
+            location: "http://192.168.1.173:80/description.xml".to_string(),
+            name: "Hue Bridge".to_string(),
+            manufacturer: Some("Signify".to_string()),
+            model_name: Some("Philips hue bridge 2015".to_string()),
+            av_transport_control_url: None,
+            capabilities: RendererCapabilities::default(),
+            last_checked_unix: 10,
+            last_reachable_unix: Some(10),
+            last_error: None,
+            last_seen_unix: 10,
+        };
+        assert!(!renderer_is_viable(&invalid));
+
+        let mut valid = invalid.clone();
+        valid.av_transport_control_url = Some("http://renderer/avtransport".to_string());
+        assert!(renderer_is_viable(&valid));
     }
 
     fn sample_track(
