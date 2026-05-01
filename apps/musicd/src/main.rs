@@ -771,6 +771,7 @@ fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/api/events") => handle_api_events_request(writer, request, &state),
         ("GET", "/api/artists") | ("HEAD", "/api/artists") => {
             let body = render_artists_json(&state);
             respond_text(
@@ -1900,6 +1901,24 @@ fn handle_api_album_artwork_select_request(
     }
 }
 
+fn handle_api_events_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location =
+        state.preferred_renderer_location(request_value(request, "renderer_location"));
+    if renderer_location.trim().is_empty() {
+        return api_error(
+            writer,
+            "400 Bad Request",
+            "renderer_location is required for event streaming",
+        );
+    }
+
+    respond_sse_stream(writer, state, &renderer_location)
+}
+
 fn handle_api_transport_play_request(
     writer: &mut TcpStream,
     request: &HttpRequest,
@@ -2483,6 +2502,51 @@ fn api_error(writer: &mut TcpStream, status: &str, error: &str) -> io::Result<()
         status,
         &format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(error)),
     )
+}
+
+fn respond_sse_stream(
+    writer: &mut TcpStream,
+    state: &ServiceState,
+    renderer_location: &str,
+) -> io::Result<()> {
+    write!(writer, "HTTP/1.1 200 OK\r\n")?;
+    write!(writer, "Connection: keep-alive\r\n")?;
+    write!(writer, "Cache-Control: no-cache\r\n")?;
+    write!(writer, "Content-Type: text/event-stream; charset=utf-8\r\n")?;
+    write!(writer, "X-Accel-Buffering: no\r\n")?;
+    write!(writer, "\r\n")?;
+    writer.flush()?;
+
+    let mut last_payload = String::new();
+    let mut heartbeat_tick = 0usize;
+
+    loop {
+        let payload = render_playback_event_json_for_renderer(state, renderer_location);
+        if payload != last_payload {
+            write_sse_event(writer, "playback", &payload)?;
+            last_payload = payload;
+        } else if heartbeat_tick >= 14 {
+            write_sse_comment(writer, "ping")?;
+            heartbeat_tick = 0;
+        }
+
+        thread::sleep(Duration::from_secs(1));
+        heartbeat_tick += 1;
+    }
+}
+
+fn write_sse_event(writer: &mut TcpStream, event: &str, data: &str) -> io::Result<()> {
+    write!(writer, "event: {event}\r\n")?;
+    for line in data.lines() {
+        write!(writer, "data: {line}\r\n")?;
+    }
+    write!(writer, "\r\n")?;
+    writer.flush()
+}
+
+fn write_sse_comment(writer: &mut TcpStream, comment: &str) -> io::Result<()> {
+    write!(writer, ": {comment}\r\n\r\n")?;
+    writer.flush()
 }
 
 fn respond_not_found(writer: &mut TcpStream, head_only: bool) -> io::Result<()> {
@@ -4652,6 +4716,10 @@ fn render_server_json(state: &ServiceState) -> String {
 fn render_now_playing_json(state: &ServiceState, request: &HttpRequest) -> String {
     let renderer_location =
         state.preferred_renderer_location(request_value(request, "renderer_location"));
+    render_now_playing_json_for_renderer(state, &renderer_location)
+}
+
+fn render_now_playing_json_for_renderer(state: &ServiceState, renderer_location: &str) -> String {
     let renderer_json = state
         .enriched_renderer_record(&renderer_location)
         .map(|renderer| renderer_record_json(&renderer, true))
@@ -4666,6 +4734,20 @@ fn render_now_playing_json(state: &ServiceState, request: &HttpRequest) -> Strin
         current_track_json,
         session_json,
         queue_summary_json,
+    )
+}
+
+fn render_playback_event_json_for_renderer(
+    state: &ServiceState,
+    renderer_location: &str,
+) -> String {
+    let now_playing_json = render_now_playing_json_for_renderer(state, renderer_location);
+    let queue_json = render_queue_json_for_renderer(state, renderer_location);
+    format!(
+        r#"{{"renderer_location":"{}","now_playing":{},"queue":{}}}"#,
+        json_escape(renderer_location),
+        now_playing_json,
+        queue_json,
     )
 }
 
@@ -8618,11 +8700,16 @@ fn normalized_renderer_name(location: &str, name: &str, model_name: Option<&str>
 }
 
 fn renderer_needs_refresh(renderer: &RendererRecord) -> bool {
-    matches!(renderer_kind_for_location(&renderer.location), RendererKind::Upnp)
-        && (renderer.av_transport_control_url.is_none()
-            || renderer.capabilities.av_transport_actions.is_none()
-            || renderer.capabilities.has_playlist_extension_service.is_none()
-            || renderer_name_looks_like_location(&renderer.name, &renderer.location))
+    matches!(
+        renderer_kind_for_location(&renderer.location),
+        RendererKind::Upnp
+    ) && (renderer.av_transport_control_url.is_none()
+        || renderer.capabilities.av_transport_actions.is_none()
+        || renderer
+            .capabilities
+            .has_playlist_extension_service
+            .is_none()
+        || renderer_name_looks_like_location(&renderer.name, &renderer.location))
 }
 
 fn renderer_actions_json(actions: &Option<Vec<String>>) -> Option<String> {
