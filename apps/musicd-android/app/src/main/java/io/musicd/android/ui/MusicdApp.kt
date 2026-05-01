@@ -1189,13 +1189,12 @@ private fun QueueScreen(
     val entries = state.queue?.entries.orEmpty()
     val currentEntryId = state.queue?.currentEntryId
     val currentEntry = entries.firstOrNull {
-        it.id == currentEntryId || it.entryStatus.equals("playing", ignoreCase = true)
+        it.id == currentEntryId || isCurrentQueueEntryStatus(it.entryStatus)
     }
-    val upcomingEntries = if (currentEntry != null) {
-        entries.filterNot { it.id == currentEntry.id }
-    } else {
-        entries
+    val upcomingEntries = entries.filter { entry ->
+        entry.id != currentEntry?.id && isUpcomingQueueEntryStatus(entry.entryStatus)
     }
+    val hasVisibleQueueEntries = currentEntry != null || upcomingEntries.isNotEmpty()
     val trackLookup = remember(state.tracks) { state.tracks.associateBy { it.id } }
     val accentColor = Color(0xFFF5AF43)
 
@@ -1280,13 +1279,21 @@ private fun QueueScreen(
                 onRemove = { onRemoveQueueEntry(entry.id) },
             )
         }
-        if (entries.isEmpty()) {
+        if (!hasVisibleQueueEntries) {
             item {
                 ElevatedPanel {
-                    Text("Queue is empty", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (entries.isEmpty()) "Queue is empty" else "Queue has finished",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Play an album or add tracks from the library to start building a queue.",
+                        if (entries.isEmpty()) {
+                            "Play an album or add tracks from the library to start building a queue."
+                        } else {
+                            "There is nothing left queued to play. Clear the finished queue or add more music from the library."
+                        },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(14.dp))
@@ -2355,11 +2362,15 @@ private fun queueSummaryLine(
     entries: List<QueueEntryDto>,
     currentEntry: QueueEntryDto?,
 ): String {
-    val trackCountLabel = "${entries.size} ${if (entries.size == 1) "track" else "tracks"}"
+    val remainingEntries = entries.filter { entry ->
+        entry.id == currentEntry?.id || isUpcomingQueueEntryStatus(entry.entryStatus)
+    }
+    val trackCount = remainingEntries.size
+    val trackCountLabel = "${trackCount} ${if (trackCount == 1) "track" else "tracks"}"
     val remainingSeconds = if (currentEntry != null) {
-        entries.dropWhile { it.id != currentEntry.id }.mapNotNull { it.durationSeconds }.sum()
+        remainingEntries.mapNotNull { it.durationSeconds }.sum()
     } else {
-        entries.mapNotNull { it.durationSeconds }.sum()
+        remainingEntries.mapNotNull { it.durationSeconds }.sum()
     }
 
     if (remainingSeconds <= 0L) {
@@ -2381,6 +2392,16 @@ private fun queueSummaryLine(
 
     return "$trackCountLabel · $remainingLabel"
 }
+
+private fun isCurrentQueueEntryStatus(status: String?): Boolean =
+    status.equals("playing", ignoreCase = true)
+
+private fun isUpcomingQueueEntryStatus(status: String?): Boolean =
+    when (status?.trim()?.lowercase()) {
+        null, "", "pending" -> true
+        "queued" -> true
+        else -> false
+    }
 
 private fun humanizeTransportState(state: String?): String =
     when (state?.trim()?.uppercase()) {
