@@ -76,6 +76,47 @@ class MusicdRepository(
             api.discoverRenderers(baseUrl.normalizeBaseUrl())
         }
 
+    suspend fun registerAndroidLocalRenderer(
+        baseUrl: String,
+        rendererLocation: String,
+        name: String,
+        manufacturer: String?,
+        modelName: String?,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.registerAndroidLocalRenderer(
+            baseUrl.normalizeBaseUrl(),
+            rendererLocation,
+            name,
+            manufacturer,
+            modelName,
+        )
+    }
+
+    suspend fun reportAndroidLocalSession(
+        baseUrl: String,
+        rendererLocation: String,
+        transportState: String,
+        currentTrackUri: String?,
+        positionSeconds: Long?,
+        durationSeconds: Long?,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.reportAndroidLocalSession(
+            baseUrl.normalizeBaseUrl(),
+            rendererLocation,
+            transportState,
+            currentTrackUri,
+            positionSeconds,
+            durationSeconds,
+        )
+    }
+
+    suspend fun reportAndroidLocalCompleted(
+        baseUrl: String,
+        rendererLocation: String,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.reportAndroidLocalCompleted(baseUrl.normalizeBaseUrl(), rendererLocation)
+    }
+
     suspend fun getQueue(baseUrl: String, rendererLocation: String): QueueDto =
         withContext(Dispatchers.IO) {
             api.getQueue(baseUrl.normalizeBaseUrl(), rendererLocation)

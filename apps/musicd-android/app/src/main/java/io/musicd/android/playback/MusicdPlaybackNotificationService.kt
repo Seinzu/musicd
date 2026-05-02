@@ -12,6 +12,9 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -37,17 +40,44 @@ class MusicdPlaybackNotificationService : Service() {
     private val repository by lazy { MusicdRepository(applicationContext) }
 
     private lateinit var mediaSession: MediaSessionCompat
+    private lateinit var localPlayer: ExoPlayer
     private var observerJob: Job? = null
+    private var localPlaybackReportJob: Job? = null
     private var currentBaseUrl: String = ""
     private var currentRendererLocation: String = ""
     private var currentServerName: String? = null
     private var latestPlaybackEvent: PlaybackEventDto? = null
     private var latestArtworkUrl: String? = null
     private var latestArtworkBitmap: Bitmap? = null
+    private var suppressLocalPlayerSync = false
+    private var lastReportedLocalSessionSignature: String? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
+        localPlayer = ExoPlayer.Builder(this).build().apply {
+            addListener(
+                object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        if (!suppressLocalPlayerSync) {
+                            updateLocalPlaybackReportingLoop()
+                            reportLocalSession()
+                        }
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (!suppressLocalPlayerSync) {
+                            updateLocalPlaybackReportingLoop()
+                            if (playbackState == Player.STATE_ENDED) {
+                                reportLocalCompletion()
+                            } else {
+                                reportLocalSession()
+                            }
+                        }
+                    }
+                },
+            )
+        }
         mediaSession = MediaSessionCompat(this, MEDIA_SESSION_TAG).apply {
             setCallback(
                 object : MediaSessionCompat.Callback() {
@@ -115,7 +145,9 @@ class MusicdPlaybackNotificationService : Service() {
 
     override fun onDestroy() {
         observerJob?.cancel()
+        localPlaybackReportJob?.cancel()
         serviceScope.cancel()
+        localPlayer.release()
         mediaSession.release()
         super.onDestroy()
     }
@@ -153,6 +185,7 @@ class MusicdPlaybackNotificationService : Service() {
         }
 
         serviceScope.launch {
+            syncLocalPlayback(event)
             val artworkBitmap = loadArtworkBitmap(event)
             updateMediaSession(event, artworkBitmap)
             startForeground(NOTIFICATION_ID, buildPlaybackNotification(event, artworkBitmap))
@@ -344,6 +377,135 @@ class MusicdPlaybackNotificationService : Service() {
         return loadedBitmap
     }
 
+    private suspend fun syncLocalPlayback(event: PlaybackEventDto) {
+        if (!isLocalRendererActive()) {
+            stopLocalPlayer()
+            return
+        }
+
+        val track = event.nowPlaying.currentTrack ?: run {
+            stopLocalPlayer()
+            return
+        }
+        val streamUrl = currentTrackStreamUrl(track.id) ?: return
+        val currentUri = localPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
+        val transportState = event.nowPlaying.session?.transportState.orEmpty()
+
+        suppressLocalPlayerSync = true
+        try {
+            if (currentUri != streamUrl) {
+                localPlayer.setMediaItem(
+                    MediaItem.Builder()
+                        .setMediaId(track.id)
+                        .setUri(streamUrl)
+                        .build(),
+                )
+                localPlayer.prepare()
+            }
+
+            when (transportState) {
+                "PLAYING", "TRANSITIONING" -> localPlayer.play()
+                "PAUSED_PLAYBACK" -> {
+                    if (localPlayer.playbackState == Player.STATE_IDLE) {
+                        localPlayer.prepare()
+                    }
+                    localPlayer.pause()
+                }
+                "STOPPED", "NO_MEDIA_PRESENT", "COMPLETED" -> stopLocalPlayer()
+            }
+        } finally {
+            suppressLocalPlayerSync = false
+        }
+        updateLocalPlaybackReportingLoop()
+    }
+
+    private fun stopLocalPlayer() {
+        suppressLocalPlayerSync = true
+        try {
+            localPlayer.stop()
+            localPlayer.clearMediaItems()
+        } finally {
+            suppressLocalPlayerSync = false
+        }
+        updateLocalPlaybackReportingLoop()
+    }
+
+    private fun updateLocalPlaybackReportingLoop() {
+        localPlaybackReportJob?.cancel()
+        if (!isLocalRendererActive() || !localPlayer.isPlaying) {
+            localPlaybackReportJob = null
+            return
+        }
+        localPlaybackReportJob = serviceScope.launch {
+            while (isActive && isLocalRendererActive() && localPlayer.isPlaying) {
+                reportLocalSession(force = true)
+                delay(5_000)
+            }
+        }
+    }
+
+    private fun reportLocalSession(force: Boolean = false) {
+        if (!isLocalRendererActive() || currentBaseUrl.isBlank() || currentRendererLocation.isBlank()) {
+            return
+        }
+        val currentTrackUri = localPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
+        val transportState = localTransportState()
+        val durationSeconds = localPlayer.duration.takeIf { it > 0L }?.div(1000L)
+        val positionSeconds = localPlayer.currentPosition.takeIf { it >= 0L }?.div(1000L)
+        val signature = listOf(
+            transportState,
+            currentTrackUri.orEmpty(),
+            positionSeconds?.toString().orEmpty(),
+            durationSeconds?.toString().orEmpty(),
+        ).joinToString("|")
+        if (!force && signature == lastReportedLocalSessionSignature) {
+            return
+        }
+        lastReportedLocalSessionSignature = signature
+        serviceScope.launch {
+            runCatching {
+                repository.reportAndroidLocalSession(
+                    baseUrl = currentBaseUrl,
+                    rendererLocation = currentRendererLocation,
+                    transportState = transportState,
+                    currentTrackUri = currentTrackUri,
+                    positionSeconds = positionSeconds,
+                    durationSeconds = durationSeconds,
+                )
+            }
+        }
+    }
+
+    private fun reportLocalCompletion() {
+        if (!isLocalRendererActive() || currentBaseUrl.isBlank() || currentRendererLocation.isBlank()) {
+            return
+        }
+        serviceScope.launch {
+            runCatching {
+                repository.reportAndroidLocalCompleted(
+                    baseUrl = currentBaseUrl,
+                    rendererLocation = currentRendererLocation,
+                )
+            }
+        }
+    }
+
+    private fun localTransportState(): String =
+        when {
+            localPlayer.currentMediaItem == null -> "NO_MEDIA_PRESENT"
+            localPlayer.playbackState == Player.STATE_BUFFERING -> "TRANSITIONING"
+            localPlayer.isPlaying -> "PLAYING"
+            localPlayer.playbackState == Player.STATE_ENDED -> "COMPLETED"
+            localPlayer.playbackState == Player.STATE_READY && !localPlayer.playWhenReady -> "PAUSED_PLAYBACK"
+            localPlayer.playbackState == Player.STATE_IDLE -> "STOPPED"
+            else -> "READY"
+        }
+
+    private fun currentTrackStreamUrl(trackId: String?): String? =
+        trackId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { value -> "${currentBaseUrl.trimEnd('/')}/stream/track/$value" }
+
     private fun appLaunchPendingIntent(): PendingIntent {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -387,6 +549,9 @@ class MusicdPlaybackNotificationService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
+
+    private fun isLocalRendererActive(): Boolean =
+        isLocalRendererLocation(currentRendererLocation)
 
     companion object {
         private const val CHANNEL_ID = "musicd_playback"
@@ -438,6 +603,9 @@ class MusicdPlaybackNotificationService : Service() {
                 "PLAYING", "TRANSITIONING" -> true
                 else -> false
             }
+
+        private fun isLocalRendererLocation(rendererLocation: String): Boolean =
+            rendererLocation.startsWith("android-local://")
 
         private fun resolveUrl(baseUrl: String, path: String?): String? {
             val normalizedPath = path?.trim().orEmpty()

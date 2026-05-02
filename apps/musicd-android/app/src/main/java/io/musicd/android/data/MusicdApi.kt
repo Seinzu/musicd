@@ -247,6 +247,48 @@ class MusicdApi(
     suspend fun discoverRenderers(baseUrl: String): List<RendererDto> =
         get("$baseUrl/api/renderers/discover")
 
+    suspend fun registerAndroidLocalRenderer(
+        baseUrl: String,
+        rendererLocation: String,
+        name: String,
+        manufacturer: String?,
+        modelName: String?,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/renderers/register-android-local",
+        buildMap {
+            put("renderer_location", rendererLocation)
+            put("name", name)
+            manufacturer?.takeIf { it.isNotBlank() }?.let { put("manufacturer", it) }
+            modelName?.takeIf { it.isNotBlank() }?.let { put("model_name", it) }
+        },
+    )
+
+    suspend fun reportAndroidLocalSession(
+        baseUrl: String,
+        rendererLocation: String,
+        transportState: String,
+        currentTrackUri: String?,
+        positionSeconds: Long?,
+        durationSeconds: Long?,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/renderers/android-local/session",
+        buildMap {
+            put("renderer_location", rendererLocation)
+            put("transport_state", transportState)
+            currentTrackUri?.takeIf { it.isNotBlank() }?.let { put("current_track_uri", it) }
+            positionSeconds?.let { put("position_seconds", it.toString()) }
+            durationSeconds?.let { put("duration_seconds", it.toString()) }
+        },
+    )
+
+    suspend fun reportAndroidLocalCompleted(
+        baseUrl: String,
+        rendererLocation: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/renderers/android-local/completed",
+        mapOf("renderer_location" to rendererLocation),
+    )
+
     suspend fun getQueue(baseUrl: String, rendererLocation: String): QueueDto =
         get("$baseUrl/api/queue?renderer_location=${rendererLocation.encodeForUrl()}")
 

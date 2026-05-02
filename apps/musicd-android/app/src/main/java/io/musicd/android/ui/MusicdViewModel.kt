@@ -1,6 +1,8 @@
 package io.musicd.android.ui
 
 import android.app.Application
+import android.os.Build
+import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.musicd.android.data.AlbumDetailDto
@@ -260,6 +262,15 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         runCatching {
             val serverInfo = repository.getServerInfo(baseUrl)
+            runCatching {
+                repository.registerAndroidLocalRenderer(
+                    baseUrl = baseUrl,
+                    rendererLocation = androidLocalRendererLocation(),
+                    name = "This phone",
+                    manufacturer = Build.MANUFACTURER,
+                    modelName = Build.MODEL,
+                )
+            }
             val renderers = repository.getRenderers(baseUrl)
             val artists = repository.getArtists(baseUrl)
             val albums = repository.getAlbums(baseUrl)
@@ -281,6 +292,14 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             is MusicdApiException -> error.userMessage
             else -> error.message ?: "Could not connect to musicd."
         }
+    }
+
+    private fun androidLocalRendererLocation(): String {
+        val androidId = Settings.Secure.getString(
+            getApplication<Application>().contentResolver,
+            Settings.Secure.ANDROID_ID,
+        ).orEmpty().ifBlank { "this-device" }
+        return "android-local://$androidId"
     }
 
     fun disconnectServer() {
@@ -606,8 +625,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         if (baseUrl.isBlank()) return
         viewModelScope.launch {
             _uiState.update { it.copy(isDiscovering = true, errorMessage = null, warningMessage = null) }
-            runCatching { repository.discoverRenderers(baseUrl) }
-                .onSuccess { discovered ->
+            runCatching {
+                repository.discoverRenderers(baseUrl)
+                repository.getRenderers(baseUrl)
+            }.onSuccess { discovered ->
                     val selected = chooseRendererLocation(
                         currentSelection = uiState.value.selectedRendererLocation,
                         savedSelection = repository.loadRendererLocation(),
