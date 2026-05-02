@@ -2,7 +2,7 @@
 
 ## Why this app
 
-The Android app should be a native controller for `musicd`, optimized for phone use while keeping the door open for tablets and foldables. The main purpose is not local playback on the phone itself; it is browsing the library, managing the queue, and controlling playback on external renderers.
+The Android app should be a native controller for `musicd`, optimized for phone use while keeping the door open for tablets and foldables. The main purpose is still browsing the library, managing the queue, and controlling playback on renderers, but that renderer set can now include the phone itself as an optional `android_local` target.
 
 That means the Android app should treat `musicd` as the source of truth for:
 
@@ -11,6 +11,8 @@ That means the Android app should treat `musicd` as the source of truth for:
 - queue state
 - renderer discovery and selection
 - transport/session state
+
+An implementation plan for phone-as-renderer playback now lives in [docs/android-local-renderer-plan.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-local-renderer-plan.md).
 
 ## Design direction from the PDF
 

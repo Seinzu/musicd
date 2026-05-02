@@ -274,15 +274,20 @@ enum ServerMode {
 enum RendererKind {
     Upnp,
     Sonos,
+    AndroidLocal,
 }
 
 #[derive(Debug, Default)]
 struct RendererBackends {
     upnp: UpnpRendererBackend,
+    android_local: AndroidLocalRendererBackend,
 }
 
 #[derive(Debug, Default)]
 struct UpnpRendererBackend;
+
+#[derive(Debug, Default)]
+struct AndroidLocalRendererBackend;
 
 trait RendererBackend: Send + Sync {
     fn resolve_renderer(
@@ -316,6 +321,7 @@ impl RendererBackends {
                 io::ErrorKind::Unsupported,
                 "Sonos renderer support has not been implemented yet",
             )),
+            RendererKind::AndroidLocal => Ok(&self.android_local),
         }
     }
 }
@@ -385,11 +391,87 @@ impl RendererBackend for UpnpRendererBackend {
     }
 }
 
+impl RendererBackend for AndroidLocalRendererBackend {
+    fn resolve_renderer(
+        &self,
+        cached: Option<&RendererRecord>,
+        renderer_location: &str,
+    ) -> io::Result<RendererRecord> {
+        if let Some(renderer) = cached {
+            return Ok(renderer.clone());
+        }
+
+        Ok(RendererRecord {
+            location: renderer_location.to_string(),
+            name: "This phone".to_string(),
+            manufacturer: Some("Android".to_string()),
+            model_name: None,
+            av_transport_control_url: None,
+            capabilities: android_local_renderer_capabilities(),
+            last_checked_unix: now_unix_timestamp(),
+            last_reachable_unix: Some(now_unix_timestamp()),
+            last_error: None,
+            last_seen_unix: now_unix_timestamp(),
+        })
+    }
+
+    fn play_stream(&self, _renderer: &RendererRecord, _resource: &StreamResource) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn preload_next(&self, _renderer: &RendererRecord, _resource: &StreamResource) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn play(&self, _renderer: &RendererRecord) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn pause(&self, _renderer: &RendererRecord) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&self, _renderer: &RendererRecord) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn next(&self, _renderer: &RendererRecord) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn previous(&self, _renderer: &RendererRecord) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn transport_snapshot(&self, _renderer: &RendererRecord) -> io::Result<TransportSnapshot> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "android_local renderers report transport state explicitly",
+        ))
+    }
+}
+
 fn renderer_kind_for_location(renderer_location: &str) -> RendererKind {
-    if renderer_location.starts_with("sonos:") {
+    if renderer_location.starts_with("android-local://") {
+        RendererKind::AndroidLocal
+    } else if renderer_location.starts_with("sonos:") {
         RendererKind::Sonos
     } else {
         RendererKind::Upnp
+    }
+}
+
+fn android_local_renderer_capabilities() -> RendererCapabilities {
+    RendererCapabilities {
+        av_transport_actions: Some(vec![
+            "Play".to_string(),
+            "Pause".to_string(),
+            "Stop".to_string(),
+            "Next".to_string(),
+            "Previous".to_string(),
+            "Seek".to_string(),
+        ]),
+        has_playlist_extension_service: Some(false),
     }
 }
 
@@ -784,6 +866,15 @@ fn handle_service_request(
         }
         ("POST", "/api/renderers/discover") => {
             handle_api_renderer_discover_request(writer, request, &state)
+        }
+        ("POST", "/api/renderers/register-android-local") => {
+            handle_api_register_android_local_renderer_request(writer, request, &state)
+        }
+        ("POST", "/api/renderers/android-local/session") => {
+            handle_api_android_local_session_request(writer, request, &state)
+        }
+        ("POST", "/api/renderers/android-local/completed") => {
+            handle_api_android_local_completed_request(writer, request, &state)
         }
         ("POST", "/api/play") => handle_api_play_request(writer, request, &state),
         ("POST", "/api/play-album") => handle_api_play_album_request(writer, request, &state),
@@ -1917,6 +2008,155 @@ fn handle_api_events_request(
     }
 
     respond_sse_stream(writer, state, &renderer_location)
+}
+
+fn handle_api_register_android_local_renderer_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !matches!(
+        renderer_kind_for_location(&renderer_location),
+        RendererKind::AndroidLocal
+    ) {
+        return api_error(
+            writer,
+            "400 Bad Request",
+            "renderer_location must use the android-local:// scheme",
+        );
+    }
+
+    let name = match required_request_value(request, "name") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let manufacturer = request_value(request, "manufacturer");
+    let model_name = request_value(request, "model_name");
+    let capabilities = android_local_renderer_capabilities();
+
+    match state.remember_renderer_details(
+        &renderer_location,
+        &name,
+        manufacturer.as_deref(),
+        model_name.as_deref(),
+        None,
+        Some(&capabilities),
+        None,
+    ) {
+        Ok(()) => api_renderer_state_response(
+            writer,
+            state,
+            &renderer_location,
+            &format!("Registered local renderer '{}'.", name),
+        ),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("renderer registration failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_android_local_session_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !matches!(
+        renderer_kind_for_location(&renderer_location),
+        RendererKind::AndroidLocal
+    ) {
+        return api_error(writer, "400 Bad Request", "renderer is not android_local");
+    }
+
+    let transport_state = match required_request_value(request, "transport_state") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let current_track_uri = request_value(request, "current_track_uri");
+    let position_seconds = request_value(request, "position_seconds").and_then(|value| value.parse::<u64>().ok());
+    let duration_seconds = request_value(request, "duration_seconds").and_then(|value| value.parse::<u64>().ok());
+    let renderer = match state.resolve_renderer(&renderer_location) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            return api_error(
+                writer,
+                "500 Internal Server Error",
+                &format!("failed to resolve renderer: {error}"),
+            )
+        }
+    };
+    let _ = state.mark_renderer_reachable(&renderer);
+    let _ = state.database.record_transport_snapshot(
+        &renderer_location,
+        &transport_state,
+        current_track_uri.as_deref(),
+        position_seconds,
+        duration_seconds,
+    );
+    let _ = state.database.sync_queue_status(
+        &renderer_location,
+        queue_status_for_transport(&transport_state),
+    );
+
+    api_renderer_state_response(writer, state, &renderer_location, "Session updated.")
+}
+
+fn handle_api_android_local_completed_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !matches!(
+        renderer_kind_for_location(&renderer_location),
+        RendererKind::AndroidLocal
+    ) {
+        return api_error(writer, "400 Bad Request", "renderer is not android_local");
+    }
+
+    match state.database.advance_queue_after_completion(&renderer_location) {
+        Ok(next_entry_id) => {
+            if next_entry_id.is_some() {
+                if let Err(error) = state.start_current_queue_entry(&renderer_location) {
+                    return api_error(
+                        writer,
+                        "500 Internal Server Error",
+                        &format!("failed to start next queue entry: {error}"),
+                    );
+                }
+                api_renderer_state_response(
+                    writer,
+                    state,
+                    &renderer_location,
+                    "Advanced to the next local queue entry.",
+                )
+            } else {
+                api_renderer_state_response(
+                    writer,
+                    state,
+                    &renderer_location,
+                    "Local queue completed.",
+                )
+            }
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("completion handling failed: {error}"),
+        ),
+    }
 }
 
 fn handle_api_transport_play_request(
@@ -4991,6 +5231,7 @@ fn renderer_kind_name(kind: RendererKind) -> &'static str {
     match kind {
         RendererKind::Upnp => "upnp",
         RendererKind::Sonos => "sonos",
+        RendererKind::AndroidLocal => "android_local",
     }
 }
 
@@ -7042,6 +7283,27 @@ impl ServiceState {
             ));
         }
 
+        if matches!(
+            renderer_kind_for_location(location),
+            RendererKind::AndroidLocal
+        ) {
+            let renderer = RendererRecord {
+                location: location.to_string(),
+                name: "This phone".to_string(),
+                manufacturer: Some("Android".to_string()),
+                model_name: None,
+                av_transport_control_url: None,
+                capabilities: android_local_renderer_capabilities(),
+                last_checked_unix: now_unix_timestamp(),
+                last_reachable_unix: Some(now_unix_timestamp()),
+                last_error: None,
+                last_seen_unix: now_unix_timestamp(),
+            };
+            self.database.upsert_renderer(&renderer)?;
+            self.database.set_last_selected_renderer_location(location)?;
+            return Ok(());
+        }
+
         let renderer = RendererRecord {
             location: location.to_string(),
             name: renderer_location_host(location)
@@ -7467,6 +7729,36 @@ impl ServiceState {
 
     fn resume_renderer(&self, renderer_location: &str) -> io::Result<String> {
         let _ = self.remember_renderer_location(renderer_location);
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::AndroidLocal
+        ) {
+            if let Some(queue) = self.queue_snapshot(renderer_location) {
+                if queue.current_entry_id.is_some() {
+                    let session = self.playback_session(renderer_location);
+                    if matches!(
+                        session
+                            .as_ref()
+                            .map(|session| session.transport_state.as_str()),
+                        Some("PAUSED_PLAYBACK")
+                    ) {
+                        self.database
+                            .set_queue_status(renderer_location, "playing", "PLAYING")?;
+                        return Ok("Playback resumed.".to_string());
+                    }
+                    let (track, _, renderer_name, _) =
+                        self.start_current_queue_entry(renderer_location)?;
+                    return Ok(format!(
+                        "Now playing '{}' on {}.",
+                        track.title, renderer_name
+                    ));
+                }
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "queue is empty",
+            ));
+        }
         let queue = self.queue_snapshot(renderer_location);
         let session = self.playback_session(renderer_location);
         self.debug_log(
@@ -7518,6 +7810,16 @@ impl ServiceState {
     }
 
     fn pause_renderer(&self, renderer_location: &str) -> io::Result<String> {
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::AndroidLocal
+        ) {
+            self.database
+                .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            self.database
+                .set_queue_status(renderer_location, "paused", "PAUSED_PLAYBACK")?;
+            return Ok("Playback paused.".to_string());
+        }
         let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("pause-request", format!("renderer={renderer_location}"));
         if let Err(error) = self.renderer_backend(renderer_location)?.pause(&renderer) {
@@ -7558,6 +7860,16 @@ impl ServiceState {
     }
 
     fn stop_renderer(&self, renderer_location: &str) -> io::Result<String> {
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::AndroidLocal
+        ) {
+            self.database
+                .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            self.database
+                .set_queue_status(renderer_location, "stopped", "STOPPED")?;
+            return Ok("Playback stopped.".to_string());
+        }
         let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("stop-request", format!("renderer={renderer_location}"));
         if let Err(error) = self.renderer_backend(renderer_location)?.stop(&renderer) {
@@ -7592,6 +7904,13 @@ impl ServiceState {
             }
         }
 
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::AndroidLocal
+        ) {
+            return Ok("No later track in the local queue.".to_string());
+        }
+
         let renderer = self.resolve_renderer(renderer_location)?;
         if let Err(error) = self.renderer_backend(renderer_location)?.next(&renderer) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
@@ -7622,6 +7941,13 @@ impl ServiceState {
                     ));
                 }
             }
+        }
+
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::AndroidLocal
+        ) {
+            return Ok("No earlier track in the local queue.".to_string());
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
@@ -7803,6 +8129,12 @@ impl ServiceState {
 
     fn poll_active_queues(&self) -> io::Result<()> {
         for renderer_location in self.database.list_playing_queue_renderers()? {
+            if matches!(
+                renderer_kind_for_location(&renderer_location),
+                RendererKind::AndroidLocal
+            ) {
+                continue;
+            }
             self.debug_log("queue-poll", format!("renderer={renderer_location}"));
             if let Err(error) = self.poll_renderer_queue(&renderer_location) {
                 eprintln!("queue poll failed for {renderer_location}: {error}");
@@ -8706,6 +9038,7 @@ fn renderer_is_viable(renderer: &RendererRecord) -> bool {
     match renderer_kind_for_location(&renderer.location) {
         RendererKind::Upnp => renderer.av_transport_control_url.is_some(),
         RendererKind::Sonos => true,
+        RendererKind::AndroidLocal => true,
     }
 }
 

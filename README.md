@@ -21,6 +21,7 @@ That is much more realistic than trying to recreate all of Roon's RAAT-like beha
 
 - `docs/architecture.md`: system design and protocol choices
 - `docs/android-app-plan.md`: Android controller direction, API needs, and build phases
+- `docs/android-local-renderer-plan.md`: plan for using the Android device itself as a server-owned queue renderer
 - `docs/android-api-contract.md`: Android-facing HTTP routes and payloads
 - `docs/mvp-plan.md`: phased implementation plan
 - `docs/queue-plan.md`: queue and transport progression plan
