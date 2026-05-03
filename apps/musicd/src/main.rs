@@ -705,7 +705,9 @@ fn serve_tcp(bind_address: &str, mode: ServerMode) -> io::Result<()> {
                 let mode = mode.clone();
                 thread::spawn(move || {
                     if let Err(error) = handle_client(stream, mode) {
-                        eprintln!("request failed: {error}");
+                        if !is_expected_client_disconnect(&error) {
+                            eprintln!("request failed: {error}");
+                        }
                     }
                 });
             }
@@ -2773,6 +2775,16 @@ fn respond_sse_stream(
         thread::sleep(Duration::from_secs(1));
         heartbeat_tick += 1;
     }
+}
+
+fn is_expected_client_disconnect(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::UnexpectedEof
+    )
 }
 
 fn write_sse_event(writer: &mut TcpStream, event: &str, data: &str) -> io::Result<()> {
