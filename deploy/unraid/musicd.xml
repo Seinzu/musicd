@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>musicd</Name>
+  <Repository>ghcr.io/seinzu/musicd:edge</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Seinzu/musicd/issues</Support>
+  <Project>https://github.com/Seinzu/musicd</Project>
+  <Overview>musicd is a local-network music library server and controller focused on NAS-hosted audio, album browsing, queueing, artwork, and renderer control.[br][br]Recommended for Unraid:[br]- host networking for SSDP discovery and direct renderer access[br]- /config mapped to appdata[br]- /music mapped read-only to your library share[br][br]This template defaults to serve mode, uses automatic public base URL detection for easier DHCP/IP changes, and exposes /health plus /metrics for monitoring.</Overview>
+  <Category>MediaApp:Audio</Category>
+  <WebUI>http://[IP]:8787/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Seinzu/musicd/main/deploy/unraid/musicd.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/Seinzu/musicd/main/apps/musicd-android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Host networking on the same LAN as your renderers.</Requires>
+
+  <Config Name="AppData" Target="/config" Default="/mnt/user/appdata/musicd" Mode="rw" Description="Path: persistent config, SQLite database, and artwork cache" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/musicd</Config>
+  <Config Name="Music Library" Target="/music" Default="/mnt/user/Music" Mode="ro" Description="Path: mounted music library share" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Music</Config>
+
+  <Config Name="Mode" Target="MUSICD_MODE" Default="serve" Mode="" Description="Container Variable: musicd run mode. For normal Unraid use, keep this as serve." Type="Variable" Display="always" Required="true" Mask="false">serve</Config>
+  <Config Name="Bind Address" Target="MUSICD_BIND_ADDR" Default="0.0.0.0:8787" Mode="" Description="Container Variable: address and port musicd binds to inside host networking." Type="Variable" Display="always" Required="true" Mask="false">0.0.0.0:8787</Config>
+  <Config Name="Library Path" Target="MUSICD_LIBRARY_PATH" Default="/music" Mode="" Description="Container Variable: path inside the container for the music library." Type="Variable" Display="advanced" Required="true" Mask="false">/music</Config>
+  <Config Name="Config Path" Target="MUSICD_CONFIG_PATH" Default="/config" Mode="" Description="Container Variable: path inside the container for the config directory." Type="Variable" Display="advanced" Required="true" Mask="false">/config</Config>
+  <Config Name="Public Base URL" Target="MUSICD_PUBLIC_BASE_URL" Default="auto" Mode="" Description="Container Variable: public URL used in stream metadata. Use auto to derive the current Unraid LAN IP automatically at startup." Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
+  <Config Name="Instance Name" Target="MUSICD_INSTANCE_NAME" Default="musicd" Mode="" Description="Container Variable: friendly backend name shown in the UI and API clients." Type="Variable" Display="always" Required="false" Mask="false">musicd</Config>
+  <Config Name="Discovery Timeout (ms)" Target="MUSICD_DISCOVERY_TIMEOUT_MS" Default="2000" Mode="" Description="Container Variable: SSDP discovery timeout in milliseconds." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
+  <Config Name="Default Renderer Location" Target="MUSICD_DEFAULT_RENDERER_LOCATION" Default="" Mode="" Description="Container Variable: optional UPnP renderer LOCATION URL to preselect on startup." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Debug Logging" Target="MUSICD_DEBUG" Default="false" Mode="" Description="Container Variable: set true for verbose queue and renderer transition logs." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+</Container>

@@ -46,11 +46,29 @@ Common values:
 - `MUSICD_DEFAULT_RENDERER_LOCATION`
 - `MUSICD_INSTANCE_NAME`
 - `MUSICD_DEBUG`
+- `MUSICD_PUBLIC_BASE_URL`
 - `MUSICD_RENDERER_LOCATION`
 - `MUSICD_STREAM_URL`
 - `MUSICD_AUDIO_FILE`
-- `MUSICD_PUBLIC_BASE_URL`
 - `MUSICD_TITLE`
+
+### Public base URL and IP changes
+
+For the long-running `serve` mode, `MUSICD_PUBLIC_BASE_URL` is now optional.
+
+If you leave it unset, or set it to:
+
+```text
+MUSICD_PUBLIC_BASE_URL=auto
+```
+
+`musicd` will derive a LAN-reachable base URL from the current bind port and host networking at startup. That means a normal Unraid restart with a changed LAN IP no longer requires you to manually rewrite the container env var just to make renderer stream URLs valid again.
+
+Practical guidance:
+
+- for most Unraid `host`-network installs, `auto` is now the recommended default
+- if you want a fixed URL anyway, still prefer a DHCP reservation on your router
+- `play-file` mode still needs an explicit `MUSICD_PUBLIC_BASE_URL`, because that CLI path takes the public base URL as an argument
 
 ### Useful modes
 
@@ -133,14 +151,14 @@ MUSICD_MODE=serve
 MUSICD_LIBRARY_PATH=/music
 MUSICD_CONFIG_PATH=/config
 MUSICD_BIND_ADDR=0.0.0.0:8787
-MUSICD_PUBLIC_BASE_URL=http://192.168.1.10:8787
+MUSICD_PUBLIC_BASE_URL=auto
 MUSICD_INSTANCE_NAME=Living Room musicd
 MUSICD_DISCOVERY_TIMEOUT_MS=2000
 MUSICD_DEFAULT_RENDERER_LOCATION=http://192.168.1.55:49152/description.xml
 MUSICD_DEBUG=true
 ```
 
-After the container starts, open:
+After the container starts, open the resolved URL from the logs or:
 
 ```text
 http://192.168.1.10:8787/
@@ -151,6 +169,32 @@ The discovered renderers and your last selected renderer are persisted in SQLite
 Albums are now grouped in the UI as well, and `Play Album` fills the queue and starts the first ordered track. A background worker now polls UPnP transport state and advances to the next queued track when track-end detection is confident.
 
 When `MUSICD_DEBUG=true`, `musicd` emits extra renderer and queue transition logs to the container output. This is useful for tracking pause/sleep edge cases, unexpected `STOPPED` or `NO_MEDIA_PRESENT` transitions, and auto-advance decisions.
+
+## Monitoring and metrics
+
+The container now exposes:
+
+- `GET /health`
+- `GET /metrics`
+
+`/health` is intended for simple uptime checks and Docker healthchecks.
+
+`/metrics` is Prometheus-style text and currently includes:
+
+- indexed track, album, and artist counts
+- remembered renderer counts
+- reachable renderer counts
+- playing queue counts
+- SQLite database size
+- artwork cache file count and byte size
+
+Good practical integrations:
+
+- use the built-in Docker `HEALTHCHECK` from the image for container liveness
+- point something like Uptime Kuma at `http://<unraid-host>:8787/health`
+- scrape `http://<unraid-host>:8787/metrics` from Prometheus, Grafana Agent, or another simple metrics collector
+
+This is intentionally lightweight for now: it is not deep per-request profiling, but it gives you a real first monitoring surface instead of only container logs.
 
 ### Example: discovery utility
 
@@ -183,6 +227,24 @@ Important:
 - the chosen port must not already be used by another Unraid container or service
 
 ## Creating an Unraid template
+
+This repository now includes a ready-to-edit template at [deploy/unraid/musicd.xml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/unraid/musicd.xml).
+
+It is set up for the current recommended model:
+
+- `ghcr.io/seinzu/musicd:edge`
+- `host` networking
+- `/config` on appdata
+- `/music` read-only
+- `MUSICD_PUBLIC_BASE_URL=auto`
+
+To use it locally on an Unraid box:
+
+1. Copy the XML into `/boot/config/plugins/dockerMan/templates-user/`.
+2. In Unraid, go to `Docker`.
+3. Choose `Add Container`.
+4. Load the `musicd` template from the template dropdown.
+5. Adjust the host music path, instance name, and any optional advanced fields.
 
 For local use, the easiest path is:
 

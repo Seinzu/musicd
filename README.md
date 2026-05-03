@@ -83,6 +83,7 @@ Then open `http://<host>:<port>/` in a browser. The page lets you:
 The service also exposes:
 
 - `GET /health`
+- `GET /metrics`
 - `GET /api/albums`
 - `GET /api/queue?renderer_location=<location>`
 - `GET /api/events?renderer_location=<location>`
@@ -126,6 +127,9 @@ cargo run -p musicd -- play-file \
 ## Run on Unraid
 
 See [docs/unraid.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/unraid.md) for the recommended Docker packaging model, path mappings, environment variables, and example Unraid settings.
+There is also a starter Unraid template in [deploy/unraid/musicd.xml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/unraid/musicd.xml).
+
+For `serve` mode on Unraid, `MUSICD_PUBLIC_BASE_URL` can now be left unset or set to `auto`, and `musicd` will derive a LAN-reachable base URL from the current host-network address and bind port at startup. That makes ordinary Unraid restarts and DHCP IP changes much less manual.
 
 If you publish the image through GitHub Actions, the workflow emits both moving tags for deployment (`edge` from `main`, `latest` from release tags) and immutable tags (`sha-<commit>` plus semver release tags). For Unraid, use a moving tag in the template if you want the WebUI to notice updates.
 

@@ -564,7 +564,7 @@ fn run_serve() -> io::Result<()> {
     println!("Library path: {}", config.library_path.display());
     println!("Config path: {}", config.config_path.display());
     println!("Bind address: {}", config.bind_address);
-    println!("HTTP base URL: {}", config.base_url);
+    println!("HTTP base URL: {}", config.resolved_base_url());
     println!("Instance name: {}", config.instance_name);
     println!("Indexed tracks: {track_count}");
     if let Some(renderer) = &config.default_renderer_location {
@@ -580,7 +580,7 @@ fn run_serve() -> io::Result<()> {
     );
     println!(
         "Open {}/ in a browser to browse and play music.",
-        config.base_url
+        config.resolved_base_url()
     );
 
     serve_tcp(&config.bind_address, ServerMode::Service(state))
@@ -790,6 +790,16 @@ fn handle_service_request(
             b"ok",
             request.method == "HEAD",
         ),
+        ("GET", "/metrics") | ("HEAD", "/metrics") => {
+            let body = render_metrics_text(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "text/plain; version=0.0.4; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         ("GET", "/api/tracks") | ("HEAD", "/api/tracks") => {
             let body = render_tracks_json(&state);
             respond_text(
@@ -2806,6 +2816,24 @@ fn write_sse_comment(writer: &mut TcpStream, comment: &str) -> io::Result<()> {
     writer.flush()
 }
 
+fn directory_metrics(path: &Path) -> io::Result<(u64, u64)> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+
+    let mut file_count = 0_u64;
+    let mut total_bytes = 0_u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_file() {
+            file_count += 1;
+            total_bytes += metadata.len();
+        }
+    }
+    Ok((file_count, total_bytes))
+}
+
 fn respond_not_found(writer: &mut TcpStream, head_only: bool) -> io::Result<()> {
     respond_text(
         writer,
@@ -3843,7 +3871,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
         html_escape(&state.config.instance_name),
         html_escape(&library_path),
         tracks.len(),
-        html_escape(&state.config.base_url),
+        html_escape(&state.config.resolved_base_url()),
         message_html,
         error_html,
         html_escape(&renderer_location),
@@ -4959,8 +4987,66 @@ fn render_server_json(state: &ServiceState) -> String {
     format!(
         r#"{{"name":"{}","base_url":"{}","bind_address":"{}"}}"#,
         json_escape(&state.config.instance_name),
-        json_escape(&state.config.base_url),
+        json_escape(&state.config.resolved_base_url()),
         json_escape(&state.config.bind_address),
+    )
+}
+
+fn render_metrics_text(state: &ServiceState) -> String {
+    let renderers = state.enriched_renderer_snapshot();
+    let reachable_renderers = renderers
+        .iter()
+        .filter(|renderer| renderer.last_reachable_unix.is_some() && renderer.last_error.is_none())
+        .count();
+    let playing_queue_renderers = state
+        .database
+        .list_playing_queue_renderers()
+        .map(|values| values.len())
+        .unwrap_or(0);
+    let db_path = state.config.config_path.join("musicd.db");
+    let db_bytes = fs::metadata(&db_path).map(|metadata| metadata.len()).unwrap_or(0);
+    let (artwork_files, artwork_bytes) =
+        directory_metrics(&state.config.config_path.join("artwork")).unwrap_or((0, 0));
+
+    format!(
+        concat!(
+            "# HELP musicd_tracks_total Number of indexed tracks.\n",
+            "# TYPE musicd_tracks_total gauge\n",
+            "musicd_tracks_total {}\n",
+            "# HELP musicd_albums_total Number of indexed albums.\n",
+            "# TYPE musicd_albums_total gauge\n",
+            "musicd_albums_total {}\n",
+            "# HELP musicd_artists_total Number of indexed artists.\n",
+            "# TYPE musicd_artists_total gauge\n",
+            "musicd_artists_total {}\n",
+            "# HELP musicd_renderers_total Number of remembered viable renderers.\n",
+            "# TYPE musicd_renderers_total gauge\n",
+            "musicd_renderers_total {}\n",
+            "# HELP musicd_renderers_reachable Number of renderers currently considered reachable.\n",
+            "# TYPE musicd_renderers_reachable gauge\n",
+            "musicd_renderers_reachable {}\n",
+            "# HELP musicd_playback_queues_playing Number of renderer queues currently marked as playing.\n",
+            "# TYPE musicd_playback_queues_playing gauge\n",
+            "musicd_playback_queues_playing {}\n",
+            "# HELP musicd_sqlite_bytes Size of the SQLite database in bytes.\n",
+            "# TYPE musicd_sqlite_bytes gauge\n",
+            "musicd_sqlite_bytes {}\n",
+            "# HELP musicd_artwork_cache_files Number of cached artwork files.\n",
+            "# TYPE musicd_artwork_cache_files gauge\n",
+            "musicd_artwork_cache_files {}\n",
+            "# HELP musicd_artwork_cache_bytes Size of the artwork cache in bytes.\n",
+            "# TYPE musicd_artwork_cache_bytes gauge\n",
+            "musicd_artwork_cache_bytes {}\n"
+        ),
+        state.track_count(),
+        state.albums_snapshot().len(),
+        state.artists_snapshot().len(),
+        renderers.len(),
+        reachable_renderers,
+        playing_queue_renderers,
+        db_bytes,
+        artwork_files,
+        artwork_bytes,
     )
 }
 
@@ -7470,7 +7556,7 @@ impl ServiceState {
         self.relative_artwork_url_for_track(track).map(|artwork_url| {
             format!(
                 "{}/{}",
-                self.config.base_url.trim_end_matches('/'),
+                self.config.resolved_base_url().trim_end_matches('/'),
                 artwork_url.trim_start_matches('/')
             )
         })
@@ -7672,7 +7758,7 @@ impl ServiceState {
         StreamResource {
             stream_url: format!(
                 "{}/stream/track/{}",
-                self.config.base_url.trim_end_matches('/'),
+                self.config.resolved_base_url().trim_end_matches('/'),
                 track.id
             ),
             mime_type: track.mime_type.clone(),
@@ -9758,7 +9844,7 @@ fn print_status() {
     println!("Library path: {}", config.library_path.display());
     println!("Config path: {}", config.config_path.display());
     println!("Bind address: {}", config.bind_address);
-    println!("HTTP base URL: {}", config.base_url);
+    println!("HTTP base URL: {}", config.resolved_base_url());
     println!("Discovery timeout: {}ms", config.discovery_timeout_ms);
     println!(
         "Debug mode: {}",
