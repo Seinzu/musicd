@@ -205,6 +205,53 @@ Runs discovery and returns discovered renderers.
 
 Same behavior as the `GET` route, but easier for app-side “refresh” actions.
 
+### `POST /api/renderers/register-android-local`
+
+Registers the Android device as a logical local renderer.
+
+Fields:
+
+- `renderer_location`
+- `name`
+- `manufacturer`
+- `model_name`
+
+Behavior:
+
+- upserts an `android_local` renderer record
+- marks it reachable
+- makes it available in the standard renderer list
+
+### `POST /api/renderers/android-local/session`
+
+Reports Android-local playback session state back to `musicd`.
+
+Fields:
+
+- `renderer_location`
+- `transport_state`
+- `current_track_uri`
+- `position_seconds`
+- `duration_seconds`
+
+Behavior:
+
+- updates the persisted playback session for the local renderer
+- updates queue status based on the reported transport state
+
+### `POST /api/renderers/android-local/completed`
+
+Reports that the local renderer finished the current queue entry.
+
+Fields:
+
+- `renderer_location`
+
+Behavior:
+
+- advances the server-owned queue
+- starts the next queue entry if one exists
+
 ### `GET /api/events?renderer_location=<location>`
 
 Returns a server-sent events stream for queue and now-playing updates for a renderer.

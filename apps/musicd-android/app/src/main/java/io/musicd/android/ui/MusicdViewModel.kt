@@ -85,6 +85,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     private var playbackEventsJob: Job? = null
     private var playbackEventsKey: String? = null
     private var tracksLoadJob: Job? = null
+    private var playbackEventFailureCount: Int = 0
     private val _uiState = MutableStateFlow(
         MusicdUiState(serverInput = repository.loadBaseUrl()),
     )
@@ -396,6 +397,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
         playbackEventsJob?.cancel()
         playbackEventsKey = desiredKey
+        playbackEventFailureCount = 0
         playbackEventsJob = viewModelScope.launch {
             while (isActive) {
                 try {
@@ -410,9 +412,17 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     if (!isActive || playbackEventsKey != desiredKey) {
                         break
                     }
+                    playbackEventFailureCount += 1
+                    val shouldSurfaceWarning = playbackEventFailureCount >= PLAYBACK_EVENT_WARNING_THRESHOLD
                     _uiState.update {
                         if (it.baseUrl == baseUrl && it.selectedRendererLocation == rendererLocation) {
-                            it.copy(warningMessage = connectionErrorMessage(error))
+                            it.copy(
+                                warningMessage = when {
+                                    !shouldSurfaceWarning -> it.warningMessage
+                                    it.nowPlaying != null || it.queue != null -> PLAYBACK_EVENT_RECONNECTING_MESSAGE
+                                    else -> connectionErrorMessage(error)
+                                },
+                            )
                         } else {
                             it
                         }
@@ -899,6 +909,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         playbackEventsJob?.cancel()
         playbackEventsJob = null
         playbackEventsKey = null
+        playbackEventFailureCount = 0
     }
 
     private fun syncPlaybackNotificationService() {
@@ -922,6 +933,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         rendererLocation: String,
         event: PlaybackEventDto,
     ) {
+        playbackEventFailureCount = 0
         _uiState.update {
             if (it.baseUrl != baseUrl || it.selectedRendererLocation != rendererLocation) {
                 it
@@ -945,6 +957,8 @@ private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
         state.nowPlaying?.session?.queueEntryId != null
 
 private const val TRACKS_WARNING_MESSAGE = "Track library unavailable right now."
+private const val PLAYBACK_EVENT_RECONNECTING_MESSAGE = "Reconnecting live playback updates…"
+private const val PLAYBACK_EVENT_WARNING_THRESHOLD = 3
 
 private data class Quintuple<A, B, C, D, E>(
     val first: A,

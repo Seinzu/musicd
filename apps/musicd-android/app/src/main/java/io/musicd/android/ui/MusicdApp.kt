@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SkipNext
@@ -291,10 +292,13 @@ private fun MusicdRoot(
         topBar = {
             TopAppBar(
                 title = {
+                    val selectedRenderer =
+                        state.renderers.firstOrNull { it.location == state.selectedRendererLocation }
                     Column {
                         Text(currentTitle(state.selectedTab))
                         Text(
-                            text = state.selectedRendererLocation.ifBlank { "No renderer selected" },
+                            text = selectedRenderer?.let(::rendererDisplayName)
+                                ?: state.selectedRendererLocation.ifBlank { "No renderer selected" },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -1531,7 +1535,11 @@ private fun RendererPickerSheet(
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            Icons.Rounded.Speaker,
+                            if (renderer.kind == "android_local") {
+                                Icons.Rounded.PhoneAndroid
+                            } else {
+                                Icons.Rounded.Speaker
+                            },
                             contentDescription = null,
                             tint = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1612,6 +1620,9 @@ private fun RendererPickerSheet(
 }
 
 private fun rendererDescriptor(renderer: RendererDto): String {
+    if (renderer.kind == "android_local") {
+        return "Local playback on this Android device"
+    }
     val displayName = rendererDisplayName(renderer)
     val parts = listOfNotNull(
         renderer.manufacturer?.takeIf { it.isNotBlank() },

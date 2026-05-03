@@ -223,6 +223,14 @@ To avoid loops:
 - audio focus and headset button polish
 - better reconnection/recovery after app restart
 
+Current status:
+
+- first pass in place for local seek via Android media controls
+- first pass in place for prebuffering the next queued local track
+- local playback now participates in Android audio focus
+- local playback pauses cleanly on noisy-output transitions like headphone unplug
+- local player can rejoin the backend session position more gracefully after reconnect
+
 ### Phase 3
 
 - multiple Android devices as separate logical renderers
