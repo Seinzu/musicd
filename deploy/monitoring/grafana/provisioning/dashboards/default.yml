@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: musicd
+    orgId: 1
+    folder: musicd
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>prometheus-for-musicd</Name>
+  <Repository>prom/prometheus:latest</Repository>
+  <Registry>https://hub.docker.com</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Seinzu/musicd/issues</Support>
+  <Project>https://github.com/Seinzu/musicd</Project>
+  <Overview>Prometheus configured for the musicd monitoring stack on Unraid.[br][br]This template is intended to run on host networking and scrape:[br]- Prometheus itself on 127.0.0.1:9090[br]- musicd on 127.0.0.1:8787/metrics[br][br]Use the matching config file from this repository and pair it with the Grafana template for dashboards.</Overview>
+  <Category>Tools:Monitoring</Category>
+  <WebUI>http://[IP]:9090/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Seinzu/musicd/main/deploy/unraid/prometheus.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/prometheus/prometheus/main/documentation/images/prometheus-logo.svg</Icon>
+  <ExtraParams/>
+  <PostArgs>--config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --web.enable-lifecycle</PostArgs>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Host networking recommended. Copy deploy/monitoring/prometheus/prometheus.yml into the mapped config path before first start.</Requires>
+
+  <Config Name="Prometheus Config" Target="/etc/prometheus/prometheus.yml" Default="/mnt/user/appdata/prometheus/prometheus.yml" Mode="ro" Description="Path: Prometheus scrape configuration file" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/prometheus/prometheus.yml</Config>
+  <Config Name="Prometheus Data" Target="/prometheus" Default="/mnt/user/appdata/prometheus/data" Mode="rw" Description="Path: Prometheus TSDB data directory" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/prometheus/data</Config>
+</Container>

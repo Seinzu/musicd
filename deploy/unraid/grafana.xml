@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>grafana-for-musicd</Name>
+  <Repository>grafana/grafana:latest</Repository>
+  <Registry>https://hub.docker.com</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Seinzu/musicd/issues</Support>
+  <Project>https://github.com/Seinzu/musicd</Project>
+  <Overview>Grafana prewired for the musicd monitoring stack on Unraid.[br][br]This template expects host networking and the provisioning files from this repository so Grafana comes up with:[br]- a Prometheus datasource at 127.0.0.1:9090[br]- a provisioned musicd dashboard folder[br]- the starter musicd Overview dashboard</Overview>
+  <Category>Tools:Monitoring</Category>
+  <WebUI>http://[IP]:3000/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Seinzu/musicd/main/deploy/unraid/grafana.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/grafana/grafana/main/public/img/grafana_icon.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Host networking recommended. Copy the provisioning files from deploy/monitoring/grafana into the mapped appdata paths before first start.</Requires>
+
+  <Config Name="Grafana Data" Target="/var/lib/grafana" Default="/mnt/user/appdata/grafana/data" Mode="rw" Description="Path: Grafana data directory" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/grafana/data</Config>
+  <Config Name="Datasource Provisioning" Target="/etc/grafana/provisioning/datasources" Default="/mnt/user/appdata/grafana/provisioning/datasources" Mode="rw" Description="Path: Grafana datasource provisioning directory" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/grafana/provisioning/datasources</Config>
+  <Config Name="Dashboard Provisioning" Target="/etc/grafana/provisioning/dashboards" Default="/mnt/user/appdata/grafana/provisioning/dashboards" Mode="rw" Description="Path: Grafana dashboard provisioning directory" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/grafana/provisioning/dashboards</Config>
+  <Config Name="Dashboard Files" Target="/var/lib/grafana/dashboards" Default="/mnt/user/appdata/grafana/dashboards" Mode="rw" Description="Path: provisioned dashboard JSON files" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/grafana/dashboards</Config>
+
+  <Config Name="Admin User" Target="GF_SECURITY_ADMIN_USER" Default="admin" Mode="" Description="Container Variable: initial Grafana admin username" Type="Variable" Display="always" Required="true" Mask="false">admin</Config>
+  <Config Name="Admin Password" Target="GF_SECURITY_ADMIN_PASSWORD" Default="" Mode="" Description="Container Variable: initial Grafana admin password" Type="Variable" Display="always" Required="true" Mask="true"></Config>
+</Container>

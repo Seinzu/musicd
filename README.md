@@ -26,6 +26,7 @@ That is much more realistic than trying to recreate all of Roon's RAAT-like beha
 - `docs/mvp-plan.md`: phased implementation plan
 - `docs/queue-plan.md`: queue and transport progression plan
 - `docs/unraid.md`: Docker packaging and Unraid deployment notes
+- `docs/monitoring-quickstart.md`: Prometheus/Grafana setup for Unraid
 - `docs/versioning.md`: split app/api versioning and conventional commit rules
 - `apps/musicd`: starter service binary
 - `apps/musicd-android`: Android controller scaffold and API client shell
@@ -128,6 +129,7 @@ cargo run -p musicd -- play-file \
 
 See [docs/unraid.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/unraid.md) for the recommended Docker packaging model, path mappings, environment variables, and example Unraid settings.
 There is also a starter Unraid template in [deploy/unraid/musicd.xml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/unraid/musicd.xml).
+Matching monitoring templates now live in [deploy/unraid/prometheus.xml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/unraid/prometheus.xml) and [deploy/unraid/grafana.xml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/unraid/grafana.xml).
 
 For `serve` mode on Unraid, `MUSICD_PUBLIC_BASE_URL` can now be left unset or set to `auto`, and `musicd` will derive a LAN-reachable base URL from the current host-network address and bind port at startup. That makes ordinary Unraid restarts and DHCP IP changes much less manual.
 

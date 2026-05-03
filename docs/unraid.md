@@ -196,6 +196,36 @@ Good practical integrations:
 
 This is intentionally lightweight for now: it is not deep per-request profiling, but it gives you a real first monitoring surface instead of only container logs.
 
+### Monitoring templates
+
+The repository now also includes matching Unraid templates for the monitoring stack:
+
+- [deploy/unraid/prometheus.xml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/unraid/prometheus.xml)
+- [deploy/unraid/grafana.xml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/unraid/grafana.xml)
+
+These are designed to pair with:
+
+- [deploy/monitoring/prometheus/prometheus.yml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/monitoring/prometheus/prometheus.yml)
+- [deploy/monitoring/grafana/provisioning/datasources/prometheus.yml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/monitoring/grafana/provisioning/datasources/prometheus.yml)
+- [deploy/monitoring/grafana/provisioning/dashboards/default.yml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/monitoring/grafana/provisioning/dashboards/default.yml)
+- [deploy/monitoring/grafana/dashboards/musicd-overview.json](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/deploy/monitoring/grafana/dashboards/musicd-overview.json)
+
+Suggested Unraid flow:
+
+1. Copy the template XML files into `/boot/config/plugins/dockerMan/templates-user/`.
+2. Copy the Prometheus and Grafana config/provisioning files into the matching `appdata` paths referenced by those templates.
+3. Add the `prometheus-for-musicd` container in Unraid.
+4. Add the `grafana-for-musicd` container in Unraid.
+5. Start `musicd`, then Prometheus, then Grafana.
+
+With the default files here:
+
+- Prometheus scrapes `musicd` at `127.0.0.1:8787/metrics`
+- Grafana talks to Prometheus at `127.0.0.1:9090`
+- the starter `musicd Overview` dashboard appears automatically
+
+If you want the shortest end-to-end setup path, follow [docs/monitoring-quickstart.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/monitoring-quickstart.md).
+
 ### Example: discovery utility
 
 Environment:
