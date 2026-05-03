@@ -8,6 +8,8 @@ version.workspace = true
 lofty = "0.24"
 musicd-core = { path = "../../crates/musicd-core" }
 musicd-upnp = { path = "../../crates/musicd-upnp" }
+r2d2 = "0.8"
+r2d2_sqlite = "0.31"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

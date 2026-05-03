@@ -19,10 +19,15 @@ use musicd_upnp::{
     get_transport_snapshot, inspect_renderer, next, pause, play, play_stream, previous,
     set_av_transport_uri, set_next_av_transport_uri, stop,
 };
+use r2d2::{Pool, PooledConnection};
+use r2d2_sqlite::SqliteConnectionManager;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
+
+type SqlitePool = Pool<SqliteConnectionManager>;
+type SqliteConn = PooledConnection<SqliteConnectionManager>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LibraryTrack {
@@ -233,9 +238,9 @@ struct QueueMutationEntry {
     source_ref: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Database {
-    path: PathBuf,
+    pool: SqlitePool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5250,9 +5255,19 @@ fn renderer_kind_name(kind: RendererKind) -> &'static str {
 impl Database {
     fn open(config_path: &Path) -> io::Result<Self> {
         fs::create_dir_all(config_path)?;
-        let database = Self {
-            path: config_path.join("musicd.db"),
-        };
+        let path = config_path.join("musicd.db");
+        let manager = SqliteConnectionManager::file(&path).with_init(|connection| {
+            connection.pragma_update(None, "journal_mode", "WAL")?;
+            connection.pragma_update(None, "synchronous", "NORMAL")?;
+            connection.pragma_update(None, "foreign_keys", true)?;
+            connection.busy_timeout(Duration::from_secs(2))?;
+            Ok(())
+        });
+        let pool = Pool::builder()
+            .max_size(8)
+            .build(manager)
+            .map_err(|error| io::Error::other(format!("failed to build sqlite pool: {error}")))?;
+        let database = Self { pool };
         database.initialize()?;
         Ok(database)
     }
@@ -5454,8 +5469,10 @@ impl Database {
         Ok(())
     }
 
-    fn connection(&self) -> io::Result<Connection> {
-        Connection::open(&self.path).map_err(db_error)
+    fn connection(&self) -> io::Result<SqliteConn> {
+        self.pool
+            .get()
+            .map_err(|error| io::Error::other(format!("failed to acquire sqlite connection: {error}")))
     }
 
     fn load_library(&self, scan_root: PathBuf) -> io::Result<Library> {
@@ -5669,7 +5686,7 @@ impl Database {
 
     fn list_renderers(&self) -> io::Result<Vec<RendererRecord>> {
         let connection = self.connection()?;
-        let selected = self.last_selected_renderer_location()?;
+        let selected = Self::last_selected_renderer_location_with(&connection)?;
         let mut statement = connection
             .prepare(
                 "SELECT location, name, manufacturer, model_name, av_transport_control_url,
@@ -5858,6 +5875,12 @@ impl Database {
 
     fn last_selected_renderer_location(&self) -> io::Result<Option<String>> {
         let connection = self.connection()?;
+        Self::last_selected_renderer_location_with(&connection)
+    }
+
+    fn last_selected_renderer_location_with(
+        connection: &Connection,
+    ) -> io::Result<Option<String>> {
         connection
             .query_row(
                 "SELECT value FROM app_state WHERE key = 'last_renderer_location'",
@@ -5870,6 +5893,13 @@ impl Database {
 
     fn load_queue(&self, renderer_location: &str) -> io::Result<Option<PlaybackQueue>> {
         let connection = self.connection()?;
+        Self::load_queue_with(&connection, renderer_location)
+    }
+
+    fn load_queue_with(
+        connection: &Connection,
+        renderer_location: &str,
+    ) -> io::Result<Option<PlaybackQueue>> {
         let queue_row = connection
             .query_row(
                 "SELECT renderer_location, name, current_entry_id, status, version, updated_unix
@@ -6079,7 +6109,7 @@ impl Database {
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
 
-        self.load_queue(renderer_location)?
+        Self::load_queue_with(&connection, renderer_location)?
             .ok_or_else(|| io::Error::other("queue disappeared after replace"))
     }
 
@@ -6175,7 +6205,7 @@ impl Database {
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
 
-        self.load_queue(renderer_location)?
+        Self::load_queue_with(&connection, renderer_location)?
             .ok_or_else(|| io::Error::other("queue disappeared after append"))
     }
 
@@ -6310,7 +6340,7 @@ impl Database {
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
 
-        self.load_queue(renderer_location)?
+        Self::load_queue_with(&connection, renderer_location)?
             .ok_or_else(|| io::Error::other("queue disappeared after insert"))
     }
 
@@ -6408,7 +6438,7 @@ impl Database {
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
 
-        self.load_queue(renderer_location)?
+        Self::load_queue_with(&connection, renderer_location)?
             .ok_or_else(|| io::Error::other("queue disappeared after move"))
     }
 
@@ -6475,7 +6505,7 @@ impl Database {
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
 
-        self.load_queue(renderer_location)?
+        Self::load_queue_with(&connection, renderer_location)?
             .ok_or_else(|| io::Error::other("queue disappeared after remove"))
     }
 
