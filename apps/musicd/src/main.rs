@@ -4,10 +4,9 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::PictureType;
@@ -25,6 +24,8 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
+
+mod metrics;
 
 type SqlitePool = Pool<SqliteConnectionManager>;
 type SqliteConn = PooledConnection<SqliteConnectionManager>;
@@ -255,6 +256,7 @@ struct ServiceState {
     database: Database,
     library: Mutex<Library>,
     renderer_backends: RendererBackends,
+    metrics: OnceLock<Arc<metrics::Metrics>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -556,6 +558,7 @@ fn run() -> io::Result<()> {
 fn run_serve() -> io::Result<()> {
     let config = AppConfig::from_env();
     let state = Arc::new(ServiceState::load(config.clone())?);
+    state.install_metrics(Arc::new(metrics::Metrics::new(Arc::downgrade(&state))));
     let track_count = state.track_count();
 
     spawn_queue_worker(Arc::clone(&state));
@@ -738,10 +741,29 @@ fn handle_client(stream: TcpStream, mode: ServerMode) -> io::Result<()> {
         eprintln!("unknown-peer -> {} {}", request.method, request.target);
     }
 
-    match mode {
-        ServerMode::SingleFile(path) => handle_single_file_request(&mut writer, &request, path),
-        ServerMode::Service(state) => handle_service_request(&mut writer, &request, state),
+    metrics::take_response_status();
+    let start = Instant::now();
+
+    let result = match &mode {
+        ServerMode::SingleFile(path) => {
+            handle_single_file_request(&mut writer, &request, Arc::clone(path))
+        }
+        ServerMode::Service(state) => {
+            handle_service_request(&mut writer, &request, Arc::clone(state))
+        }
+    };
+
+    if let ServerMode::Service(state) = &mode {
+        if let Some(metrics) = state.metrics() {
+            let status = metrics::take_response_status();
+            if status != 0 {
+                let route = metrics::route_template(&request.path);
+                metrics.record_request(&request.method, &route, status, start.elapsed());
+            }
+        }
     }
+
+    result
 }
 
 fn handle_single_file_request(
@@ -2766,6 +2788,7 @@ fn respond_sse_stream(
     state: &ServiceState,
     renderer_location: &str,
 ) -> io::Result<()> {
+    metrics::set_response_status(200);
     write!(writer, "HTTP/1.1 200 OK\r\n")?;
     write!(writer, "Connection: keep-alive\r\n")?;
     write!(writer, "Cache-Control: no-cache\r\n")?;
@@ -2943,6 +2966,12 @@ fn write_response_owned(
     headers: &[(String, String)],
     body: Option<&[u8]>,
 ) -> io::Result<()> {
+    let status_code = status
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse::<u16>().ok())
+        .unwrap_or(0);
+    metrics::set_response_status(status_code);
     write!(writer, "HTTP/1.1 {status}\r\nConnection: close\r\n")?;
     for (name, value) in headers {
         write!(writer, "{name}: {value}\r\n")?;
@@ -4993,61 +5022,7 @@ fn render_server_json(state: &ServiceState) -> String {
 }
 
 fn render_metrics_text(state: &ServiceState) -> String {
-    let renderers = state.enriched_renderer_snapshot();
-    let reachable_renderers = renderers
-        .iter()
-        .filter(|renderer| renderer.last_reachable_unix.is_some() && renderer.last_error.is_none())
-        .count();
-    let playing_queue_renderers = state
-        .database
-        .list_playing_queue_renderers()
-        .map(|values| values.len())
-        .unwrap_or(0);
-    let db_path = state.config.config_path.join("musicd.db");
-    let db_bytes = fs::metadata(&db_path).map(|metadata| metadata.len()).unwrap_or(0);
-    let (artwork_files, artwork_bytes) =
-        directory_metrics(&state.config.config_path.join("artwork")).unwrap_or((0, 0));
-
-    format!(
-        concat!(
-            "# HELP musicd_tracks_total Number of indexed tracks.\n",
-            "# TYPE musicd_tracks_total gauge\n",
-            "musicd_tracks_total {}\n",
-            "# HELP musicd_albums_total Number of indexed albums.\n",
-            "# TYPE musicd_albums_total gauge\n",
-            "musicd_albums_total {}\n",
-            "# HELP musicd_artists_total Number of indexed artists.\n",
-            "# TYPE musicd_artists_total gauge\n",
-            "musicd_artists_total {}\n",
-            "# HELP musicd_renderers_total Number of remembered viable renderers.\n",
-            "# TYPE musicd_renderers_total gauge\n",
-            "musicd_renderers_total {}\n",
-            "# HELP musicd_renderers_reachable Number of renderers currently considered reachable.\n",
-            "# TYPE musicd_renderers_reachable gauge\n",
-            "musicd_renderers_reachable {}\n",
-            "# HELP musicd_playback_queues_playing Number of renderer queues currently marked as playing.\n",
-            "# TYPE musicd_playback_queues_playing gauge\n",
-            "musicd_playback_queues_playing {}\n",
-            "# HELP musicd_sqlite_bytes Size of the SQLite database in bytes.\n",
-            "# TYPE musicd_sqlite_bytes gauge\n",
-            "musicd_sqlite_bytes {}\n",
-            "# HELP musicd_artwork_cache_files Number of cached artwork files.\n",
-            "# TYPE musicd_artwork_cache_files gauge\n",
-            "musicd_artwork_cache_files {}\n",
-            "# HELP musicd_artwork_cache_bytes Size of the artwork cache in bytes.\n",
-            "# TYPE musicd_artwork_cache_bytes gauge\n",
-            "musicd_artwork_cache_bytes {}\n"
-        ),
-        state.track_count(),
-        state.albums_snapshot().len(),
-        state.artists_snapshot().len(),
-        renderers.len(),
-        reachable_renderers,
-        playing_queue_renderers,
-        db_bytes,
-        artwork_files,
-        artwork_bytes,
-    )
+    state.metrics().map(|m| m.encode()).unwrap_or_default()
 }
 
 fn render_now_playing_json(state: &ServiceState, request: &HttpRequest) -> String {
@@ -7167,6 +7142,14 @@ impl ServiceState {
         self.config.debug_mode
     }
 
+    fn metrics(&self) -> Option<&metrics::Metrics> {
+        self.metrics.get().map(|arc| arc.as_ref())
+    }
+
+    fn install_metrics(&self, metrics: Arc<metrics::Metrics>) {
+        let _ = self.metrics.set(metrics);
+    }
+
     fn debug_log(&self, event: &str, details: impl AsRef<str>) {
         if self.debug_enabled() {
             eprintln!(
@@ -7186,6 +7169,7 @@ impl ServiceState {
             database,
             library: Mutex::new(persisted_library),
             renderer_backends: RendererBackends::default(),
+            metrics: OnceLock::new(),
         };
 
         match scan_library(&state.config.library_path, &state.config.config_path) {
@@ -10223,8 +10207,8 @@ fn json_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Database, LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
-        RendererBackends, RendererKind, ServiceState, artwork_name_priority,
+        Database, LibraryTrack, OnceLock, PlaybackQueue, PlaybackSession, QueueEntry,
+        QueueMutationEntry, RendererBackends, RendererKind, ServiceState, artwork_name_priority,
         build_artist_summaries, cleanup_track_label, compare_track_album_order, decode_id3v1_text,
         infer_artist_and_album, infer_disc_and_track_numbers, infer_image_mime_from_bytes,
         next_queue_entry_after, parse_query_string, parse_range_header, parse_request_form,
@@ -11061,6 +11045,7 @@ mod tests {
                 tracks,
             }),
             renderer_backends: RendererBackends::default(),
+            metrics: OnceLock::new(),
         }
     }
 
