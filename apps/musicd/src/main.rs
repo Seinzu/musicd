@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{IpAddr, TcpListener, TcpStream};
-use std::path::{Component, Path, PathBuf};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::PictureType;
@@ -25,221 +25,18 @@ use r2d2_sqlite::SqliteConnectionManager;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
 
+mod ids;
 mod metrics;
+mod types;
+mod util;
+
+pub(crate) use crate::ids::*;
+pub(crate) use crate::types::*;
+pub(crate) use crate::util::*;
 
 type SqlitePool = Pool<SqliteConnectionManager>;
 type SqliteConn = PooledConnection<SqliteConnectionManager>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LibraryTrack {
-    id: String,
-    album_id: String,
-    title: String,
-    artist: String,
-    album: String,
-    disc_number: Option<u32>,
-    track_number: Option<u32>,
-    duration_seconds: Option<u64>,
-    relative_path: String,
-    path: PathBuf,
-    mime_type: String,
-    file_size: u64,
-    artwork: Option<TrackArtwork>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AlbumSummary {
-    id: String,
-    artist_id: String,
-    title: String,
-    artist: String,
-    track_count: usize,
-    artwork_track_id: Option<String>,
-    artwork: Option<TrackArtwork>,
-    artwork_url: Option<String>,
-    first_track_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ArtistSummary {
-    id: String,
-    name: String,
-    album_count: usize,
-    track_count: usize,
-    artwork_track_id: Option<String>,
-    artwork_url: Option<String>,
-    first_album_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TrackArtwork {
-    cache_key: String,
-    source: String,
-    mime_type: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AlbumArtworkOverride {
-    album_id: String,
-    cache_key: String,
-    source: String,
-    mime_type: String,
-    musicbrainz_release_id: Option<String>,
-    applied_unix: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AlbumArtworkSearchCandidate {
-    release_id: String,
-    release_group_id: Option<String>,
-    title: String,
-    artist: String,
-    date: Option<String>,
-    country: Option<String>,
-    score: i32,
-    thumbnail_url: String,
-    image_url: String,
-    source: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct MusicBrainzSearchResponse {
-    #[serde(default)]
-    releases: Vec<MusicBrainzSearchRelease>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MusicBrainzSearchRelease {
-    id: String,
-    title: String,
-    #[serde(default)]
-    date: Option<String>,
-    #[serde(default)]
-    country: Option<String>,
-    #[serde(default)]
-    score: Option<i32>,
-    #[serde(rename = "artist-credit", default)]
-    artist_credit: Vec<MusicBrainzArtistCredit>,
-    #[serde(rename = "release-group", default)]
-    release_group: Option<MusicBrainzReleaseGroupRef>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MusicBrainzArtistCredit {
-    name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MusicBrainzReleaseGroupRef {
-    id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CoverArtArchiveResponse {
-    #[serde(default)]
-    images: Vec<CoverArtArchiveImage>,
-    #[serde(default)]
-    release: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CoverArtArchiveImage {
-    #[serde(default)]
-    front: bool,
-    #[serde(default)]
-    approved: bool,
-    image: String,
-    #[serde(default)]
-    thumbnails: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EmbeddedMetadata {
-    format_name: String,
-    fields: Vec<(String, String)>,
-    notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct ParsedTrackTags {
-    title: Option<String>,
-    artist: Option<String>,
-    album: Option<String>,
-    disc_number: Option<u32>,
-    track_number: Option<u32>,
-    duration_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RendererRecord {
-    location: String,
-    name: String,
-    manufacturer: Option<String>,
-    model_name: Option<String>,
-    av_transport_control_url: Option<String>,
-    capabilities: RendererCapabilities,
-    last_checked_unix: i64,
-    last_reachable_unix: Option<i64>,
-    last_error: Option<String>,
-    last_seen_unix: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PlaybackQueue {
-    renderer_location: String,
-    name: String,
-    current_entry_id: Option<i64>,
-    status: String,
-    version: i64,
-    updated_unix: i64,
-    entries: Vec<QueueEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct QueueEntry {
-    id: i64,
-    position: i64,
-    track_id: String,
-    album_id: Option<String>,
-    source_kind: String,
-    source_ref: Option<String>,
-    entry_status: String,
-    started_unix: Option<i64>,
-    completed_unix: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PlaybackSession {
-    renderer_location: String,
-    queue_entry_id: Option<i64>,
-    next_queue_entry_id: Option<i64>,
-    transport_state: String,
-    current_track_uri: Option<String>,
-    position_seconds: Option<u64>,
-    duration_seconds: Option<u64>,
-    last_observed_unix: i64,
-    last_error: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TrackPlayRecord {
-    id: i64,
-    track_id: String,
-    renderer_location: String,
-    queue_entry_id: Option<i64>,
-    played_unix: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct QueueMutationEntry {
-    track_id: String,
-    album_id: Option<String>,
-    source_kind: String,
-    source_ref: Option<String>,
-}
 
 #[derive(Debug)]
 struct Database {
@@ -3097,49 +2894,6 @@ fn request_value<'a>(request: &'a HttpRequest, key: &str) -> Option<&'a str> {
         .get(key)
         .or_else(|| request.query.get(key))
         .map(String::as_str)
-}
-
-fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                output.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                let hex = &value[index + 1..index + 3];
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    output.push(byte);
-                    index += 3;
-                } else {
-                    output.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            byte => {
-                output.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&output).to_string()
-}
-
-fn url_encode(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            b' ' => encoded.push('+'),
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }
 
 fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
@@ -9155,69 +8909,6 @@ fn lucene_escape_phrase(value: &str) -> String {
     value.replace('\\', r#"\\"#).replace('"', r#"\""#)
 }
 
-fn component_to_string(component: Component<'_>) -> Option<String> {
-    component.as_os_str().to_str().map(ToString::to_string)
-}
-
-fn should_skip_entry(file_name: &str) -> bool {
-    file_name.starts_with('.') || file_name == "@eaDir"
-}
-
-fn is_supported_audio_file(path: &Path) -> bool {
-    matches!(
-        file_extension(path).as_deref(),
-        Some("flac" | "wav" | "aiff" | "aif" | "alac" | "m4a" | "aac" | "mp3" | "ogg" | "dsf")
-    )
-}
-
-fn file_extension(path: &Path) -> Option<String> {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-}
-
-fn stable_track_id(relative_path: &str) -> String {
-    let mut hash = 1469598103934665603_u64;
-    for byte in relative_path.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(1099511628211);
-    }
-    format!("{hash:016x}")
-}
-
-fn stable_album_id(artist: &str, album: &str) -> String {
-    stable_track_id(&format!(
-        "album:{}:{}",
-        artist.trim().to_ascii_lowercase(),
-        album.trim().to_ascii_lowercase()
-    ))
-}
-
-fn stable_artist_id(artist: &str) -> String {
-    stable_track_id(&format!("artist:{}", artist.trim().to_ascii_lowercase()))
-}
-
-fn normalized_renderer_name(location: &str, name: &str, model_name: Option<&str>) -> String {
-    let trimmed_name = name.trim();
-    let trimmed_model = model_name.map(str::trim).filter(|value| !value.is_empty());
-
-    if renderer_name_looks_like_location(trimmed_name, location) {
-        return trimmed_model
-            .map(ToString::to_string)
-            .or_else(|| renderer_location_host(location).map(ToString::to_string))
-            .unwrap_or_else(|| location.to_string());
-    }
-
-    if trimmed_name.is_empty() {
-        return trimmed_model
-            .map(ToString::to_string)
-            .or_else(|| renderer_location_host(location).map(ToString::to_string))
-            .unwrap_or_else(|| location.to_string());
-    }
-
-    trimmed_name.to_string()
-}
-
 fn renderer_needs_refresh(renderer: &RendererRecord) -> bool {
     matches!(
         renderer_kind_for_location(&renderer.location),
@@ -9247,99 +8938,6 @@ fn renderer_actions_json(actions: &Option<Vec<String>>) -> Option<String> {
 
 fn parse_renderer_actions_json(value: Option<String>) -> Option<Vec<String>> {
     value.and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
-}
-
-fn renderer_name_looks_like_location(name: &str, location: &str) -> bool {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        return true;
-    }
-    if trimmed == location {
-        return true;
-    }
-    if trimmed.parse::<IpAddr>().is_ok() {
-        return true;
-    }
-
-    renderer_location_host(location)
-        .map(|host| {
-            trimmed.eq_ignore_ascii_case(host)
-                || host.parse::<IpAddr>().is_ok() && trimmed.eq_ignore_ascii_case(host)
-        })
-        .unwrap_or(false)
-}
-
-fn renderer_location_host(location: &str) -> Option<&str> {
-    let remainder = location
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(location);
-    let authority = remainder.split('/').next()?.trim();
-    if authority.is_empty() {
-        return None;
-    }
-    let host = authority
-        .strip_prefix('[')
-        .and_then(|value| value.split_once(']').map(|(host, _)| host))
-        .unwrap_or_else(|| authority.split(':').next().unwrap_or(authority))
-        .trim();
-    if host.is_empty() { None } else { Some(host) }
-}
-
-fn infer_disc_and_track_numbers(relative_components: &[String]) -> (Option<u32>, Option<u32>) {
-    let directories = relative_components
-        .iter()
-        .take(relative_components.len().saturating_sub(1))
-        .collect::<Vec<_>>();
-    let disc_number = directories.iter().rev().find_map(|value| {
-        if looks_like_disc_folder(value) {
-            trailing_number(value)
-        } else {
-            None
-        }
-    });
-    let track_number = relative_components
-        .last()
-        .and_then(|value| Path::new(value).file_stem().and_then(|stem| stem.to_str()))
-        .and_then(leading_number);
-
-    (disc_number, track_number)
-}
-
-fn leading_number(value: &str) -> Option<u32> {
-    let digits = value
-        .chars()
-        .skip_while(|character| character.is_whitespace())
-        .take_while(|character| character.is_ascii_digit())
-        .collect::<String>();
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse::<u32>().ok()
-    }
-}
-
-fn trailing_number(value: &str) -> Option<u32> {
-    let digits = value
-        .chars()
-        .rev()
-        .take_while(|character| character.is_ascii_digit())
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse::<u32>().ok()
-    }
-}
-
-fn now_unix_timestamp() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 fn ensure_column(
@@ -9979,156 +9577,6 @@ fn inferred_title(path: &Path) -> String {
     cleanup_track_label(stem)
 }
 
-fn infer_artist_and_album(relative_components: &[String]) -> (String, String) {
-    let directories = relative_components
-        .iter()
-        .take(relative_components.len().saturating_sub(1))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    match directories.as_slice() {
-        [] => ("Unknown Artist".to_string(), "Unknown Album".to_string()),
-        [album] => ("Unknown Artist".to_string(), cleanup_track_label(album)),
-        [artist, album] => (cleanup_track_label(artist), cleanup_track_label(album)),
-        _ => {
-            let artist = directories
-                .first()
-                .map(|value| cleanup_track_label(value))
-                .unwrap_or_else(|| "Unknown Artist".to_string());
-            let album_index = if directories
-                .last()
-                .map(|value| looks_like_disc_folder(value))
-                .unwrap_or(false)
-            {
-                directories.len().saturating_sub(2)
-            } else {
-                directories.len().saturating_sub(1)
-            };
-            let album = directories
-                .get(album_index)
-                .map(|value| cleanup_track_label(value))
-                .unwrap_or_else(|| "Unknown Album".to_string());
-            (artist, album)
-        }
-    }
-}
-
-fn looks_like_disc_folder(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase().replace('_', " ");
-    normalized.starts_with("disc ")
-        || normalized.starts_with("disk ")
-        || normalized.starts_with("cd ")
-        || normalized == "disc1"
-        || normalized == "disc 1"
-        || normalized == "cd1"
-        || normalized == "cd 1"
-}
-
-fn cleanup_track_label(value: &str) -> String {
-    let trimmed = value.trim();
-    let trimmed =
-        trimmed.trim_start_matches(|character: char| character == '_' || character == '-');
-    let without_prefix = if let Some((prefix, rest)) = trimmed.split_once(' ') {
-        if prefix
-            .chars()
-            .all(|character| character.is_ascii_digit() || character == '.')
-        {
-            rest.trim_start_matches(['-', '_', '.']).trim()
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    };
-
-    without_prefix.replace('_', " ")
-}
-
-fn infer_mime_type(path: &Path) -> &'static str {
-    match file_extension(path).as_deref().unwrap_or("") {
-        "flac" => "audio/flac",
-        "wav" => "audio/wav",
-        "aiff" | "aif" => "audio/aiff",
-        "alac" | "m4a" => "audio/mp4",
-        "aac" => "audio/aac",
-        "mp3" => "audio/mpeg",
-        "ogg" => "audio/ogg",
-        "dsf" => "audio/dsd",
-        _ => "application/octet-stream",
-    }
-}
-
-fn format_track_position(disc_number: Option<u32>, track_number: Option<u32>) -> String {
-    match (disc_number, track_number) {
-        (Some(disc), Some(track)) => format!("Disc {disc} • Track {track}"),
-        (None, Some(track)) => format!("Track {track}"),
-        (Some(disc), None) => format!("Disc {disc}"),
-        (None, None) => "Unknown position".to_string(),
-    }
-}
-
-fn option_u32_json(value: Option<u32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "null".to_string())
-}
-
-fn option_u64_json(value: Option<u64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "null".to_string())
-}
-
-fn option_i64_json(value: Option<i64>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "null".to_string())
-}
-
-fn option_bool_json(value: Option<bool>) -> String {
-    value.map(bool_json).unwrap_or_else(|| "null".to_string())
-}
-
-fn bool_json(value: bool) -> String {
-    if value {
-        "true".to_string()
-    } else {
-        "false".to_string()
-    }
-}
-
-fn string_list_json(values: &[String]) -> String {
-    format!(
-        "[{}]",
-        values
-            .iter()
-            .map(|value| format!(r#""{}""#, json_escape(value)))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
-fn option_json_fragment(value: Option<&str>) -> String {
-    value.unwrap_or("null").to_string()
-}
-
-fn option_string_json(value: Option<&str>) -> String {
-    value
-        .map(|value| format!(r#""{}""#, json_escape(value)))
-        .unwrap_or_else(|| "null".to_string())
-}
-
-fn format_duration_seconds(seconds: u64) -> String {
-    let hours = seconds / 3600;
-    let minutes = (seconds % 3600) / 60;
-    let seconds = seconds % 60;
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
-}
-
 fn queue_status_for_transport(transport_state: &str) -> &'static str {
     match transport_state {
         "PLAYING" | "TRANSITIONING" => "playing",
@@ -10270,24 +9718,6 @@ fn parse_range_header(value: &str, total_len: u64) -> Option<(u64, u64)> {
     }
 
     Some((start, end))
-}
-
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
-fn json_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 #[cfg(test)]
