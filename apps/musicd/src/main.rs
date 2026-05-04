@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwap;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::picture::PictureType;
@@ -25,12 +25,14 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod http;
 mod ids;
 mod metrics;
 mod renderer;
 mod types;
 mod util;
 
+pub(crate) use crate::http::*;
 pub(crate) use crate::ids::*;
 pub(crate) use crate::renderer::*;
 pub(crate) use crate::types::*;
@@ -118,24 +120,6 @@ struct ServiceState {
     library: ArcSwap<Library>,
     renderer_backends: RendererBackends,
     metrics: OnceLock<Arc<metrics::Metrics>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HttpRequest {
-    method: String,
-    target: String,
-    path: String,
-    query: HashMap<String, String>,
-    form: HashMap<String, String>,
-    range_header: Option<String>,
-    content_type: Option<String>,
-    body: Vec<u8>,
-}
-
-#[derive(Debug, Clone)]
-enum ServerMode {
-    SingleFile(Arc<PathBuf>),
-    Service(Arc<ServiceState>),
 }
 
 fn main() {
@@ -351,90 +335,6 @@ fn run_play_file(
 
     loop {
         thread::park();
-    }
-}
-
-fn serve_tcp(bind_address: &str, mode: ServerMode) -> io::Result<()> {
-    let listener = TcpListener::bind(bind_address)?;
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let mode = mode.clone();
-                thread::spawn(move || {
-                    if let Err(error) = handle_client(stream, mode) {
-                        if !is_expected_client_disconnect(&error) {
-                            eprintln!("request failed: {error}");
-                        }
-                    }
-                });
-            }
-            Err(error) => eprintln!("accept failed: {error}"),
-        }
-    }
-    Ok(())
-}
-
-fn handle_client(stream: TcpStream, mode: ServerMode) -> io::Result<()> {
-    let peer = stream.peer_addr().ok();
-    let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream);
-
-    let request = match read_http_request(&mut reader)? {
-        Some(request) => request,
-        None => return Ok(()),
-    };
-
-    if let Some(peer) = peer {
-        eprintln!("{peer} -> {} {}", request.method, request.target);
-    } else {
-        eprintln!("unknown-peer -> {} {}", request.method, request.target);
-    }
-
-    metrics::take_response_status();
-    let start = Instant::now();
-
-    let result = match &mode {
-        ServerMode::SingleFile(path) => {
-            handle_single_file_request(&mut writer, &request, Arc::clone(path))
-        }
-        ServerMode::Service(state) => {
-            handle_service_request(&mut writer, &request, Arc::clone(state))
-        }
-    };
-
-    if let ServerMode::Service(state) = &mode {
-        if let Some(metrics) = state.metrics() {
-            let status = metrics::take_response_status();
-            if status != 0 {
-                let route = metrics::route_template(&request.path);
-                metrics.record_request(&request.method, &route, status, start.elapsed());
-            }
-        }
-    }
-
-    result
-}
-
-fn handle_single_file_request(
-    writer: &mut TcpStream,
-    request: &HttpRequest,
-    file_path: Arc<PathBuf>,
-) -> io::Result<()> {
-    match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/stream/current") | ("HEAD", "/stream/current") => respond_with_file(
-            writer,
-            file_path.as_path(),
-            request.method == "HEAD",
-            request.range_header.clone(),
-        ),
-        ("GET", "/health") | ("HEAD", "/health") => respond_text(
-            writer,
-            "200 OK",
-            "text/plain; charset=utf-8",
-            b"ok",
-            request.method == "HEAD",
-        ),
-        _ => respond_not_found(writer, request.method == "HEAD"),
     }
 }
 
@@ -2259,179 +2159,6 @@ fn handle_album_artwork_request(
     )
 }
 
-fn read_http_request(reader: &mut BufReader<TcpStream>) -> io::Result<Option<HttpRequest>> {
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
-        return Ok(None);
-    }
-
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("/").to_string();
-    let (path, query) = split_target_and_query(&target);
-
-    let mut range_header = None;
-    let mut content_type = None;
-    let mut content_length = 0_usize;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
-            break;
-        }
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = trimmed.split_once(':') {
-            if name.eq_ignore_ascii_case("Range") {
-                range_header = Some(value.trim().to_string());
-            } else if name.eq_ignore_ascii_case("Content-Type") {
-                content_type = Some(value.trim().to_string());
-            } else if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().unwrap_or(0);
-            }
-        }
-    }
-
-    let mut body = vec![0_u8; content_length];
-    if content_length > 0 {
-        reader.read_exact(&mut body)?;
-    }
-    let form = parse_request_form(content_type.as_deref(), &body);
-
-    Ok(Some(HttpRequest {
-        method,
-        target,
-        path,
-        query,
-        form,
-        range_header,
-        content_type,
-        body,
-    }))
-}
-
-fn respond_with_file(
-    writer: &mut TcpStream,
-    file_path: &Path,
-    head_only: bool,
-    range_header: Option<String>,
-) -> io::Result<()> {
-    let mut file = match File::open(file_path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return respond_not_found(writer, head_only);
-        }
-        Err(error) => return Err(error),
-    };
-
-    let total_len = file.metadata()?.len();
-    let mime_type = infer_mime_type(file_path);
-    let response_range = range_header
-        .as_deref()
-        .and_then(|value| parse_range_header(value, total_len));
-
-    match response_range {
-        Some((start, end)) => {
-            let content_len = end - start + 1;
-            let content_length_text = content_len.to_string();
-            let content_range_text = format!("bytes {start}-{end}/{total_len}");
-
-            write_response_owned(
-                writer,
-                "206 Partial Content",
-                &[
-                    ("Content-Type".to_string(), mime_type.to_string()),
-                    ("Accept-Ranges".to_string(), "bytes".to_string()),
-                    ("Content-Length".to_string(), content_length_text),
-                    ("Content-Range".to_string(), content_range_text),
-                ],
-                None,
-            )?;
-
-            if !head_only {
-                file.seek(SeekFrom::Start(start))?;
-                copy_exact_bytes(&mut file, writer, content_len)?;
-            }
-
-            Ok(())
-        }
-        None => {
-            let content_length_text = total_len.to_string();
-            write_response_owned(
-                writer,
-                "200 OK",
-                &[
-                    ("Content-Type".to_string(), mime_type.to_string()),
-                    ("Accept-Ranges".to_string(), "bytes".to_string()),
-                    ("Content-Length".to_string(), content_length_text),
-                ],
-                None,
-            )?;
-
-            if !head_only {
-                io::copy(&mut file, writer)?;
-            }
-
-            Ok(())
-        }
-    }
-}
-
-fn copy_exact_bytes(
-    reader: &mut File,
-    writer: &mut TcpStream,
-    mut bytes_left: u64,
-) -> io::Result<()> {
-    let mut buffer = [0_u8; 16 * 1024];
-    while bytes_left > 0 {
-        let to_read = usize::try_from(bytes_left.min(buffer.len() as u64)).unwrap_or(buffer.len());
-        let read = reader.read(&mut buffer[..to_read])?;
-        if read == 0 {
-            break;
-        }
-        writer.write_all(&buffer[..read])?;
-        bytes_left -= read as u64;
-    }
-    Ok(())
-}
-
-fn respond_text(
-    writer: &mut TcpStream,
-    status: &str,
-    content_type: &str,
-    body: &[u8],
-    head_only: bool,
-) -> io::Result<()> {
-    write_response_owned(
-        writer,
-        status,
-        &[
-            ("Content-Type".to_string(), content_type.to_string()),
-            ("Content-Length".to_string(), body.len().to_string()),
-        ],
-        if head_only { None } else { Some(body) },
-    )
-}
-
-fn respond_json(writer: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
-    respond_text(
-        writer,
-        status,
-        "application/json; charset=utf-8",
-        body.as_bytes(),
-        false,
-    )
-}
-
-fn api_error(writer: &mut TcpStream, status: &str, error: &str) -> io::Result<()> {
-    respond_json(
-        writer,
-        status,
-        &format!(r#"{{"ok":false,"error":"{}"}}"#, json_escape(error)),
-    )
-}
-
 fn respond_sse_stream(
     writer: &mut TcpStream,
     state: &ServiceState,
@@ -2464,30 +2191,6 @@ fn respond_sse_stream(
     }
 }
 
-fn is_expected_client_disconnect(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::BrokenPipe
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::UnexpectedEof
-    )
-}
-
-fn write_sse_event(writer: &mut TcpStream, event: &str, data: &str) -> io::Result<()> {
-    write!(writer, "event: {event}\r\n")?;
-    for line in data.lines() {
-        write!(writer, "data: {line}\r\n")?;
-    }
-    write!(writer, "\r\n")?;
-    writer.flush()
-}
-
-fn write_sse_comment(writer: &mut TcpStream, comment: &str) -> io::Result<()> {
-    write!(writer, ": {comment}\r\n\r\n")?;
-    writer.flush()
-}
-
 fn directory_metrics(path: &Path) -> io::Result<(u64, u64)> {
     if !path.exists() {
         return Ok((0, 0));
@@ -2504,185 +2207,6 @@ fn directory_metrics(path: &Path) -> io::Result<(u64, u64)> {
         }
     }
     Ok((file_count, total_bytes))
-}
-
-fn respond_not_found(writer: &mut TcpStream, head_only: bool) -> io::Result<()> {
-    respond_text(
-        writer,
-        "404 Not Found",
-        "text/plain; charset=utf-8",
-        b"not found",
-        head_only,
-    )
-}
-
-fn respond_method_not_allowed(writer: &mut TcpStream) -> io::Result<()> {
-    respond_text(
-        writer,
-        "405 Method Not Allowed",
-        "text/plain; charset=utf-8",
-        b"method not allowed",
-        false,
-    )
-}
-
-fn redirect_home(
-    writer: &mut TcpStream,
-    renderer_location: Option<&str>,
-    message: Option<&str>,
-    error: Option<&str>,
-) -> io::Result<()> {
-    redirect_to_path(writer, "/", renderer_location, message, error)
-}
-
-fn redirect_to_path(
-    writer: &mut TcpStream,
-    path: &str,
-    renderer_location: Option<&str>,
-    message: Option<&str>,
-    error: Option<&str>,
-) -> io::Result<()> {
-    let mut params = Vec::new();
-    if let Some(renderer_location) = renderer_location {
-        if !renderer_location.is_empty() {
-            params.push(format!(
-                "renderer_location={}",
-                url_encode(renderer_location)
-            ));
-        }
-    }
-    if let Some(message) = message {
-        params.push(format!("message={}", url_encode(message)));
-    }
-    if let Some(error) = error {
-        params.push(format!("error={}", url_encode(error)));
-    }
-
-    let location = if params.is_empty() {
-        path.to_string()
-    } else {
-        format!("{path}?{}", params.join("&"))
-    };
-
-    write_response_owned(
-        writer,
-        "303 See Other",
-        &[("Location".to_string(), location)],
-        None,
-    )
-}
-
-fn redirect_album(
-    writer: &mut TcpStream,
-    album_id: &str,
-    renderer_location: Option<&str>,
-    message: Option<&str>,
-    error: Option<&str>,
-) -> io::Result<()> {
-    let mut params = Vec::new();
-    if let Some(renderer_location) = renderer_location {
-        if !renderer_location.is_empty() {
-            params.push(format!(
-                "renderer_location={}",
-                url_encode(renderer_location)
-            ));
-        }
-    }
-    if let Some(message) = message {
-        params.push(format!("message={}", url_encode(message)));
-    }
-    if let Some(error) = error {
-        params.push(format!("error={}", url_encode(error)));
-    }
-
-    let location = if params.is_empty() {
-        format!("/album/{}", url_encode(album_id))
-    } else {
-        format!("/album/{}?{}", url_encode(album_id), params.join("&"))
-    };
-
-    write_response_owned(
-        writer,
-        "303 See Other",
-        &[("Location".to_string(), location)],
-        None,
-    )
-}
-
-fn write_response_owned(
-    writer: &mut TcpStream,
-    status: &str,
-    headers: &[(String, String)],
-    body: Option<&[u8]>,
-) -> io::Result<()> {
-    let status_code = status
-        .split_whitespace()
-        .next()
-        .and_then(|n| n.parse::<u16>().ok())
-        .unwrap_or(0);
-    metrics::set_response_status(status_code);
-    write!(writer, "HTTP/1.1 {status}\r\nConnection: close\r\n")?;
-    for (name, value) in headers {
-        write!(writer, "{name}: {value}\r\n")?;
-    }
-    write!(writer, "\r\n")?;
-    if let Some(body) = body {
-        writer.write_all(body)?;
-    }
-    writer.flush()
-}
-
-fn split_target_and_query(target: &str) -> (String, HashMap<String, String>) {
-    match target.split_once('?') {
-        Some((path, query)) => (path.to_string(), parse_query_string(query)),
-        None => (target.to_string(), HashMap::new()),
-    }
-}
-
-fn parse_query_string(query: &str) -> HashMap<String, String> {
-    let mut values = HashMap::new();
-    for pair in query.split('&') {
-        if pair.is_empty() {
-            continue;
-        }
-        let (key, value) = match pair.split_once('=') {
-            Some((key, value)) => (key, value),
-            None => (pair, ""),
-        };
-        values.insert(percent_decode(key), percent_decode(value));
-    }
-    values
-}
-
-fn parse_request_form(content_type: Option<&str>, body: &[u8]) -> HashMap<String, String> {
-    if body.is_empty() {
-        return HashMap::new();
-    }
-
-    let is_form = content_type
-        .map(|value| {
-            value
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
-        })
-        .unwrap_or(false);
-    if !is_form {
-        return HashMap::new();
-    }
-
-    let decoded = String::from_utf8_lossy(body);
-    parse_query_string(&decoded)
-}
-
-fn request_value<'a>(request: &'a HttpRequest, key: &str) -> Option<&'a str> {
-    request
-        .form
-        .get(key)
-        .or_else(|| request.query.get(key))
-        .map(String::as_str)
 }
 
 fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
@@ -9443,33 +8967,6 @@ fn should_auto_advance(
         .unwrap_or(false)
 }
 
-fn parse_range_header(value: &str, total_len: u64) -> Option<(u64, u64)> {
-    let bytes = value.strip_prefix("bytes=")?;
-    let (start_text, end_text) = bytes.split_once('-')?;
-
-    if start_text.is_empty() {
-        let suffix_len = end_text.parse::<u64>().ok()?;
-        if suffix_len == 0 {
-            return None;
-        }
-        let start = total_len.saturating_sub(suffix_len);
-        return Some((start, total_len.saturating_sub(1)));
-    }
-
-    let start = start_text.parse::<u64>().ok()?;
-    let end = if end_text.is_empty() {
-        total_len.saturating_sub(1)
-    } else {
-        end_text.parse::<u64>().ok()?
-    };
-
-    if start > end || end >= total_len {
-        return None;
-    }
-
-    Some((start, end))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -9477,12 +8974,12 @@ mod tests {
         QueueMutationEntry, RendererBackends, RendererKind, ServiceState, artwork_name_priority,
         build_artist_summaries, cleanup_track_label, compare_track_album_order, decode_id3v1_text,
         infer_artist_and_album, infer_disc_and_track_numbers, infer_image_mime_from_bytes,
-        next_queue_entry_after, parse_query_string, parse_range_header, parse_request_form,
-        parse_vorbis_comment_block, previous_queue_entry_before, queue_status_for_transport,
-        renderer_is_viable, renderer_kind_for_location, should_adopt_preloaded_next_entry,
-        should_auto_advance, should_skip_entry, stable_album_id, stable_artist_id,
-        stable_track_id,
+        next_queue_entry_after, parse_vorbis_comment_block, previous_queue_entry_before,
+        queue_status_for_transport, renderer_is_viable, renderer_kind_for_location,
+        should_adopt_preloaded_next_entry, should_auto_advance, should_skip_entry,
+        stable_album_id, stable_artist_id, stable_track_id,
     };
+    use crate::http::{parse_query_string, parse_range_header, parse_request_form};
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, RendererCapabilities, TransportInfo, TransportSnapshot};
     use std::path::PathBuf;
