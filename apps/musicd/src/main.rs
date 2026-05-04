@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -11,7 +11,6 @@ use std::thread;
 use std::time::Duration;
 
 use lofty::file::{AudioFile, TaggedFileExt};
-use lofty::picture::PictureType;
 use lofty::read_from_path;
 use lofty::tag::Accessor;
 use musicd_core::AppConfig;
@@ -21,10 +20,9 @@ use musicd_upnp::{
 };
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
-use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 use rusqlite::{Connection, OptionalExtension, params};
 
+mod artwork;
 mod http;
 mod ids;
 mod metrics;
@@ -32,6 +30,7 @@ mod renderer;
 mod types;
 mod util;
 
+pub(crate) use crate::artwork::*;
 pub(crate) use crate::http::*;
 pub(crate) use crate::ids::*;
 pub(crate) use crate::renderer::*;
@@ -7810,410 +7809,6 @@ fn scan_dir(
     Ok(())
 }
 
-#[derive(Debug)]
-struct ArtworkCandidate {
-    cache_key: String,
-    source: String,
-    mime_type: String,
-    extension: &'static str,
-    data: ArtworkData,
-}
-
-#[derive(Debug)]
-enum ArtworkData {
-    Bytes(Vec<u8>),
-    File(PathBuf),
-}
-
-struct DownloadedArtwork {
-    bytes: Vec<u8>,
-    mime_type: String,
-}
-
-fn resolve_track_artwork(
-    root: &Path,
-    track_path: &Path,
-    relative_components: &[String],
-    track_id: &str,
-    artwork_cache_dir: &Path,
-) -> Option<TrackArtwork> {
-    let candidate = read_embedded_artwork(track_path, track_id)
-        .or_else(|| find_sidecar_artwork(root, track_path, relative_components));
-    let Some(candidate) = candidate else {
-        return None;
-    };
-
-    let destination =
-        artwork_cache_dir.join(format!("{}.{}", candidate.cache_key, candidate.extension));
-    if persist_artwork_candidate(&candidate, &destination).is_err() {
-        return None;
-    }
-
-    Some(TrackArtwork {
-        cache_key: format!("{}.{}", candidate.cache_key, candidate.extension),
-        source: candidate.source,
-        mime_type: candidate.mime_type,
-    })
-}
-
-fn read_embedded_artwork(track_path: &Path, track_id: &str) -> Option<ArtworkCandidate> {
-    let tagged_file = read_from_path(track_path).ok()?;
-    let (picture, tag_label) = tagged_file
-        .tags()
-        .iter()
-        .find_map(|tag| {
-            tag.get_picture_type(PictureType::CoverFront)
-                .map(|picture| (picture, format!("{:?}", tag.tag_type())))
-        })
-        .or_else(|| {
-            tagged_file.tags().iter().find_map(|tag| {
-                tag.pictures()
-                    .first()
-                    .map(|picture| (picture, format!("{:?}", tag.tag_type())))
-            })
-        })
-        .or_else(|| {
-            tagged_file
-                .primary_tag()
-                .or_else(|| tagged_file.first_tag())
-                .and_then(|tag| {
-                    tag.get_picture_type(PictureType::CoverFront)
-                        .or_else(|| tag.pictures().first())
-                        .map(|picture| (picture, format!("{:?}", tag.tag_type())))
-                })
-        })?;
-    let mime_type = picture
-        .mime_type()
-        .map(|value| value.as_str().to_string())
-        .or_else(|| infer_image_mime_from_bytes(picture.data()).map(ToString::to_string))?;
-    let extension = image_extension_for_mime(&mime_type)?;
-
-    Some(ArtworkCandidate {
-        cache_key: stable_track_id(&format!("embedded:{track_id}")),
-        source: format!("Embedded artwork ({:?}, {})", picture.pic_type(), tag_label),
-        mime_type,
-        extension,
-        data: ArtworkData::Bytes(picture.data().to_vec()),
-    })
-}
-
-fn find_sidecar_artwork(
-    root: &Path,
-    track_path: &Path,
-    relative_components: &[String],
-) -> Option<ArtworkCandidate> {
-    let search_dirs = artwork_search_dirs(track_path, relative_components);
-    for directory in search_dirs {
-        let mut entries = fs::read_dir(&directory)
-            .ok()?
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
-        entries.sort_by_key(|entry| entry.path());
-        let mut best_match: Option<(usize, PathBuf, String)> = None;
-
-        for entry in entries {
-            let path = entry.path();
-            let metadata = entry.metadata().ok()?;
-            if !metadata.is_file() {
-                continue;
-            }
-
-            let file_name = entry.file_name();
-            let file_name = file_name.to_string_lossy().to_string();
-            let Some(priority) = artwork_name_priority(&file_name) else {
-                continue;
-            };
-            let should_replace = best_match
-                .as_ref()
-                .map(|(best_priority, best_path, _)| {
-                    priority < *best_priority || (priority == *best_priority && path < *best_path)
-                })
-                .unwrap_or(true);
-            if should_replace {
-                best_match = Some((priority, path, file_name));
-            }
-        }
-
-        if let Some((priority, path, _)) = best_match {
-            let mime_type = infer_image_mime_from_path(&path)?;
-            let extension = image_extension_for_mime(mime_type)?;
-            let relative_source = path
-                .strip_prefix(root)
-                .ok()
-                .map(|value| value.display().to_string())
-                .unwrap_or_else(|| path.display().to_string());
-            return Some(ArtworkCandidate {
-                cache_key: stable_track_id(&format!("sidecar:{relative_source}:{priority}")),
-                source: format!("Sidecar file: {relative_source}"),
-                mime_type: mime_type.to_string(),
-                extension,
-                data: ArtworkData::File(path),
-            });
-        }
-    }
-
-    None
-}
-
-fn artwork_search_dirs(track_path: &Path, relative_components: &[String]) -> Vec<PathBuf> {
-    let mut directories = Vec::new();
-    if let Some(directory) = track_path.parent() {
-        directories.push(directory.to_path_buf());
-        if relative_components.len() > 2 {
-            let parent_name = relative_components
-                .get(relative_components.len().saturating_sub(2))
-                .map(String::as_str)
-                .unwrap_or_default();
-            if looks_like_disc_folder(parent_name) {
-                if let Some(parent) = directory.parent() {
-                    if parent != directory {
-                        directories.push(parent.to_path_buf());
-                    }
-                }
-            }
-        }
-    }
-    directories
-}
-
-fn artwork_name_priority(file_name: &str) -> Option<usize> {
-    let normalized = file_name.trim().to_ascii_lowercase();
-    let stem = Path::new(&normalized)
-        .file_stem()
-        .and_then(|value| value.to_str())?;
-
-    let stem_priority = match stem {
-        "cover" => 0,
-        "folder" => 1,
-        "front" => 2,
-        "album" => 3,
-        "artwork" => 4,
-        _ => return None,
-    };
-
-    let extension_priority = match Path::new(&normalized)
-        .extension()
-        .and_then(|value| value.to_str())?
-    {
-        "jpg" => 0,
-        "jpeg" => 1,
-        "png" => 2,
-        "webp" => 3,
-        _ => return None,
-    };
-
-    Some((stem_priority * 10) + extension_priority)
-}
-
-fn infer_image_mime_from_path(path: &Path) -> Option<&'static str> {
-    match file_extension(path).as_deref()? {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    }
-}
-
-fn infer_image_mime_from_bytes(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return Some("image/jpeg");
-    }
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Some("image/png");
-    }
-    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        return Some("image/webp");
-    }
-    None
-}
-
-fn image_extension_for_mime(mime_type: &str) -> Option<&'static str> {
-    match mime_type {
-        "image/jpeg" => Some("jpg"),
-        "image/png" => Some("png"),
-        "image/webp" => Some("webp"),
-        _ => None,
-    }
-}
-
-fn persist_artwork_candidate(candidate: &ArtworkCandidate, destination: &Path) -> io::Result<()> {
-    match &candidate.data {
-        ArtworkData::Bytes(bytes) => fs::write(destination, bytes),
-        ArtworkData::File(source) => {
-            fs::copy(source, destination)?;
-            Ok(())
-        }
-    }
-}
-
-fn artwork_cache_path(config_path: &Path, cache_key: &str) -> PathBuf {
-    config_path.join("artwork").join(cache_key)
-}
-
-fn musicbrainz_client() -> io::Result<Client> {
-    Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(io::Error::other)
-}
-
-fn musicbrainz_user_agent() -> String {
-    format!(
-        "musicd/{} (self-hosted local music library app)",
-        env!("CARGO_PKG_VERSION")
-    )
-}
-
-fn search_musicbrainz_album_artwork(
-    client: &Client,
-    artist: &str,
-    album: &str,
-) -> io::Result<Vec<AlbumArtworkSearchCandidate>> {
-    let query = format!(
-        "release:\"{}\" AND artist:\"{}\"",
-        lucene_escape_phrase(album),
-        lucene_escape_phrase(artist),
-    );
-    let response = client
-        .get("https://musicbrainz.org/ws/2/release")
-        .query(&[("query", query.as_str()), ("fmt", "json"), ("limit", "8")])
-        .header(USER_AGENT, musicbrainz_user_agent())
-        .header(ACCEPT, "application/json")
-        .send()
-        .and_then(|response| response.error_for_status())
-        .map_err(io::Error::other)?;
-
-    let search: MusicBrainzSearchResponse = response.json().map_err(io::Error::other)?;
-    let mut seen_release_ids = HashSet::new();
-    let mut candidates = Vec::new();
-
-    for release in search.releases {
-        if !seen_release_ids.insert(release.id.clone()) {
-            continue;
-        }
-        if let Some(cover) = fetch_musicbrainz_cover_art_for_release(client, &release.id)? {
-            candidates.push(AlbumArtworkSearchCandidate {
-                release_id: release.id,
-                release_group_id: release.release_group.map(|group| group.id),
-                title: release.title,
-                artist: artist_credit_name(&release.artist_credit),
-                date: release.date,
-                country: release.country,
-                score: release.score.unwrap_or_default(),
-                thumbnail_url: cover.thumbnail_url,
-                image_url: cover.image_url,
-                source: cover.source,
-            });
-        }
-        if candidates.len() >= 3 {
-            break;
-        }
-    }
-
-    candidates.sort_by(|left, right| {
-        right
-            .score
-            .cmp(&left.score)
-            .then_with(|| left.date.cmp(&right.date))
-            .then_with(|| left.country.cmp(&right.country))
-    });
-    Ok(candidates)
-}
-
-fn fetch_musicbrainz_cover_art_for_release(
-    client: &Client,
-    release_id: &str,
-) -> io::Result<Option<AlbumArtworkSearchCandidate>> {
-    let response = client
-        .get(format!("https://coverartarchive.org/release/{release_id}/"))
-        .header(USER_AGENT, musicbrainz_user_agent())
-        .header(ACCEPT, "application/json")
-        .send()
-        .map_err(io::Error::other)?;
-
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-
-    let response = response.error_for_status().map_err(io::Error::other)?;
-    let archive: CoverArtArchiveResponse = response.json().map_err(io::Error::other)?;
-    let Some(image) = archive
-        .images
-        .into_iter()
-        .find(|image| image.front || image.approved)
-    else {
-        return Ok(None);
-    };
-
-    let thumbnail_url = image
-        .thumbnails
-        .get("250")
-        .or_else(|| image.thumbnails.get("small"))
-        .cloned()
-        .unwrap_or_else(|| image.image.clone());
-
-    Ok(Some(AlbumArtworkSearchCandidate {
-        release_id: release_id.to_string(),
-        release_group_id: None,
-        title: String::new(),
-        artist: String::new(),
-        date: None,
-        country: None,
-        score: 0,
-        thumbnail_url,
-        image_url: image.image,
-        source: archive
-            .release
-            .unwrap_or_else(|| format!("MusicBrainz release {release_id}")),
-    }))
-}
-
-fn download_artwork_candidate(client: &Client, image_url: &str) -> io::Result<DownloadedArtwork> {
-    let response = client
-        .get(image_url)
-        .header(USER_AGENT, musicbrainz_user_agent())
-        .header(ACCEPT, "image/*")
-        .send()
-        .and_then(|response| response.error_for_status())
-        .map_err(io::Error::other)?;
-
-    let mime_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .map(str::trim)
-        .filter(|value| value.starts_with("image/"))
-        .map(ToString::to_string)
-        .or_else(|| infer_image_mime_from_url(image_url).map(ToString::to_string));
-    let bytes = response.bytes().map_err(io::Error::other)?.to_vec();
-    let mime_type = mime_type
-        .or_else(|| infer_image_mime_from_bytes(&bytes).map(ToString::to_string))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown artwork MIME type"))?;
-
-    Ok(DownloadedArtwork { bytes, mime_type })
-}
-
-fn infer_image_mime_from_url(url: &str) -> Option<&'static str> {
-    let clean = url.split('?').next().unwrap_or(url);
-    infer_image_mime_from_path(Path::new(clean))
-}
-
-fn artist_credit_name(credits: &[MusicBrainzArtistCredit]) -> String {
-    credits
-        .iter()
-        .filter_map(|credit| credit.name.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn lucene_escape_phrase(value: &str) -> String {
-    value.replace('\\', r#"\\"#).replace('"', r#"\""#)
-}
-
 fn ensure_column(
     connection: &Connection,
     table: &str,
@@ -8971,14 +8566,14 @@ fn should_auto_advance(
 mod tests {
     use super::{
         Database, LibraryTrack, OnceLock, PlaybackQueue, PlaybackSession, QueueEntry,
-        QueueMutationEntry, RendererBackends, RendererKind, ServiceState, artwork_name_priority,
-        build_artist_summaries, cleanup_track_label, compare_track_album_order, decode_id3v1_text,
-        infer_artist_and_album, infer_disc_and_track_numbers, infer_image_mime_from_bytes,
-        next_queue_entry_after, parse_vorbis_comment_block, previous_queue_entry_before,
-        queue_status_for_transport, renderer_is_viable, renderer_kind_for_location,
-        should_adopt_preloaded_next_entry, should_auto_advance, should_skip_entry,
-        stable_album_id, stable_artist_id, stable_track_id,
+        QueueMutationEntry, RendererBackends, RendererKind, ServiceState, build_artist_summaries,
+        cleanup_track_label, compare_track_album_order, decode_id3v1_text, infer_artist_and_album,
+        infer_disc_and_track_numbers, next_queue_entry_after, parse_vorbis_comment_block,
+        previous_queue_entry_before, queue_status_for_transport, renderer_is_viable,
+        renderer_kind_for_location, should_adopt_preloaded_next_entry, should_auto_advance,
+        should_skip_entry, stable_album_id, stable_artist_id, stable_track_id,
     };
+    use crate::artwork::{artwork_name_priority, infer_image_mime_from_bytes};
     use crate::http::{parse_query_string, parse_range_header, parse_request_form};
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, RendererCapabilities, TransportInfo, TransportSnapshot};
