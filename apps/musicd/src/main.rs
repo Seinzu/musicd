@@ -4,7 +4,9 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+use arc_swap::ArcSwap;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -244,17 +246,78 @@ struct Database {
     pool: SqlitePool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 struct Library {
     scan_root: PathBuf,
-    tracks: Vec<LibraryTrack>,
+    tracks: Arc<[LibraryTrack]>,
+    albums: Arc<[AlbumSummary]>,
+    artists: Arc<[ArtistSummary]>,
+    track_index: HashMap<String, usize>,
+    album_index: HashMap<String, usize>,
+    artist_index: HashMap<String, usize>,
+    tracks_by_album: HashMap<String, Vec<usize>>,
+    albums_by_artist: HashMap<String, Vec<usize>>,
+}
+
+impl Library {
+    fn build(
+        scan_root: PathBuf,
+        tracks: Vec<LibraryTrack>,
+        overrides: &[AlbumArtworkOverride],
+    ) -> Self {
+        let mut albums = build_album_summaries(&tracks);
+        apply_album_artwork_overrides(&mut albums, overrides);
+        let mut artists = build_artist_summaries_from_albums(&tracks, &albums);
+        hydrate_artist_artwork_urls(&mut artists, &albums);
+
+        let mut track_index = HashMap::with_capacity(tracks.len());
+        let mut tracks_by_album: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, track) in tracks.iter().enumerate() {
+            track_index.insert(track.id.clone(), idx);
+            tracks_by_album
+                .entry(track.album_id.clone())
+                .or_default()
+                .push(idx);
+        }
+        for indexes in tracks_by_album.values_mut() {
+            indexes.sort_by(|&a, &b| compare_track_album_order(&tracks[a], &tracks[b]));
+        }
+
+        let mut album_index = HashMap::with_capacity(albums.len());
+        let mut albums_by_artist: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, album) in albums.iter().enumerate() {
+            album_index.insert(album.id.clone(), idx);
+            albums_by_artist
+                .entry(album.artist_id.clone())
+                .or_default()
+                .push(idx);
+        }
+
+        let mut artist_index = HashMap::with_capacity(artists.len());
+        for (idx, artist) in artists.iter().enumerate() {
+            artist_index.insert(artist.id.clone(), idx);
+        }
+
+        Self {
+            scan_root,
+            tracks: Arc::from(tracks),
+            albums: Arc::from(albums),
+            artists: Arc::from(artists),
+            track_index,
+            album_index,
+            artist_index,
+            tracks_by_album,
+            albums_by_artist,
+        }
+    }
+
 }
 
 #[derive(Debug)]
 struct ServiceState {
     config: AppConfig,
     database: Database,
-    library: Mutex<Library>,
+    library: ArcSwap<Library>,
     renderer_backends: RendererBackends,
     metrics: OnceLock<Arc<metrics::Metrics>>,
 }
@@ -3080,18 +3143,19 @@ fn url_encode(value: &str) -> String {
 }
 
 fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
-    let tracks = state.tracks_snapshot();
-    let albums = state.albums_snapshot();
+    let library = state.library_snapshot();
+    let tracks = &library.tracks;
+    let albums = &library.albums;
     let library_path = state.config.library_path.display().to_string();
     let renderer_location = state
         .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
-    let queue_html = render_queue_panel(state, &renderer_location, &tracks);
+    let queue_html = render_queue_panel(state, &renderer_location, &library);
     let known_renderers = state.renderer_snapshot();
     let message = request.query.get("message").cloned().unwrap_or_default();
     let error = request.query.get("error").cloned().unwrap_or_default();
 
     let mut album_rows = String::new();
-    for album in &albums {
+    for album in albums.iter() {
         let search_text = format!("{} {}", album.title, album.artist).to_ascii_lowercase();
         let cover_html = album
             .artwork_url
@@ -3128,7 +3192,7 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
     }
 
     let mut rows = String::new();
-    for track in &tracks {
+    for track in tracks.iter() {
         let search_text = format!(
             "{} {} {} {}",
             track.title, track.artist, track.album, track.relative_path
@@ -3917,11 +3981,18 @@ fn render_home_page(state: &ServiceState, request: &HttpRequest) -> String {
 fn render_queue_panel(
     state: &ServiceState,
     renderer_location: &str,
-    tracks: &[LibraryTrack],
+    library: &Library,
 ) -> String {
     if renderer_location.trim().is_empty() {
         return "<section class=\"table-wrap\"><p class=\"empty\">Enter a renderer LOCATION URL to inspect or build a queue.</p></section>".to_string();
     }
+
+    let lookup_track = |track_id: &str| -> Option<&LibraryTrack> {
+        library
+            .track_index
+            .get(track_id)
+            .map(|&idx| &library.tracks[idx])
+    };
 
     let queue = state.queue_snapshot(renderer_location);
     let session = state.playback_session(renderer_location);
@@ -3931,7 +4002,7 @@ fn render_queue_panel(
                 .entries
                 .iter()
                 .find(|entry| entry.id == current_entry_id)
-                .and_then(|entry| tracks.iter().find(|track| track.id == entry.track_id))
+                .and_then(|entry| lookup_track(&entry.track_id))
         })
     });
     let progress_note = session
@@ -3989,7 +4060,7 @@ fn render_queue_panel(
         .entries
         .iter()
         .map(|entry| {
-            let track = tracks.iter().find(|track| track.id == entry.track_id);
+            let track = lookup_track(&entry.track_id);
             let title = track
                 .map(|track| track.title.clone())
                 .unwrap_or_else(|| "Missing track".to_string());
@@ -4110,8 +4181,8 @@ fn render_queue_panel(
 fn render_queue_panel_html(state: &ServiceState, request: &HttpRequest) -> String {
     let renderer_location = state
         .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
-    let tracks = state.tracks_snapshot();
-    render_queue_panel(state, &renderer_location, &tracks)
+    let library = state.library_snapshot();
+    render_queue_panel(state, &renderer_location, &library)
 }
 
 fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> String {
@@ -4832,15 +4903,20 @@ fn render_tracks_json(state: &ServiceState) -> String {
     let tracks = state.tracks_snapshot();
     let album_artwork_by_id = state
         .albums_snapshot()
-        .into_iter()
-        .filter_map(|album| album.artwork_url.map(|artwork_url| (album.id, artwork_url)))
-        .collect::<HashMap<_, _>>();
+        .iter()
+        .filter_map(|album| {
+            album
+                .artwork_url
+                .as_ref()
+                .map(|artwork_url| (album.id.clone(), artwork_url.clone()))
+        })
+        .collect::<HashMap<String, String>>();
     let entries = tracks
-        .into_iter()
+        .iter()
         .map(|track| {
             let fallback_artwork_url =
                 album_artwork_by_id.get(&track.album_id).map(String::as_str);
-            let summary_json = track_summary_json(&track, fallback_artwork_url);
+            let summary_json = track_summary_json(track, fallback_artwork_url);
             if let Some(stripped) = summary_json.strip_suffix('}') {
                 format!(
                     r#"{stripped},"path":"{}","size":{}}}"#,
@@ -4859,8 +4935,8 @@ fn render_tracks_json(state: &ServiceState) -> String {
 fn render_albums_json(state: &ServiceState) -> String {
     let albums = state.albums_snapshot();
     let entries = albums
-        .into_iter()
-        .map(|album| album_summary_json(&album))
+        .iter()
+        .map(album_summary_json)
         .collect::<Vec<_>>()
         .join(",");
     format!("[{entries}]")
@@ -5586,8 +5662,10 @@ impl Database {
         for row in rows {
             tracks.push(row.map_err(db_error)?);
         }
+        drop(statement);
 
-        Ok(Library { scan_root, tracks })
+        let overrides = Self::list_album_artwork_overrides_with(&connection)?;
+        Ok(Library::build(scan_root, tracks, &overrides))
     }
 
     fn save_library(&self, library: &Library) -> io::Result<()> {
@@ -5615,7 +5693,7 @@ impl Database {
                 )
                 .map_err(db_error)?;
 
-            for track in &library.tracks {
+            for track in library.tracks.iter() {
                 let artwork_cache_key = track
                     .artwork
                     .as_ref()
@@ -5708,11 +5786,13 @@ impl Database {
         Ok(())
     }
 
+    #[cfg(test)]
     fn load_albums(&self) -> io::Result<Vec<AlbumSummary>> {
         let connection = self.connection()?;
         load_albums_from_connection(&connection)
     }
 
+    #[cfg(test)]
     fn load_artists(&self) -> io::Result<Vec<ArtistSummary>> {
         let connection = self.connection()?;
         let mut statement = connection
@@ -5795,6 +5875,12 @@ impl Database {
 
     fn list_album_artwork_overrides(&self) -> io::Result<Vec<AlbumArtworkOverride>> {
         let connection = self.connection()?;
+        Self::list_album_artwork_overrides_with(&connection)
+    }
+
+    fn list_album_artwork_overrides_with(
+        connection: &Connection,
+    ) -> io::Result<Vec<AlbumArtworkOverride>> {
         let mut statement = connection
             .prepare(
                 "SELECT album_id, cache_key, source, mime_type, musicbrainz_release_id, applied_unix
@@ -7167,13 +7253,13 @@ impl ServiceState {
         let state = Self {
             config,
             database,
-            library: Mutex::new(persisted_library),
+            library: ArcSwap::from_pointee(persisted_library),
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
         };
 
         match scan_library(&state.config.library_path, &state.config.config_path) {
-            Ok(library) => state.replace_library(library)?,
+            Ok(tracks) => state.replace_library(tracks)?,
             Err(error) if state.track_count() > 0 => {
                 eprintln!("library scan failed, continuing with persisted index: {error}");
             }
@@ -7196,93 +7282,85 @@ impl ServiceState {
         Ok(state)
     }
 
+    fn library_snapshot(&self) -> Arc<Library> {
+        self.library.load_full()
+    }
+
     fn track_count(&self) -> usize {
-        self.library
-            .lock()
-            .map(|library| library.tracks.len())
-            .unwrap_or(0)
+        self.library_snapshot().tracks.len()
     }
 
-    fn tracks_snapshot(&self) -> Vec<LibraryTrack> {
-        self.library
-            .lock()
-            .map(|library| library.tracks.clone())
-            .unwrap_or_default()
+    fn tracks_snapshot(&self) -> Arc<[LibraryTrack]> {
+        Arc::clone(&self.library_snapshot().tracks)
     }
 
-    fn albums_snapshot(&self) -> Vec<AlbumSummary> {
-        let mut albums = self.database.load_albums().unwrap_or_default();
-        apply_album_artwork_overrides(
-            &mut albums,
-            &self
-                .database
-                .list_album_artwork_overrides()
-                .unwrap_or_default(),
-        );
-        albums
+    fn albums_snapshot(&self) -> Arc<[AlbumSummary]> {
+        Arc::clone(&self.library_snapshot().albums)
     }
 
-    fn artists_snapshot(&self) -> Vec<ArtistSummary> {
-        let mut artists = self.database.load_artists().unwrap_or_default();
-        let mut albums = self.database.load_albums().unwrap_or_default();
-        apply_album_artwork_overrides(
-            &mut albums,
-            &self
-                .database
-                .list_album_artwork_overrides()
-                .unwrap_or_default(),
-        );
-        hydrate_artist_artwork_urls(&mut artists, &albums);
-        artists
+    fn artists_snapshot(&self) -> Arc<[ArtistSummary]> {
+        Arc::clone(&self.library_snapshot().artists)
     }
 
     fn find_track(&self, track_id: &str) -> Option<LibraryTrack> {
-        self.library.lock().ok().and_then(|library| {
-            library
-                .tracks
-                .iter()
-                .find(|track| track.id == track_id)
-                .cloned()
-        })
+        let library = self.library_snapshot();
+        library
+            .track_index
+            .get(track_id)
+            .map(|&idx| library.tracks[idx].clone())
     }
 
     fn find_album(&self, album_id: &str) -> Option<AlbumSummary> {
-        self.albums_snapshot()
-            .into_iter()
-            .find(|album| album.id == album_id)
+        let library = self.library_snapshot();
+        library
+            .album_index
+            .get(album_id)
+            .map(|&idx| library.albums[idx].clone())
     }
 
     fn find_artist(&self, artist_id: &str) -> Option<ArtistSummary> {
-        self.artists_snapshot()
-            .into_iter()
-            .find(|artist| artist.id == artist_id)
+        let library = self.library_snapshot();
+        library
+            .artist_index
+            .get(artist_id)
+            .map(|&idx| library.artists[idx].clone())
     }
 
     fn tracks_for_album(&self, album_id: &str) -> Vec<LibraryTrack> {
-        self.library
-            .lock()
-            .map(|library| {
-                let mut tracks = library
-                    .tracks
+        let library = self.library_snapshot();
+        library
+            .tracks_by_album
+            .get(album_id)
+            .map(|indexes| {
+                indexes
                     .iter()
-                    .filter(|track| track.album_id == album_id)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                tracks.sort_by(compare_track_album_order);
-                tracks
+                    .map(|&idx| library.tracks[idx].clone())
+                    .collect()
             })
             .unwrap_or_default()
     }
 
     fn first_track_for_album(&self, album_id: &str) -> Option<LibraryTrack> {
-        self.tracks_for_album(album_id).into_iter().next()
+        let library = self.library_snapshot();
+        library
+            .tracks_by_album
+            .get(album_id)
+            .and_then(|indexes| indexes.first())
+            .map(|&idx| library.tracks[idx].clone())
     }
 
     fn albums_for_artist(&self, artist_id: &str) -> Vec<AlbumSummary> {
-        self.albums_snapshot()
-            .into_iter()
-            .filter(|album| album.artist_id == artist_id)
-            .collect()
+        let library = self.library_snapshot();
+        library
+            .albums_by_artist
+            .get(artist_id)
+            .map(|indexes| {
+                indexes
+                    .iter()
+                    .map(|&idx| library.albums[idx].clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn queue_snapshot(&self, renderer_location: &str) -> Option<PlaybackQueue> {
@@ -7297,19 +7375,29 @@ impl ServiceState {
     }
 
     fn rescan(&self) -> io::Result<usize> {
-        let library = scan_library(&self.config.library_path, &self.config.config_path)?;
-        let track_count = library.tracks.len();
-        self.replace_library(library)?;
+        let tracks = scan_library(&self.config.library_path, &self.config.config_path)?;
+        let track_count = tracks.len();
+        self.replace_library(tracks)?;
         Ok(track_count)
     }
 
-    fn replace_library(&self, library: Library) -> io::Result<()> {
+    fn replace_library(&self, tracks: Vec<LibraryTrack>) -> io::Result<()> {
+        let overrides = self
+            .database
+            .list_album_artwork_overrides()
+            .unwrap_or_default();
+        let library = Library::build(self.config.library_path.clone(), tracks, &overrides);
         self.database.save_library(&library)?;
-        let mut state = self
-            .library
-            .lock()
-            .map_err(|_| io::Error::other("library state lock poisoned"))?;
-        *state = library;
+        self.library.store(Arc::new(library));
+        Ok(())
+    }
+
+    fn refresh_album_artwork_overrides(&self) -> io::Result<()> {
+        let current = self.library_snapshot();
+        let tracks: Vec<LibraryTrack> = current.tracks.iter().cloned().collect();
+        let overrides = self.database.list_album_artwork_overrides()?;
+        let library = Library::build(current.scan_root.clone(), tracks, &overrides);
+        self.library.store(Arc::new(library));
         Ok(())
     }
 
@@ -7603,6 +7691,7 @@ impl ServiceState {
         };
         self.database
             .upsert_album_artwork_override(&override_record)?;
+        self.refresh_album_artwork_overrides()?;
         self.find_album(album_id)
             .ok_or_else(|| io::Error::other("updated album could not be reloaded"))
     }
@@ -8381,7 +8470,7 @@ impl ServiceState {
     }
 }
 
-fn scan_library(root: &Path, config_path: &Path) -> io::Result<Library> {
+fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<LibraryTrack>> {
     if !root.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -8394,11 +8483,7 @@ fn scan_library(root: &Path, config_path: &Path) -> io::Result<Library> {
     let mut tracks = Vec::new();
     scan_dir(root, root, &artwork_cache_dir, &mut tracks)?;
     tracks.sort_by(compare_library_tracks);
-
-    Ok(Library {
-        scan_root: root.to_path_buf(),
-        tracks,
-    })
+    Ok(tracks)
 }
 
 fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary> {
@@ -9345,6 +9430,7 @@ fn load_tracks_from_connection(connection: &Connection) -> io::Result<Vec<Librar
     Ok(tracks)
 }
 
+#[cfg(test)]
 fn load_albums_from_connection(connection: &Connection) -> io::Result<Vec<AlbumSummary>> {
     let mut statement = connection
         .prepare(
@@ -10858,10 +10944,11 @@ mod tests {
         third.album = "Kid A".to_string();
         third.album_id = stable_album_id(&third.artist, &third.album);
 
-        let library = super::Library {
-            scan_root: PathBuf::from("/music"),
-            tracks: vec![first.clone(), second.clone(), third.clone()],
-        };
+        let library = super::Library::build(
+            PathBuf::from("/music"),
+            vec![first.clone(), second.clone(), third.clone()],
+            &[],
+        );
 
         database
             .save_library(&library)
@@ -11040,10 +11127,11 @@ mod tests {
                 debug_mode: false,
             },
             database,
-            library: std::sync::Mutex::new(super::Library {
-                scan_root: PathBuf::from("/music"),
+            library: arc_swap::ArcSwap::from_pointee(super::Library::build(
+                PathBuf::from("/music"),
                 tracks,
-            }),
+                &[],
+            )),
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
         }
