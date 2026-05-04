@@ -16,9 +16,8 @@ use lofty::read_from_path;
 use lofty::tag::Accessor;
 use musicd_core::AppConfig;
 use musicd_upnp::{
-    RendererCapabilities, StreamResource, TransportSnapshot, discover_renderers,
-    get_transport_snapshot, inspect_renderer, next, pause, play, play_stream, previous,
-    set_av_transport_uri, set_next_av_transport_uri, stop,
+    RendererCapabilities, StreamResource, TransportSnapshot, discover_renderers, inspect_renderer,
+    play_stream,
 };
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
@@ -28,10 +27,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 mod ids;
 mod metrics;
+mod renderer;
 mod types;
 mod util;
 
 pub(crate) use crate::ids::*;
+pub(crate) use crate::renderer::*;
 pub(crate) use crate::types::*;
 pub(crate) use crate::util::*;
 
@@ -135,218 +136,6 @@ struct HttpRequest {
 enum ServerMode {
     SingleFile(Arc<PathBuf>),
     Service(Arc<ServiceState>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RendererKind {
-    Upnp,
-    Sonos,
-    AndroidLocal,
-}
-
-#[derive(Debug, Default)]
-struct RendererBackends {
-    upnp: UpnpRendererBackend,
-    android_local: AndroidLocalRendererBackend,
-}
-
-#[derive(Debug, Default)]
-struct UpnpRendererBackend;
-
-#[derive(Debug, Default)]
-struct AndroidLocalRendererBackend;
-
-trait RendererBackend: Send + Sync {
-    fn resolve_renderer(
-        &self,
-        cached: Option<&RendererRecord>,
-        renderer_location: &str,
-    ) -> io::Result<RendererRecord>;
-
-    fn play_stream(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()>;
-
-    fn preload_next(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()>;
-
-    fn play(&self, renderer: &RendererRecord) -> io::Result<()>;
-
-    fn pause(&self, renderer: &RendererRecord) -> io::Result<()>;
-
-    fn stop(&self, renderer: &RendererRecord) -> io::Result<()>;
-
-    fn next(&self, renderer: &RendererRecord) -> io::Result<()>;
-
-    fn previous(&self, renderer: &RendererRecord) -> io::Result<()>;
-
-    fn transport_snapshot(&self, renderer: &RendererRecord) -> io::Result<TransportSnapshot>;
-}
-
-impl RendererBackends {
-    fn backend_for_location(&self, renderer_location: &str) -> io::Result<&dyn RendererBackend> {
-        match renderer_kind_for_location(renderer_location) {
-            RendererKind::Upnp => Ok(&self.upnp),
-            RendererKind::Sonos => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Sonos renderer support has not been implemented yet",
-            )),
-            RendererKind::AndroidLocal => Ok(&self.android_local),
-        }
-    }
-}
-
-impl RendererBackend for UpnpRendererBackend {
-    fn resolve_renderer(
-        &self,
-        cached: Option<&RendererRecord>,
-        renderer_location: &str,
-    ) -> io::Result<RendererRecord> {
-        if let Some(renderer) = cached.filter(|renderer| !renderer_needs_refresh(renderer)) {
-            return Ok(renderer.clone());
-        }
-
-        let renderer = inspect_renderer(renderer_location)?;
-        Ok(RendererRecord {
-            location: renderer_location.to_string(),
-            name: normalized_renderer_name(
-                renderer_location,
-                &renderer.friendly_name,
-                renderer.model_name.as_deref(),
-            ),
-            manufacturer: renderer.manufacturer,
-            model_name: renderer.model_name,
-            av_transport_control_url: Some(renderer.av_transport_control_url),
-            capabilities: renderer.capabilities,
-            last_checked_unix: now_unix_timestamp(),
-            last_reachable_unix: Some(now_unix_timestamp()),
-            last_error: None,
-            last_seen_unix: now_unix_timestamp(),
-        })
-    }
-
-    fn play_stream(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()> {
-        let control_url = upnp_control_url(renderer)?;
-        set_av_transport_uri(control_url, resource)?;
-        play(control_url)
-    }
-
-    fn preload_next(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()> {
-        let control_url = upnp_control_url(renderer)?;
-        set_next_av_transport_uri(control_url, resource)
-    }
-
-    fn play(&self, renderer: &RendererRecord) -> io::Result<()> {
-        play(upnp_control_url(renderer)?)
-    }
-
-    fn pause(&self, renderer: &RendererRecord) -> io::Result<()> {
-        pause(upnp_control_url(renderer)?)
-    }
-
-    fn stop(&self, renderer: &RendererRecord) -> io::Result<()> {
-        stop(upnp_control_url(renderer)?)
-    }
-
-    fn next(&self, renderer: &RendererRecord) -> io::Result<()> {
-        next(upnp_control_url(renderer)?)
-    }
-
-    fn previous(&self, renderer: &RendererRecord) -> io::Result<()> {
-        previous(upnp_control_url(renderer)?)
-    }
-
-    fn transport_snapshot(&self, renderer: &RendererRecord) -> io::Result<TransportSnapshot> {
-        get_transport_snapshot(upnp_control_url(renderer)?)
-    }
-}
-
-impl RendererBackend for AndroidLocalRendererBackend {
-    fn resolve_renderer(
-        &self,
-        cached: Option<&RendererRecord>,
-        renderer_location: &str,
-    ) -> io::Result<RendererRecord> {
-        if let Some(renderer) = cached {
-            return Ok(renderer.clone());
-        }
-
-        Ok(RendererRecord {
-            location: renderer_location.to_string(),
-            name: "This phone".to_string(),
-            manufacturer: Some("Android".to_string()),
-            model_name: None,
-            av_transport_control_url: None,
-            capabilities: android_local_renderer_capabilities(),
-            last_checked_unix: now_unix_timestamp(),
-            last_reachable_unix: Some(now_unix_timestamp()),
-            last_error: None,
-            last_seen_unix: now_unix_timestamp(),
-        })
-    }
-
-    fn play_stream(&self, _renderer: &RendererRecord, _resource: &StreamResource) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn preload_next(&self, _renderer: &RendererRecord, _resource: &StreamResource) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn play(&self, _renderer: &RendererRecord) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn pause(&self, _renderer: &RendererRecord) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn stop(&self, _renderer: &RendererRecord) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn next(&self, _renderer: &RendererRecord) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn previous(&self, _renderer: &RendererRecord) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn transport_snapshot(&self, _renderer: &RendererRecord) -> io::Result<TransportSnapshot> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "android_local renderers report transport state explicitly",
-        ))
-    }
-}
-
-fn renderer_kind_for_location(renderer_location: &str) -> RendererKind {
-    if renderer_location.starts_with("android-local://") {
-        RendererKind::AndroidLocal
-    } else if renderer_location.starts_with("sonos:") {
-        RendererKind::Sonos
-    } else {
-        RendererKind::Upnp
-    }
-}
-
-fn android_local_renderer_capabilities() -> RendererCapabilities {
-    RendererCapabilities {
-        av_transport_actions: Some(vec![
-            "Play".to_string(),
-            "Pause".to_string(),
-            "Stop".to_string(),
-            "Next".to_string(),
-            "Previous".to_string(),
-            "Seek".to_string(),
-        ]),
-        has_playlist_extension_service: Some(false),
-    }
-}
-
-fn upnp_control_url(renderer: &RendererRecord) -> io::Result<&str> {
-    renderer
-        .av_transport_control_url
-        .as_deref()
-        .ok_or_else(|| io::Error::other("renderer is missing an AVTransport control URL"))
 }
 
 fn main() {
@@ -5135,14 +4924,6 @@ fn renderer_record_json(renderer: &RendererRecord, selected: bool) -> String {
     )
 }
 
-fn renderer_kind_name(kind: RendererKind) -> &'static str {
-    match kind {
-        RendererKind::Upnp => "upnp",
-        RendererKind::Sonos => "sonos",
-        RendererKind::AndroidLocal => "android_local",
-    }
-}
-
 impl Database {
     fn open(config_path: &Path) -> io::Result<Self> {
         fs::create_dir_all(config_path)?;
@@ -8907,37 +8688,6 @@ fn artist_credit_name(credits: &[MusicBrainzArtistCredit]) -> String {
 
 fn lucene_escape_phrase(value: &str) -> String {
     value.replace('\\', r#"\\"#).replace('"', r#"\""#)
-}
-
-fn renderer_needs_refresh(renderer: &RendererRecord) -> bool {
-    matches!(
-        renderer_kind_for_location(&renderer.location),
-        RendererKind::Upnp
-    ) && (renderer.av_transport_control_url.is_none()
-        || renderer.capabilities.av_transport_actions.is_none()
-        || renderer
-            .capabilities
-            .has_playlist_extension_service
-            .is_none()
-        || renderer_name_looks_like_location(&renderer.name, &renderer.location))
-}
-
-fn renderer_is_viable(renderer: &RendererRecord) -> bool {
-    match renderer_kind_for_location(&renderer.location) {
-        RendererKind::Upnp => renderer.av_transport_control_url.is_some(),
-        RendererKind::Sonos => true,
-        RendererKind::AndroidLocal => true,
-    }
-}
-
-fn renderer_actions_json(actions: &Option<Vec<String>>) -> Option<String> {
-    actions
-        .as_ref()
-        .and_then(|actions| serde_json::to_string(actions).ok())
-}
-
-fn parse_renderer_actions_json(value: Option<String>) -> Option<Vec<String>> {
-    value.and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
 }
 
 fn ensure_column(
