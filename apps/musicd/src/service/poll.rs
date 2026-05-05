@@ -145,6 +145,16 @@ impl ServiceState {
         for renderer_location in self.database.list_playing_queue_renderers()? {
             if matches!(
                 renderer_kind_for_location(&renderer_location),
+                RendererKind::Group
+            ) {
+                self.debug_log("group-queue-poll", format!("renderer={renderer_location}"));
+                if let Err(error) = self.poll_renderer_group_queue(&renderer_location) {
+                    eprintln!("group queue poll failed for {renderer_location}: {error}");
+                }
+                continue;
+            }
+            if matches!(
+                renderer_kind_for_location(&renderer_location),
                 RendererKind::AndroidLocal
             ) {
                 continue;

@@ -313,6 +313,80 @@ mod tests {
     }
 
     #[test]
+    fn renderer_group_fans_out_playback_to_members() {
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let state = sample_state(vec![track.clone()]);
+        let group = state
+            .create_renderer_group(
+                "Phones",
+                &[
+                    "android-local://phone-a".to_string(),
+                    "android-local://phone-b".to_string(),
+                ],
+                None,
+            )
+            .expect("group should be created");
+        let group_location = renderer_group_queue_key(&group.id);
+        let queue = state
+            .database
+            .replace_queue(
+                &group_location,
+                "Phones",
+                &[QueueMutationEntry {
+                    track_id: track.id.clone(),
+                    album_id: Some(track.album_id.clone()),
+                    source_kind: "track".to_string(),
+                    source_ref: Some(track.id.clone()),
+                }],
+            )
+            .expect("group queue should be created");
+
+        let (started_track, entry_id, renderer_name, renderer_location) = state
+            .start_current_queue_entry(&group_location)
+            .expect("group playback should start");
+        assert_eq!(started_track.id, track.id);
+        assert_eq!(entry_id, queue.entries[0].id);
+        assert_eq!(renderer_name, "Phones (2 renderers)");
+        assert_eq!(renderer_location, group_location);
+
+        let queue = state
+            .database
+            .load_queue(&renderer_location)
+            .expect("queue should load")
+            .expect("queue should exist");
+        assert_eq!(queue.status, "playing");
+        let session = state
+            .database
+            .load_playback_session(&renderer_location)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "PLAYING");
+        assert_eq!(session.queue_entry_id, Some(entry_id));
+        state
+            .poll_renderer_group_queue(&renderer_location)
+            .expect("local-only group polling should be a no-op");
+        let session = state
+            .database
+            .load_playback_session(&renderer_location)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "PLAYING");
+
+        let pause_message = state
+            .pause_renderer(&renderer_location)
+            .expect("group pause should fan out");
+        assert_eq!(pause_message, "Group playback paused on 2 renderers.");
+        let session = state
+            .database
+            .load_playback_session(&renderer_location)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "PAUSED_PLAYBACK");
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
     fn queue_insert_move_and_remove_round_trip() {
         let config_path = temp_config_path("queue-mutations");
         let database = Database::open(&config_path).expect("database should open");

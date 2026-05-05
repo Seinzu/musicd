@@ -75,6 +75,12 @@ impl ServiceState {
     }
 
     pub(crate) fn resume_renderer(&self, renderer_location: &str) -> io::Result<String> {
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::Group
+        ) {
+            return self.resume_renderer_group(renderer_location);
+        }
         let _ = self.remember_renderer_location(renderer_location);
         if matches!(
             renderer_kind_for_location(renderer_location),
@@ -156,6 +162,26 @@ impl ServiceState {
     pub(crate) fn pause_renderer(&self, renderer_location: &str) -> io::Result<String> {
         if matches!(
             renderer_kind_for_location(renderer_location),
+            RendererKind::Group
+        ) {
+            let group = self.load_renderer_group_for_queue(renderer_location)?;
+            let member_count = self.fan_out_group_transport_action(
+                &group,
+                "pause",
+                |state, member_location, renderer| {
+                    state.renderer_backend(member_location)?.pause(renderer)
+                },
+            )?;
+            self.database
+                .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            self.database
+                .set_queue_status(renderer_location, "paused", "PAUSED_PLAYBACK")?;
+            return Ok(format!(
+                "Group playback paused on {member_count} renderers."
+            ));
+        }
+        if matches!(
+            renderer_kind_for_location(renderer_location),
             RendererKind::AndroidLocal
         ) {
             self.database
@@ -206,6 +232,26 @@ impl ServiceState {
     pub(crate) fn stop_renderer(&self, renderer_location: &str) -> io::Result<String> {
         if matches!(
             renderer_kind_for_location(renderer_location),
+            RendererKind::Group
+        ) {
+            let group = self.load_renderer_group_for_queue(renderer_location)?;
+            let member_count = self.fan_out_group_transport_action(
+                &group,
+                "stop",
+                |state, member_location, renderer| {
+                    state.renderer_backend(member_location)?.stop(renderer)
+                },
+            )?;
+            self.database
+                .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            self.database
+                .set_queue_status(renderer_location, "stopped", "STOPPED")?;
+            return Ok(format!(
+                "Group playback stopped on {member_count} renderers."
+            ));
+        }
+        if matches!(
+            renderer_kind_for_location(renderer_location),
             RendererKind::AndroidLocal
         ) {
             self.database
@@ -250,9 +296,9 @@ impl ServiceState {
 
         if matches!(
             renderer_kind_for_location(renderer_location),
-            RendererKind::AndroidLocal
+            RendererKind::AndroidLocal | RendererKind::Group
         ) {
-            return Ok("No later track in the local queue.".to_string());
+            return Ok("No later track in the queue.".to_string());
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
@@ -289,9 +335,9 @@ impl ServiceState {
 
         if matches!(
             renderer_kind_for_location(renderer_location),
-            RendererKind::AndroidLocal
+            RendererKind::AndroidLocal | RendererKind::Group
         ) {
-            return Ok("No earlier track in the local queue.".to_string());
+            return Ok("No earlier track in the queue.".to_string());
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
@@ -429,6 +475,47 @@ impl ServiceState {
                 renderer_location, current_entry.id, track.title, stream_url
             ),
         );
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::Group
+        ) {
+            let group = self.load_renderer_group_for_queue(renderer_location)?;
+            return match self.play_stream_on_group_members(&group, &resource) {
+                Ok(started_renderers) => {
+                    self.database.mark_queue_play_started(
+                        renderer_location,
+                        current_entry.id,
+                        &track.id,
+                        &stream_url,
+                        track.duration_seconds,
+                    )?;
+                    if let Err(error) = self.preload_next_group_queue_entry(
+                        renderer_location,
+                        &group,
+                        &queue,
+                        current_entry.id,
+                    ) {
+                        eprintln!(
+                            "group next-track preload failed for {renderer_location}: {error}"
+                        );
+                    }
+                    Ok((
+                        track,
+                        current_entry.id,
+                        format!("{} ({} renderers)", group.name, started_renderers.len()),
+                        renderer_location.to_string(),
+                    ))
+                }
+                Err(error) => {
+                    let _ = self.database.mark_queue_play_error(
+                        renderer_location,
+                        Some(current_entry.id),
+                        &error.to_string(),
+                    );
+                    Err(error)
+                }
+            };
+        }
         let renderer = self.resolve_renderer(renderer_location)?;
 
         match self
@@ -469,5 +556,45 @@ impl ServiceState {
                 Err(error)
             }
         }
+    }
+
+    fn resume_renderer_group(&self, renderer_location: &str) -> io::Result<String> {
+        let group = self.load_renderer_group_for_queue(renderer_location)?;
+        let queue = self.queue_snapshot(renderer_location);
+        let session = self.playback_session(renderer_location);
+        let current_entry_id = queue.as_ref().and_then(|queue| queue.current_entry_id);
+        if current_entry_id.is_none() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "queue is empty"));
+        }
+
+        if session
+            .as_ref()
+            .map(|session| {
+                matches!(
+                    session.transport_state.as_str(),
+                    "STOPPED" | "NO_MEDIA_PRESENT" | "READY" | "COMPLETED" | "ERROR"
+                )
+            })
+            .unwrap_or(true)
+        {
+            let (track, _, renderer_name, _) = self.start_current_queue_entry(renderer_location)?;
+            return Ok(format!(
+                "Now playing '{}' on {}.",
+                track.title, renderer_name
+            ));
+        }
+
+        let member_count = self.fan_out_group_transport_action(
+            &group,
+            "play",
+            |state, member_location, renderer| {
+                state.renderer_backend(member_location)?.play(renderer)
+            },
+        )?;
+        self.database
+            .set_queue_status(renderer_location, "playing", "PLAYING")?;
+        Ok(format!(
+            "Group playback resumed on {member_count} renderers."
+        ))
     }
 }
