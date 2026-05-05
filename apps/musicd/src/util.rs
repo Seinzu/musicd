@@ -179,6 +179,14 @@ pub(crate) fn looks_like_disc_folder(value: &str) -> bool {
         || normalized == "cd 1"
 }
 
+pub(crate) fn inferred_title(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("musicd track");
+    cleanup_track_label(stem)
+}
+
 pub(crate) fn cleanup_track_label(value: &str) -> String {
     let trimmed = value.trim();
     let trimmed =

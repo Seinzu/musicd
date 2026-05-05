@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use crate::ServiceState;
 use crate::metrics;
+use crate::service::ServiceState;
 
 use super::request::{HttpRequest, read_http_request};
 use super::response::{
@@ -63,7 +63,7 @@ fn handle_client(stream: TcpStream, mode: ServerMode) -> io::Result<()> {
             handle_single_file_request(&mut writer, &request, Arc::clone(path))
         }
         ServerMode::Service(state) => {
-            crate::handle_service_request(&mut writer, &request, Arc::clone(state))
+            super::router::handle_service_request(&mut writer, &request, Arc::clone(state))
         }
     };
 

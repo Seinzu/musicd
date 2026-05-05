@@ -11,7 +11,7 @@ use crate::ids::{stable_album_id, stable_track_id};
 use crate::types::{LibraryTrack, ParsedTrackTags};
 use crate::util::{
     component_to_string, infer_artist_and_album, infer_disc_and_track_numbers, infer_mime_type,
-    is_supported_audio_file, should_skip_entry,
+    inferred_title, is_supported_audio_file, should_skip_entry,
 };
 
 use super::sort::compare_library_tracks;
@@ -72,7 +72,7 @@ fn scan_dir(
             .title
             .clone()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| crate::inferred_title(&path));
+            .unwrap_or_else(|| inferred_title(&path));
         let (fallback_artist, fallback_album) = infer_artist_and_album(&relative_components);
         let artist = parsed_tags
             .artist

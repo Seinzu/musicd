@@ -1,4 +1,6 @@
 use std::cell::Cell;
+use std::io;
+use std::path::Path;
 use std::sync::Weak;
 use std::time::Duration;
 
@@ -11,7 +13,7 @@ use prometheus_client::metrics::gauge::ConstGauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 
-use crate::ServiceState;
+use crate::service::ServiceState;
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq, EncodeLabelSet)]
 pub struct RequestLabels {
@@ -117,7 +119,7 @@ impl Collector for SnapshotCollector {
         let db_path = state.config.config_path.join("musicd.db");
         let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
         let (artwork_files, artwork_bytes) =
-            crate::directory_metrics(&state.config.config_path.join("artwork")).unwrap_or((0, 0));
+            directory_metrics(&state.config.config_path.join("artwork")).unwrap_or((0, 0));
 
         let entries: [(&str, &str, i64); 9] = [
             (
@@ -287,4 +289,22 @@ pub fn take_response_status() -> u16 {
         cell.set(0);
         value
     })
+}
+
+fn directory_metrics(path: &Path) -> io::Result<(u64, u64)> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+
+    let mut file_count = 0_u64;
+    let mut total_bytes = 0_u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_file() {
+            file_count += 1;
+            total_bytes += metadata.len();
+        }
+    }
+    Ok((file_count, total_bytes))
 }
