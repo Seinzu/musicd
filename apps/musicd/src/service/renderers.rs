@@ -6,8 +6,8 @@ use crate::ids::{
     normalized_renderer_name, renderer_location_host, renderer_name_looks_like_location,
 };
 use crate::renderer::{
-    RendererKind, android_local_renderer_capabilities, renderer_is_viable, renderer_kind_for_location,
-    renderer_needs_refresh,
+    RendererKind, android_local_renderer_capabilities, renderer_is_viable,
+    renderer_kind_for_location, renderer_needs_refresh,
 };
 use crate::types::RendererRecord;
 use crate::util::now_unix_timestamp;
@@ -117,7 +117,8 @@ impl ServiceState {
                 last_seen_unix: now_unix_timestamp(),
             };
             self.database.upsert_renderer(&renderer)?;
-            self.database.set_last_selected_renderer_location(location)?;
+            self.database
+                .set_last_selected_renderer_location(location)?;
             return Ok(());
         }
 

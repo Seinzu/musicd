@@ -106,7 +106,6 @@ fn run_serve() -> io::Result<()> {
     serve_tcp(&config.bind_address, ServerMode::Service(state))
 }
 
-
 fn run_discover(timeout: Duration) -> io::Result<()> {
     let renderers = discover_renderers(timeout)?;
     if renderers.is_empty() {

@@ -238,9 +238,9 @@ impl Database {
     }
 
     pub(super) fn connection(&self) -> io::Result<SqliteConn> {
-        self.pool
-            .get()
-            .map_err(|error| io::Error::other(format!("failed to acquire sqlite connection: {error}")))
+        self.pool.get().map_err(|error| {
+            io::Error::other(format!("failed to acquire sqlite connection: {error}"))
+        })
     }
 }
 

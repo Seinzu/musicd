@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ids::stable_artist_id;
-use crate::types::{
-    AlbumArtworkOverride, AlbumSummary, ArtistSummary, LibraryTrack, TrackArtwork,
-};
+use crate::types::{AlbumArtworkOverride, AlbumSummary, ArtistSummary, LibraryTrack, TrackArtwork};
 
 use super::sort::{compare_albums, compare_artists, compare_track_album_order};
 
@@ -73,10 +71,7 @@ pub(crate) fn apply_album_artwork_overrides(
     }
 }
 
-pub(crate) fn hydrate_artist_artwork_urls(
-    artists: &mut [ArtistSummary],
-    albums: &[AlbumSummary],
-) {
+pub(crate) fn hydrate_artist_artwork_urls(artists: &mut [ArtistSummary], albums: &[AlbumSummary]) {
     let artwork_by_artist = albums
         .iter()
         .filter_map(|album| {

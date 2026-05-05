@@ -34,11 +34,19 @@ impl RendererBackend for AndroidLocalRendererBackend {
         })
     }
 
-    fn play_stream(&self, _renderer: &RendererRecord, _resource: &StreamResource) -> io::Result<()> {
+    fn play_stream(
+        &self,
+        _renderer: &RendererRecord,
+        _resource: &StreamResource,
+    ) -> io::Result<()> {
         Ok(())
     }
 
-    fn preload_next(&self, _renderer: &RendererRecord, _resource: &StreamResource) -> io::Result<()> {
+    fn preload_next(
+        &self,
+        _renderer: &RendererRecord,
+        _resource: &StreamResource,
+    ) -> io::Result<()> {
         Ok(())
     }
 

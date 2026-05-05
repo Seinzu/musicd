@@ -1021,8 +1021,10 @@ pub(crate) fn handle_api_android_local_session_request(
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
     let current_track_uri = request_value(request, "current_track_uri");
-    let position_seconds = request_value(request, "position_seconds").and_then(|value| value.parse::<u64>().ok());
-    let duration_seconds = request_value(request, "duration_seconds").and_then(|value| value.parse::<u64>().ok());
+    let position_seconds =
+        request_value(request, "position_seconds").and_then(|value| value.parse::<u64>().ok());
+    let duration_seconds =
+        request_value(request, "duration_seconds").and_then(|value| value.parse::<u64>().ok());
     let renderer = match state.resolve_renderer(&renderer_location) {
         Ok(renderer) => renderer,
         Err(error) => {
@@ -1030,7 +1032,7 @@ pub(crate) fn handle_api_android_local_session_request(
                 writer,
                 "500 Internal Server Error",
                 &format!("failed to resolve renderer: {error}"),
-            )
+            );
         }
     };
     let _ = state.mark_renderer_reachable(&renderer);
@@ -1065,7 +1067,10 @@ pub(crate) fn handle_api_android_local_completed_request(
         return api_error(writer, "400 Bad Request", "renderer is not android_local");
     }
 
-    match state.database.advance_queue_after_completion(&renderer_location) {
+    match state
+        .database
+        .advance_queue_after_completion(&renderer_location)
+    {
         Ok(next_entry_id) => {
             if next_entry_id.is_some() {
                 if let Err(error) = state.start_current_queue_entry(&renderer_location) {
@@ -1407,7 +1412,10 @@ pub(crate) fn handle_api_queue_clear_request(
     }
 }
 
-pub(crate) fn required_request_value(request: &HttpRequest, key: &str) -> Result<String, &'static str> {
+pub(crate) fn required_request_value(
+    request: &HttpRequest,
+    key: &str,
+) -> Result<String, &'static str> {
     request_value(request, key)
         .map(str::trim)
         .filter(|value| !value.is_empty())

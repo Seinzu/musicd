@@ -326,4 +326,3 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
         track_rows,
     )
 }
-

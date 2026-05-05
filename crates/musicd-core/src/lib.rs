@@ -138,7 +138,12 @@ fn split_bind_address(bind_address: &str) -> (String, String) {
     bind_address
         .trim()
         .rsplit_once(':')
-        .map(|(host, port)| (host.trim().trim_matches(['[', ']']).to_string(), port.trim().to_string()))
+        .map(|(host, port)| {
+            (
+                host.trim().trim_matches(['[', ']']).to_string(),
+                port.trim().to_string(),
+            )
+        })
         .unwrap_or_else(|| ("0.0.0.0".to_string(), "7878".to_string()))
 }
 

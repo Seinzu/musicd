@@ -5,9 +5,9 @@ use rusqlite::{Connection, params};
 
 use crate::ids::stable_album_id;
 use crate::library::{Library, build_album_summaries, build_artist_summaries_from_albums};
+use crate::types::{AlbumArtworkOverride, LibraryTrack, TrackArtwork};
 #[cfg(test)]
 use crate::types::{AlbumSummary, ArtistSummary};
-use crate::types::{AlbumArtworkOverride, LibraryTrack, TrackArtwork};
 
 use super::{Database, db_error};
 
@@ -289,7 +289,9 @@ impl Database {
     }
 }
 
-pub(super) fn load_tracks_from_connection(connection: &Connection) -> io::Result<Vec<LibraryTrack>> {
+pub(super) fn load_tracks_from_connection(
+    connection: &Connection,
+) -> io::Result<Vec<LibraryTrack>> {
     let mut statement = connection
         .prepare(
             "SELECT id, album_id, title, artist, album, disc_number, track_number,

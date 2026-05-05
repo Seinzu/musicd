@@ -19,14 +19,6 @@ fn main() {
     }
 }
 
-
-
-
-
-
-
-
-
 #[cfg(test)]
 mod tests {
     use crate::artwork::{artwork_name_priority, infer_image_mime_from_bytes};
@@ -49,7 +41,10 @@ mod tests {
         LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
         RendererRecord, TrackArtwork,
     };
-    use crate::util::{cleanup_track_label, infer_artist_and_album, infer_disc_and_track_numbers, should_skip_entry};
+    use crate::util::{
+        cleanup_track_label, infer_artist_and_album, infer_disc_and_track_numbers,
+        should_skip_entry,
+    };
     use musicd_core::AppConfig;
     use musicd_upnp::{PositionInfo, RendererCapabilities, TransportInfo, TransportSnapshot};
     use std::path::PathBuf;

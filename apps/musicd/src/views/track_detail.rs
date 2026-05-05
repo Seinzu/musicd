@@ -316,4 +316,3 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
         notes_html,
     )
 }
-

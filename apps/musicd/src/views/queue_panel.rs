@@ -210,4 +210,3 @@ pub(crate) fn render_queue_panel_html(state: &ServiceState, request: &HttpReques
     let library = state.library_snapshot();
     render_queue_panel(state, &renderer_location, &library)
 }
-

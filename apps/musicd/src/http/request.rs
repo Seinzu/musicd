@@ -92,7 +92,10 @@ pub(crate) fn parse_query_string(query: &str) -> HashMap<String, String> {
     values
 }
 
-pub(crate) fn parse_request_form(content_type: Option<&str>, body: &[u8]) -> HashMap<String, String> {
+pub(crate) fn parse_request_form(
+    content_type: Option<&str>,
+    body: &[u8],
+) -> HashMap<String, String> {
     if body.is_empty() {
         return HashMap::new();
     }

@@ -8,7 +8,9 @@ use lofty::read_from_path;
 use crate::ids::stable_track_id;
 use crate::util::looks_like_disc_folder;
 
-use super::mime::{image_extension_for_mime, infer_image_mime_from_bytes, infer_image_mime_from_path};
+use super::mime::{
+    image_extension_for_mime, infer_image_mime_from_bytes, infer_image_mime_from_path,
+};
 use super::{ArtworkCandidate, ArtworkData};
 
 pub(super) fn read_embedded_artwork(track_path: &Path, track_id: &str) -> Option<ArtworkCandidate> {

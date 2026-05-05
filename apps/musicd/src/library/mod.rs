@@ -10,13 +10,13 @@ mod sort;
 mod summaries;
 
 pub(crate) use metadata::inspect_embedded_metadata;
-pub(crate) use scan::scan_library;
-pub(crate) use sort::compare_track_album_order;
-pub(crate) use summaries::{build_album_summaries, build_artist_summaries_from_albums};
 #[cfg(test)]
 pub(crate) use metadata::{decode_id3v1_text, parse_vorbis_comment_block};
+pub(crate) use scan::scan_library;
+pub(crate) use sort::compare_track_album_order;
 #[cfg(test)]
 pub(crate) use summaries::build_artist_summaries;
+pub(crate) use summaries::{build_album_summaries, build_artist_summaries_from_albums};
 
 use summaries::{apply_album_artwork_overrides, hydrate_artist_artwork_urls};
 

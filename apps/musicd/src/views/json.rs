@@ -95,8 +95,7 @@ pub(crate) fn render_tracks_json(state: &ServiceState) -> String {
     let entries = tracks
         .iter()
         .map(|track| {
-            let fallback_artwork_url =
-                album_artwork_by_id.get(&track.album_id).map(String::as_str);
+            let fallback_artwork_url = album_artwork_by_id.get(&track.album_id).map(String::as_str);
             let summary_json = track_summary_json(track, fallback_artwork_url);
             if let Some(stripped) = summary_json.strip_suffix('}') {
                 format!(

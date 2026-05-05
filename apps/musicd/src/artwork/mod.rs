@@ -9,12 +9,12 @@ mod musicbrainz;
 mod sidecar;
 
 pub(crate) use mime::image_extension_for_mime;
+#[cfg(test)]
+pub(crate) use mime::infer_image_mime_from_bytes;
 pub(crate) use musicbrainz::{
     download_artwork_candidate, fetch_musicbrainz_cover_art_for_release, musicbrainz_client,
     search_musicbrainz_album_artwork,
 };
-#[cfg(test)]
-pub(crate) use mime::infer_image_mime_from_bytes;
 #[cfg(test)]
 pub(crate) use sidecar::artwork_name_priority;
 

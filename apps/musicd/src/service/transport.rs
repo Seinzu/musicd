@@ -7,11 +7,11 @@ use musicd_upnp::TransportSnapshot;
 use crate::renderer::{RendererKind, renderer_kind_for_location};
 use crate::types::{LibraryTrack, PlaybackQueue, RendererRecord};
 
+use super::ServiceState;
 use super::poll::{
     next_queue_entry_after, previous_queue_entry_before, queue_status_for_transport,
     should_adopt_preloaded_next_entry,
 };
-use super::ServiceState;
 
 impl ServiceState {
     pub(crate) fn refresh_transport_state(
@@ -101,10 +101,7 @@ impl ServiceState {
                     ));
                 }
             }
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "queue is empty",
-            ));
+            return Err(io::Error::new(io::ErrorKind::NotFound, "queue is empty"));
         }
         let queue = self.queue_snapshot(renderer_location);
         let session = self.playback_session(renderer_location);

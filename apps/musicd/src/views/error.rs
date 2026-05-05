@@ -14,4 +14,3 @@ pub(crate) fn render_detail_error_page(message: &str) -> String {
         html_escape(message)
     )
 }
-
