@@ -73,6 +73,11 @@ data class MusicdUiState(
     val albumArtworkErrorMessage: String? = null,
     val queue: QueueDto? = null,
     val showRendererPicker: Boolean = false,
+    val rendererGroupNameInput: String = "",
+    val rendererGroupMemberLocations: Set<String> = emptySet(),
+    val rendererGroupUseCurrentQueue: Boolean = true,
+    val isCreatingRendererGroup: Boolean = false,
+    val rendererGroupErrorMessage: String? = null,
     val isConnecting: Boolean = false,
     val isLoading: Boolean = false,
     val isDiscovering: Boolean = false,
@@ -438,6 +443,102 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleRendererPicker(show: Boolean) {
         _uiState.update { it.copy(showRendererPicker = show) }
+    }
+
+    fun updateRendererGroupName(value: String) {
+        _uiState.update { it.copy(rendererGroupNameInput = value, rendererGroupErrorMessage = null) }
+    }
+
+    fun toggleRendererGroupMember(location: String) {
+        _uiState.update { state ->
+            val nextMembers = if (location in state.rendererGroupMemberLocations) {
+                state.rendererGroupMemberLocations - location
+            } else {
+                state.rendererGroupMemberLocations + location
+            }
+            state.copy(
+                rendererGroupMemberLocations = nextMembers,
+                rendererGroupErrorMessage = null,
+            )
+        }
+    }
+
+    fun toggleRendererGroupUseCurrentQueue(value: Boolean) {
+        _uiState.update {
+            it.copy(
+                rendererGroupUseCurrentQueue = value,
+                rendererGroupErrorMessage = null,
+            )
+        }
+    }
+
+    fun createRendererGroup() {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        val memberLocations = state.rendererGroupMemberLocations
+            .filter { location -> state.renderers.any { it.location == location && it.kind != "group" } }
+        if (baseUrl.isBlank()) return
+        if (memberLocations.size < 2) {
+            _uiState.update {
+                it.copy(rendererGroupErrorMessage = "Choose at least two renderers for the group.")
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isCreatingRendererGroup = true,
+                    rendererGroupErrorMessage = null,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            val sourceRendererLocation = state.selectedRendererLocation
+                .takeIf { state.rendererGroupUseCurrentQueue && it.isNotBlank() }
+            runCatching {
+                val response = repository.createRendererGroup(
+                    baseUrl = baseUrl,
+                    name = state.rendererGroupNameInput,
+                    memberLocations = memberLocations,
+                    sourceRendererLocation = sourceRendererLocation,
+                )
+                val renderers = repository.getRenderers(baseUrl)
+                response to renderers
+            }.onSuccess { (response, renderers) ->
+                val groupLocation = response.rendererLocation
+                    ?.takeIf { location -> renderers.any { it.location == location } }
+                    ?: chooseRendererLocation(
+                        currentSelection = "",
+                        savedSelection = "",
+                        renderers = renderers.filter { it.kind == "group" },
+                    )
+                groupLocation?.let(repository::saveRendererLocation)
+                _uiState.update {
+                    it.copy(
+                        renderers = renderers,
+                        selectedRendererLocation = groupLocation ?: it.selectedRendererLocation,
+                        rendererGroupNameInput = "",
+                        rendererGroupMemberLocations = emptySet(),
+                        rendererGroupUseCurrentQueue = true,
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = null,
+                        showRendererPicker = false,
+                        infoMessage = response.message ?: "Renderer group created.",
+                    )
+                }
+                syncPlaybackNotificationService()
+                refreshPlaybackSurfaces()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
+        }
     }
 
     fun selectRenderer(location: String) {

@@ -4,6 +4,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -156,6 +158,10 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onDismissWarning = viewModel::dismissWarning,
         onSelectRenderer = viewModel::selectRenderer,
         onDiscoverRenderers = viewModel::discoverRenderers,
+        onRendererGroupNameChange = viewModel::updateRendererGroupName,
+        onToggleRendererGroupMember = viewModel::toggleRendererGroupMember,
+        onToggleRendererGroupUseCurrentQueue = viewModel::toggleRendererGroupUseCurrentQueue,
+        onCreateRendererGroup = viewModel::createRendererGroup,
         onPlay = viewModel::transportPlay,
         onPause = viewModel::transportPause,
         onStop = viewModel::transportStop,
@@ -204,6 +210,10 @@ private fun MusicdRoot(
     onDismissWarning: () -> Unit,
     onSelectRenderer: (String) -> Unit,
     onDiscoverRenderers: () -> Unit,
+    onRendererGroupNameChange: (String) -> Unit,
+    onToggleRendererGroupMember: (String) -> Unit,
+    onToggleRendererGroupUseCurrentQueue: (Boolean) -> Unit,
+    onCreateRendererGroup: () -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onStop: () -> Unit,
@@ -265,8 +275,17 @@ private fun MusicdRoot(
                 renderers = state.renderers,
                 selectedRendererLocation = state.selectedRendererLocation,
                 isDiscovering = state.isDiscovering,
+                groupNameInput = state.rendererGroupNameInput,
+                selectedGroupMemberLocations = state.rendererGroupMemberLocations,
+                useCurrentQueue = state.rendererGroupUseCurrentQueue,
+                isCreatingGroup = state.isCreatingRendererGroup,
+                groupErrorMessage = state.rendererGroupErrorMessage,
                 onSelectRenderer = onSelectRenderer,
                 onDiscoverRenderers = onDiscoverRenderers,
+                onGroupNameChange = onRendererGroupNameChange,
+                onToggleGroupMember = onToggleRendererGroupMember,
+                onUseCurrentQueueChange = onToggleRendererGroupUseCurrentQueue,
+                onCreateGroup = onCreateRendererGroup,
             )
         }
     }
@@ -1444,17 +1463,32 @@ private fun RendererPickerSheet(
     renderers: List<RendererDto>,
     selectedRendererLocation: String,
     isDiscovering: Boolean,
+    groupNameInput: String,
+    selectedGroupMemberLocations: Set<String>,
+    useCurrentQueue: Boolean,
+    isCreatingGroup: Boolean,
+    groupErrorMessage: String?,
     onSelectRenderer: (String) -> Unit,
     onDiscoverRenderers: () -> Unit,
+    onGroupNameChange: (String) -> Unit,
+    onToggleGroupMember: (String) -> Unit,
+    onUseCurrentQueueChange: (Boolean) -> Unit,
+    onCreateGroup: () -> Unit,
 ) {
     val accentColor = Color(0xFFF5AF43)
     val accentContainer = Color(0xFF4B3B2B)
     val sheetBackground = Color(0xFF1F1F25)
+    val physicalRenderers = renderers.filter { it.kind != "group" }
+    val groupRenderers = renderers.filter { it.kind == "group" }
+    val selectedPhysicalCount = selectedGroupMemberLocations
+        .count { selected -> physicalRenderers.any { it.location == selected } }
+    val canCreateGroup = selectedPhysicalCount >= 2 && !isCreatingGroup
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(sheetBackground)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 8.dp)
     ) {
         Box(
@@ -1480,7 +1514,7 @@ private fun RendererPickerSheet(
                 fontWeight = FontWeight.Light,
             )
             Text(
-                text = "${renderers.size} AVAILABLE",
+                text = "${renderers.size} TARGETS",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1495,96 +1529,137 @@ private fun RendererPickerSheet(
             }
             Spacer(Modifier.height(14.dp))
         }
-        renderers.forEach { renderer ->
-            val isSelected = renderer.location == selectedRendererLocation
+        if (groupRenderers.isNotEmpty()) {
+            Text(
+                "Groups",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 10.dp),
+            )
+        }
+        groupRenderers.forEach { renderer ->
+            RendererPickerRow(
+                renderer = renderer,
+                isSelected = renderer.location == selectedRendererLocation,
+                sheetBackground = sheetBackground,
+                selectedContainer = accentContainer,
+                selectedAccent = accentColor,
+                onSelectRenderer = onSelectRenderer,
+            )
+        }
+        if (physicalRenderers.isNotEmpty()) {
+            Text(
+                "Renderers",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = if (groupRenderers.isEmpty()) 0.dp else 6.dp, bottom = 10.dp),
+            )
+        }
+        physicalRenderers.forEach { renderer ->
+            RendererPickerRow(
+                renderer = renderer,
+                isSelected = renderer.location == selectedRendererLocation,
+                sheetBackground = sheetBackground,
+                selectedContainer = accentContainer,
+                selectedAccent = accentColor,
+                onSelectRenderer = onSelectRenderer,
+            )
+        }
+        if (physicalRenderers.size >= 2) {
+            Spacer(Modifier.height(8.dp))
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 14.dp)
-                    .clickable { onSelectRenderer(renderer.location) },
-                colors = CardDefaults.cardColors(
-                    containerColor = if (isSelected) {
-                        accentContainer
-                    } else {
-                        sheetBackground
-                    }
-                ),
+                    .padding(bottom = 14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF17181F)),
                 border = BorderStroke(
-                    width = if (isSelected) 1.5.dp else 1.dp,
-                    color = if (isSelected) accentColor.copy(alpha = 0.75f)
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
                 ),
                 shape = RoundedCornerShape(24.dp),
             ) {
-                Row(
+                Column(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(58.dp)
-                            .background(
-                                color = Color(0xFF17181F),
-                                shape = RoundedCornerShape(18.dp),
-                            )
-                            .border(
-                                width = 1.dp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                                shape = RoundedCornerShape(18.dp),
-                            ),
-                        contentAlignment = Alignment.Center,
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            if (renderer.kind == "android_local") {
-                                Icons.Rounded.PhoneAndroid
-                            } else {
-                                Icons.Rounded.Speaker
-                            },
-                            contentDescription = null,
-                            tint = if (isSelected) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            rendererDisplayName(renderer),
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            rendererDescriptor(renderer),
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (isSelected) {
-                        Row(
+                        Box(
                             modifier = Modifier
-                                .background(accentColor, RoundedCornerShape(99.dp))
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                                .size(44.dp)
+                                .background(accentContainer, RoundedCornerShape(16.dp)),
+                            contentAlignment = Alignment.Center,
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(12.dp)
-                                    .background(Color(0xFF1B140D), CircleShape)
-                            )
-                            Text(
-                                "Active",
-                                color = Color(0xFF1B140D),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
+                            Icon(
+                                Icons.AutoMirrored.Rounded.QueueMusic,
+                                contentDescription = null,
+                                tint = accentColor,
                             )
                         }
-                    } else {
-                        Text(
-                            "Tap to switch",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Create group",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "$selectedPhysicalCount selected",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = groupNameInput,
+                        onValueChange = onGroupNameChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("Group name") },
+                    )
+                    physicalRenderers.forEach { renderer ->
+                        val selected = renderer.location in selectedGroupMemberLocations
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onToggleGroupMember(renderer.location) },
+                            label = {
+                                Text(
+                                    rendererDisplayName(renderer),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                    }
+                    FilterChip(
+                        selected = useCurrentQueue,
+                        onClick = { onUseCurrentQueueChange(!useCurrentQueue) },
+                        enabled = selectedRendererLocation.isNotBlank(),
+                        label = { Text("Use current queue") },
+                    )
+                    groupErrorMessage?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    Button(
+                        onClick = onCreateGroup,
+                        enabled = canCreateGroup,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        if (isCreatingGroup) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        } else {
+                            Text("Create group")
+                        }
                     }
                 }
             }
@@ -1620,7 +1695,113 @@ private fun RendererPickerSheet(
     }
 }
 
+@Composable
+private fun RendererPickerRow(
+    renderer: RendererDto,
+    isSelected: Boolean,
+    sheetBackground: Color,
+    selectedContainer: Color,
+    selectedAccent: Color,
+    onSelectRenderer: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.dp)
+            .clickable { onSelectRenderer(renderer.location) },
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) {
+                selectedContainer
+            } else {
+                sheetBackground
+            }
+        ),
+        border = BorderStroke(
+            width = if (isSelected) 1.5.dp else 1.dp,
+            color = if (isSelected) selectedAccent.copy(alpha = 0.75f)
+            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+        ),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(58.dp)
+                    .background(
+                        color = Color(0xFF17181F),
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                        shape = RoundedCornerShape(18.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    rendererIcon(renderer),
+                    contentDescription = null,
+                    tint = if (isSelected) selectedAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    rendererDisplayName(renderer),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    rendererDescriptor(renderer),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (isSelected) {
+                Row(
+                    modifier = Modifier
+                        .background(selectedAccent, RoundedCornerShape(99.dp))
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .background(Color(0xFF1B140D), CircleShape)
+                    )
+                    Text(
+                        "Active",
+                        color = Color(0xFF1B140D),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            } else {
+                Text(
+                    "Tap to switch",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 private fun rendererDescriptor(renderer: RendererDto): String {
+    if (renderer.kind == "group") {
+        val memberCount = renderer.group?.memberCount ?: renderer.group?.members?.size ?: 0
+        return if (memberCount > 0) {
+            "$memberCount renderers"
+        } else {
+            "Renderer group"
+        }
+    }
     if (renderer.kind == "android_local") {
         return "Local playback on this Android device"
     }
@@ -1632,6 +1813,13 @@ private fun rendererDescriptor(renderer: RendererDto): String {
     )
     return parts.joinToString(" · ").ifBlank { "Renderer" }
 }
+
+private fun rendererIcon(renderer: RendererDto) =
+    when (renderer.kind) {
+        "android_local" -> Icons.Rounded.PhoneAndroid
+        "group" -> Icons.AutoMirrored.Rounded.QueueMusic
+        else -> Icons.Rounded.Speaker
+    }
 
 private fun rendererDisplayName(renderer: RendererDto): String {
     val name = renderer.name.trim()

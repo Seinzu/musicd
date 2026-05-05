@@ -25,6 +25,23 @@ data class RendererDto(
     val selected: Boolean = false,
     val kind: String = "upnp",
     val error: String? = null,
+    val group: RendererGroupDto? = null,
+)
+
+@Serializable
+data class RendererGroupDto(
+    val id: String,
+    val location: String,
+    val name: String,
+    @SerialName("member_count") val memberCount: Int = 0,
+    val members: List<RendererGroupMemberDto> = emptyList(),
+)
+
+@Serializable
+data class RendererGroupMemberDto(
+    @SerialName("renderer_location") val rendererLocation: String,
+    val position: Long = 0L,
+    @SerialName("joined_unix") val joinedUnix: Long = 0L,
 )
 
 @Serializable
@@ -246,6 +263,22 @@ class MusicdApi(
 
     suspend fun discoverRenderers(baseUrl: String): List<RendererDto> =
         get("$baseUrl/api/renderers/discover")
+
+    suspend fun createRendererGroup(
+        baseUrl: String,
+        name: String,
+        memberLocations: List<String>,
+        sourceRendererLocation: String?,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/renderer-groups",
+        buildMap {
+            put("name", name)
+            put("members", memberLocations.joinToString(","))
+            sourceRendererLocation
+                ?.takeIf { it.isNotBlank() }
+                ?.let { put("source_renderer_location", it) }
+        },
+    )
 
     suspend fun registerAndroidLocalRenderer(
         baseUrl: String,
