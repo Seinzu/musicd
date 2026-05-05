@@ -47,6 +47,7 @@ class MusicdPlaybackNotificationService : Service() {
     private var localPlaybackReportJob: Job? = null
     private var currentBaseUrl: String = ""
     private var currentRendererLocation: String = ""
+    private var currentLocalRendererLocation: String = ""
     private var currentServerName: String? = null
     private var latestPlaybackEvent: PlaybackEventDto? = null
     private var latestArtworkUrl: String? = null
@@ -163,6 +164,7 @@ class MusicdPlaybackNotificationService : Service() {
             ACTION_START -> {
                 currentBaseUrl = intent.getStringExtra(EXTRA_BASE_URL).orEmpty()
                 currentRendererLocation = intent.getStringExtra(EXTRA_RENDERER_LOCATION).orEmpty()
+                currentLocalRendererLocation = intent.getStringExtra(EXTRA_LOCAL_RENDERER_LOCATION).orEmpty()
                 currentServerName = intent.getStringExtra(EXTRA_SERVER_NAME)
 
                 if (currentBaseUrl.isBlank() || currentRendererLocation.isBlank()) {
@@ -511,12 +513,17 @@ class MusicdPlaybackNotificationService : Service() {
 
     private fun updateLocalPlaybackReportingLoop() {
         localPlaybackReportJob?.cancel()
-        if (!isLocalRendererActive() || !localPlayer.isPlaying) {
+        if (!isLocalRendererActive() || !shouldReportLocalRendererSession() || !localPlayer.isPlaying) {
             localPlaybackReportJob = null
             return
         }
         localPlaybackReportJob = serviceScope.launch {
-            while (isActive && isLocalRendererActive() && localPlayer.isPlaying) {
+            while (
+                isActive &&
+                isLocalRendererActive() &&
+                shouldReportLocalRendererSession() &&
+                localPlayer.isPlaying
+            ) {
                 reportLocalSession(force = true)
                 delay(5_000)
             }
@@ -524,7 +531,7 @@ class MusicdPlaybackNotificationService : Service() {
     }
 
     private fun reportLocalSession(force: Boolean = false) {
-        if (!isLocalRendererActive() || currentBaseUrl.isBlank() || currentRendererLocation.isBlank()) {
+        if (!shouldReportLocalRendererSession() || currentBaseUrl.isBlank() || currentRendererLocation.isBlank()) {
             return
         }
         val currentTrackUri = localPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
@@ -664,7 +671,7 @@ class MusicdPlaybackNotificationService : Service() {
         currentTrackStreamUrl(nextQueuedTrackId(event))
 
     private fun reportLocalCompletion() {
-        if (!isLocalRendererActive() || currentBaseUrl.isBlank() || currentRendererLocation.isBlank()) {
+        if (!shouldReportLocalRendererSession() || currentBaseUrl.isBlank() || currentRendererLocation.isBlank()) {
             return
         }
         serviceScope.launch {
@@ -738,6 +745,15 @@ class MusicdPlaybackNotificationService : Service() {
     }
 
     private fun isLocalRendererActive(): Boolean =
+        isLocalRendererLocation(currentRendererLocation) ||
+            (latestPlaybackEvent
+                ?.nowPlaying
+                ?.renderer
+                ?.group
+                ?.members
+                ?.any { it.rendererLocation == currentLocalRendererLocation } == true)
+
+    private fun shouldReportLocalRendererSession(): Boolean =
         isLocalRendererLocation(currentRendererLocation)
 
     companion object {
@@ -756,6 +772,7 @@ class MusicdPlaybackNotificationService : Service() {
 
         private const val EXTRA_BASE_URL = "base_url"
         private const val EXTRA_RENDERER_LOCATION = "renderer_location"
+        private const val EXTRA_LOCAL_RENDERER_LOCATION = "local_renderer_location"
         private const val EXTRA_SERVER_NAME = "server_name"
 
         private const val REQUEST_OPEN_APP = 2001
@@ -765,12 +782,14 @@ class MusicdPlaybackNotificationService : Service() {
             context: Context,
             baseUrl: String,
             rendererLocation: String,
+            localRendererLocation: String,
             serverName: String?,
         ) {
             val intent = Intent(context, MusicdPlaybackNotificationService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_BASE_URL, baseUrl)
                 putExtra(EXTRA_RENDERER_LOCATION, rendererLocation)
+                putExtra(EXTRA_LOCAL_RENDERER_LOCATION, localRendererLocation)
                 putExtra(EXTRA_SERVER_NAME, serverName)
             }
             ContextCompat.startForegroundService(context, intent)

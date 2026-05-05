@@ -541,6 +541,54 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun deleteRendererGroup(location: String) {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        if (baseUrl.isBlank() || location.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isCreatingRendererGroup = true,
+                    rendererGroupErrorMessage = null,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching {
+                val response = repository.deleteRendererGroup(baseUrl, location)
+                val renderers = repository.getRenderers(baseUrl)
+                response to renderers
+            }.onSuccess { (response, renderers) ->
+                val nextSelection = chooseRendererLocation(
+                    currentSelection = uiState.value.selectedRendererLocation.takeUnless { it == location }.orEmpty(),
+                    savedSelection = repository.loadRendererLocation().takeUnless { it == location }.orEmpty(),
+                    renderers = renderers,
+                ).orEmpty()
+                if (nextSelection.isBlank()) {
+                    repository.clearRendererLocation()
+                }
+                _uiState.update {
+                    it.copy(
+                        renderers = renderers,
+                        selectedRendererLocation = nextSelection,
+                        isCreatingRendererGroup = false,
+                        infoMessage = response.message ?: "Renderer group deleted.",
+                    )
+                }
+                syncPlaybackNotificationService()
+                refreshPlaybackSurfaces()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
     fun selectRenderer(location: String) {
         repository.saveRendererLocation(location)
         _uiState.update {
@@ -1092,6 +1140,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             context = getApplication(),
             baseUrl = baseUrl,
             rendererLocation = rendererLocation,
+            localRendererLocation = androidLocalRendererLocation(),
             serverName = state.serverName,
         )
     }

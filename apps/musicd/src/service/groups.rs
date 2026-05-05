@@ -80,6 +80,21 @@ impl ServiceState {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "renderer group not found"))
     }
 
+    pub(crate) fn delete_renderer_group_by_queue_key(
+        &self,
+        renderer_location: &str,
+    ) -> io::Result<RendererGroup> {
+        let group = self.load_renderer_group_for_queue(renderer_location)?;
+        if self.database.delete_renderer_group(&group.id)? {
+            Ok(group)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "renderer group not found",
+            ))
+        }
+    }
+
     pub(crate) fn play_stream_on_group_members(
         &self,
         group: &RendererGroup,

@@ -346,10 +346,17 @@ pub(crate) fn render_now_playing_json_for_renderer(
     state: &ServiceState,
     renderer_location: &str,
 ) -> String {
-    let renderer_json = state
-        .enriched_renderer_record(renderer_location)
-        .map(|renderer| renderer_record_json(&renderer, true))
-        .unwrap_or_else(|| "null".to_string());
+    let renderer_json = if let Ok(Some(group)) = state
+        .database
+        .load_renderer_group_by_queue_key(renderer_location)
+    {
+        renderer_group_as_renderer_json(&group, true)
+    } else {
+        state
+            .enriched_renderer_record(renderer_location)
+            .map(|renderer| renderer_record_json(&renderer, true))
+            .unwrap_or_else(|| "null".to_string())
+    };
     let current_track_json = current_track_json_for_renderer(state, renderer_location);
     let session_json = session_payload_json_for_renderer(state, renderer_location);
     let queue_summary_json = queue_summary_json_for_renderer(state, renderer_location);

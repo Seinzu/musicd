@@ -308,6 +308,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["track-1", "track-2"]
         );
+        assert!(state.database.delete_renderer_group(&group.id).unwrap());
+        assert!(
+            state
+                .database
+                .load_queue(&renderer_group_queue_key(&group.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            state
+                .database
+                .load_renderer_group(&group.id)
+                .unwrap()
+                .is_none()
+        );
 
         let _ = std::fs::remove_dir_all(state.config.config_path);
     }

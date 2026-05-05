@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::ids::stable_track_id;
+use crate::renderer::renderer_group_queue_key;
 use crate::types::{RendererGroup, RendererGroupMember};
 use crate::util::now_unix_timestamp;
 
@@ -133,6 +134,42 @@ impl Database {
         Ok(self
             .load_renderer_group_by_queue_key(renderer_location)?
             .is_some())
+    }
+
+    pub(crate) fn delete_renderer_group(&self, id: &str) -> io::Result<bool> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let group_queue_key = renderer_group_queue_key(id);
+        transaction
+            .execute(
+                "DELETE FROM queue_entries WHERE renderer_location = ?",
+                [&group_queue_key],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM playback_sessions WHERE renderer_location = ?",
+                [&group_queue_key],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM playback_queues WHERE renderer_location = ?",
+                [&group_queue_key],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM renderer_group_members WHERE group_id = ?",
+                [id],
+            )
+            .map_err(db_error)?;
+        let deleted = transaction
+            .execute("DELETE FROM renderer_groups WHERE id = ?", [id])
+            .map_err(db_error)?
+            > 0;
+        transaction.commit().map_err(db_error)?;
+        Ok(deleted)
     }
 
     fn load_renderer_group_members_with(

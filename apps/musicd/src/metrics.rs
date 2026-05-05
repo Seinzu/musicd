@@ -247,6 +247,7 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/queue/play-next-track",
     "/api/queue/remove",
     "/api/renderer-groups",
+    "/api/renderer-groups/delete",
     "/api/renderers",
     "/api/renderers/android-local/completed",
     "/api/renderers/android-local/session",

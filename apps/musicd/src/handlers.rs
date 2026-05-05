@@ -866,6 +866,35 @@ pub(crate) fn handle_api_renderer_group_create_request(
     }
 }
 
+pub(crate) fn handle_api_renderer_group_delete_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    match state.delete_renderer_group_by_queue_key(&renderer_location) {
+        Ok(group) => {
+            let body = format!(
+                r#"{{"ok":true,"message":"Renderer group '{}' deleted.","renderer_location":"{}"}}"#,
+                json_escape(&group.name),
+                json_escape(&renderer_location),
+            );
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("renderer group delete failed: {error}"),
+        ),
+    }
+}
+
 fn parse_renderer_group_members(value: &str) -> Vec<String> {
     value
         .split([',', '\n'])

@@ -280,6 +280,14 @@ class MusicdApi(
         },
     )
 
+    suspend fun deleteRendererGroup(
+        baseUrl: String,
+        rendererLocation: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/renderer-groups/delete",
+        mapOf("renderer_location" to rendererLocation),
+    )
+
     suspend fun registerAndroidLocalRenderer(
         baseUrl: String,
         rendererLocation: String,

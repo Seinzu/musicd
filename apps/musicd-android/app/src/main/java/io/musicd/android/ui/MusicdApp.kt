@@ -162,6 +162,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onToggleRendererGroupMember = viewModel::toggleRendererGroupMember,
         onToggleRendererGroupUseCurrentQueue = viewModel::toggleRendererGroupUseCurrentQueue,
         onCreateRendererGroup = viewModel::createRendererGroup,
+        onDeleteRendererGroup = viewModel::deleteRendererGroup,
         onPlay = viewModel::transportPlay,
         onPause = viewModel::transportPause,
         onStop = viewModel::transportStop,
@@ -214,6 +215,7 @@ private fun MusicdRoot(
     onToggleRendererGroupMember: (String) -> Unit,
     onToggleRendererGroupUseCurrentQueue: (Boolean) -> Unit,
     onCreateRendererGroup: () -> Unit,
+    onDeleteRendererGroup: (String) -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onStop: () -> Unit,
@@ -286,6 +288,7 @@ private fun MusicdRoot(
                 onToggleGroupMember = onToggleRendererGroupMember,
                 onUseCurrentQueueChange = onToggleRendererGroupUseCurrentQueue,
                 onCreateGroup = onCreateRendererGroup,
+                onDeleteGroup = onDeleteRendererGroup,
             )
         }
     }
@@ -1474,6 +1477,7 @@ private fun RendererPickerSheet(
     onToggleGroupMember: (String) -> Unit,
     onUseCurrentQueueChange: (Boolean) -> Unit,
     onCreateGroup: () -> Unit,
+    onDeleteGroup: (String) -> Unit,
 ) {
     val accentColor = Color(0xFFF5AF43)
     val accentContainer = Color(0xFF4B3B2B)
@@ -1545,6 +1549,7 @@ private fun RendererPickerSheet(
                 selectedContainer = accentContainer,
                 selectedAccent = accentColor,
                 onSelectRenderer = onSelectRenderer,
+                onDeleteGroup = onDeleteGroup,
             )
         }
         if (physicalRenderers.isNotEmpty()) {
@@ -1563,6 +1568,7 @@ private fun RendererPickerSheet(
                 selectedContainer = accentContainer,
                 selectedAccent = accentColor,
                 onSelectRenderer = onSelectRenderer,
+                onDeleteGroup = onDeleteGroup,
             )
         }
         if (physicalRenderers.size >= 2) {
@@ -1703,6 +1709,7 @@ private fun RendererPickerRow(
     selectedContainer: Color,
     selectedAccent: Color,
     onSelectRenderer: (String) -> Unit,
+    onDeleteGroup: (String) -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -1783,11 +1790,23 @@ private fun RendererPickerRow(
                     )
                 }
             } else {
-                Text(
-                    "Tap to switch",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        "Tap to switch",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (renderer.kind == "group") {
+                        TextButton(onClick = { onDeleteGroup(renderer.location) }) {
+                            Text("Delete")
+                        }
+                    }
+                }
+            }
+            if (isSelected && renderer.kind == "group") {
+                TextButton(onClick = { onDeleteGroup(renderer.location) }) {
+                    Text("Delete")
+                }
             }
         }
     }
