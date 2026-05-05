@@ -597,10 +597,11 @@ private fun HomeScreen(
     onOpenServerEditor: () -> Unit,
 ) {
     val spotlightDay = LocalDate.now()
-    val spotlightAlbums = remember(state.albums, spotlightDay) {
-        val eligibleAlbums = state.albums.filter { it.trackCount > 3 }
+    val spotlightAlbums = remember(state.albums, state.suppressedSpotlightAlbumIds, spotlightDay) {
+        val availableAlbums = state.albums.filterNot { it.id in state.suppressedSpotlightAlbumIds }
+        val eligibleAlbums = availableAlbums.filter { it.trackCount > 3 }
         if (eligibleAlbums.isEmpty()) {
-            state.albums.take(3)
+            availableAlbums.take(3)
         } else {
             val dailySeed = eligibleAlbums
                 .map { it.id }

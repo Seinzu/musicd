@@ -596,7 +596,7 @@ private fun parseApiError(json: Json, body: String): String? =
 private fun friendlyHttpMessage(statusCode: Int, serverMessage: String?): String =
     when (statusCode) {
         400 -> serverMessage ?: "musicd rejected that request."
-        404 -> "That server responded, but it does not look like a musicd instance."
+        404 -> serverMessage ?: "That server responded, but it does not look like a musicd instance."
         in 500..599 -> serverMessage ?: "musicd responded with a server error."
         else -> serverMessage ?: "musicd request failed ($statusCode)."
     }

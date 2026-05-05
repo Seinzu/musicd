@@ -62,6 +62,7 @@ data class MusicdUiState(
     val nowPlaying: NowPlayingDto? = null,
     val artists: List<ArtistSummaryDto> = emptyList(),
     val albums: List<AlbumSummaryDto> = emptyList(),
+    val suppressedSpotlightAlbumIds: Set<String> = emptySet(),
     val tracks: List<TrackSummaryDto> = emptyList(),
     val selectedArtistDetail: ArtistDetailDto? = null,
     val selectedAlbumDetail: AlbumDetailDto? = null,
@@ -167,6 +168,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             artists = artists,
                             albums = albums,
                             tracks = emptyList(),
+                            suppressedSpotlightAlbumIds = emptySet(),
                             selectedRendererLocation = nowPlaying?.rendererLocation
                                 ?: chooseRendererLocation(
                                     currentSelection = it.selectedRendererLocation,
@@ -319,6 +321,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 renderers = emptyList(),
                 nowPlaying = null,
                 albums = emptyList(),
+                suppressedSpotlightAlbumIds = emptySet(),
                 tracks = emptyList(),
                 artists = emptyList(),
                 selectedArtistDetail = null,
@@ -469,11 +472,15 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = connectionErrorMessage(error),
-                        )
+                    if (isUnavailableAlbumError(error, includeInvalidResponse = true)) {
+                        refreshLibraryAfterAlbumUnavailable(baseUrl, albumId)
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = connectionErrorMessage(error),
+                            )
+                        }
                     }
                 }
         }
@@ -733,11 +740,15 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     refreshPlaybackSurfaces()
                 }
                 .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = connectionErrorMessage(error),
-                        )
+                    if (isUnavailableAlbumError(error)) {
+                        refreshLibraryAfterAlbumUnavailable(baseUrl, albumId)
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = connectionErrorMessage(error),
+                            )
+                        }
                     }
                 }
         }
@@ -751,11 +762,17 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         repository.playNextTrack(baseUrl, renderer, trackId)
     }
 
-    fun appendAlbum(albumId: String) = queueMutationAction("Album queued.") { baseUrl, renderer ->
+    fun appendAlbum(albumId: String) = queueMutationAction(
+        fallbackMessage = "Album queued.",
+        unavailableAlbumId = albumId,
+    ) { baseUrl, renderer ->
         repository.appendAlbum(baseUrl, renderer, albumId)
     }
 
-    fun playNextAlbum(albumId: String) = queueMutationAction("Album queued to play next.") { baseUrl, renderer ->
+    fun playNextAlbum(albumId: String) = queueMutationAction(
+        fallbackMessage = "Album queued to play next.",
+        unavailableAlbumId = albumId,
+    ) { baseUrl, renderer ->
         repository.playNextAlbum(baseUrl, renderer, albumId)
     }
 
@@ -817,6 +834,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun queueMutationAction(
         fallbackMessage: String,
+        unavailableAlbumId: String? = null,
         action: suspend (String, String) -> Any,
     ) {
         val baseUrl = uiState.value.baseUrl
@@ -835,13 +853,62 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     refreshPlaybackSurfaces()
                 }
                 .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = connectionErrorMessage(error),
-                        )
+                    if (unavailableAlbumId != null && isUnavailableAlbumError(error)) {
+                        refreshLibraryAfterAlbumUnavailable(baseUrl, unavailableAlbumId)
+                    } else {
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = connectionErrorMessage(error),
+                            )
+                        }
                     }
                 }
+        }
+    }
+
+    private fun refreshLibraryAfterAlbumUnavailable(baseUrl: String, albumId: String) {
+        viewModelScope.launch {
+            val shouldRefreshTracks = uiState.value.tracks.isNotEmpty()
+            val refreshedAlbums = runCatching {
+                repository.getAlbums(baseUrl).filterNot { it.id == albumId }
+            }.getOrNull()
+            val refreshedArtists = runCatching {
+                repository.getArtists(baseUrl)
+            }.getOrNull()
+            val refreshedTracks = if (shouldRefreshTracks) {
+                runCatching {
+                    repository.getTracks(baseUrl).filterNot { it.albumId == albumId }
+                }.getOrNull()
+            } else {
+                null
+            }
+
+            _uiState.update { state ->
+                if (state.baseUrl != baseUrl) {
+                    return@update state
+                }
+                val selectedArtistDetail = state.selectedArtistDetail?.let { artist ->
+                    artist.copy(
+                        albums = artist.albums.filterNot { it.id == albumId },
+                    )
+                }
+                state.copy(
+                    albums = refreshedAlbums ?: state.albums.filterNot { it.id == albumId },
+                    artists = refreshedArtists ?: state.artists,
+                    tracks = refreshedTracks ?: if (shouldRefreshTracks) {
+                        state.tracks.filterNot { it.albumId == albumId }
+                    } else {
+                        state.tracks
+                    },
+                    selectedAlbumDetail = state.selectedAlbumDetail?.takeUnless { it.id == albumId },
+                    selectedArtistDetail = selectedArtistDetail,
+                    suppressedSpotlightAlbumIds = state.suppressedSpotlightAlbumIds + albumId,
+                    isLoading = false,
+                    errorMessage = null,
+                    warningMessage = "That album is no longer available, so it was removed from the spotlight.",
+                )
+            }
         }
     }
 
@@ -955,6 +1022,22 @@ private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
     state.queue?.entries?.isNotEmpty() == true ||
         state.nowPlaying?.currentTrack != null ||
         state.nowPlaying?.session?.queueEntryId != null
+
+private fun isUnavailableAlbumError(
+    error: Throwable,
+    includeInvalidResponse: Boolean = false,
+): Boolean =
+    when (error) {
+        is MusicdApiException.Http -> {
+            val serverMessage = error.serverMessage.orEmpty()
+            (error.statusCode == 404 && serverMessage.contains("album", ignoreCase = true)) ||
+                serverMessage.contains("album not found", ignoreCase = true) ||
+                serverMessage.contains("queued track not found", ignoreCase = true) ||
+                serverMessage.contains("no such file", ignoreCase = true)
+        }
+        is MusicdApiException.InvalidResponse -> includeInvalidResponse
+        else -> false
+    }
 
 private const val TRACKS_WARNING_MESSAGE = "Track library unavailable right now."
 private const val PLAYBACK_EVENT_RECONNECTING_MESSAGE = "Reconnecting live playback updates…"
