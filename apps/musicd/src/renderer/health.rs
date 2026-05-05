@@ -21,6 +21,7 @@ pub(crate) fn renderer_is_viable(renderer: &RendererRecord) -> bool {
         RendererKind::Upnp => renderer.av_transport_control_url.is_some(),
         RendererKind::Sonos => true,
         RendererKind::AndroidLocal => true,
+        RendererKind::Group => true,
     }
 }
 

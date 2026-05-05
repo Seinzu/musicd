@@ -6,8 +6,8 @@ use crate::ids::{
     normalized_renderer_name, renderer_location_host, renderer_name_looks_like_location,
 };
 use crate::renderer::{
-    RendererKind, android_local_renderer_capabilities, renderer_is_viable,
-    renderer_kind_for_location, renderer_needs_refresh,
+    RendererKind, android_local_renderer_capabilities, renderer_group_id_from_location,
+    renderer_is_viable, renderer_kind_for_location, renderer_needs_refresh,
 };
 use crate::types::RendererRecord;
 use crate::util::now_unix_timestamp;
@@ -35,6 +35,9 @@ impl ServiceState {
         &self,
         renderer_location: &str,
     ) -> Option<RendererRecord> {
+        if renderer_group_id_from_location(renderer_location).is_some() {
+            return None;
+        }
         self.database
             .load_renderer(renderer_location)
             .ok()
@@ -74,6 +77,16 @@ impl ServiceState {
     }
 
     pub(crate) fn remember_renderer_location(&self, location: &str) -> io::Result<()> {
+        if renderer_group_id_from_location(location).is_some() {
+            if self.database.renderer_group_queue_exists(location)? {
+                return self.database.set_last_selected_renderer_location(location);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "renderer group does not exist",
+            ));
+        }
+
         if let Some(existing) = self.database.load_renderer(location)? {
             if !renderer_name_looks_like_location(&existing.name, location) {
                 self.database

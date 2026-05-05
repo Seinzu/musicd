@@ -19,6 +19,7 @@ pub(crate) enum RendererKind {
     Upnp,
     Sonos,
     AndroidLocal,
+    Group,
 }
 
 #[derive(Debug, Default)]
@@ -63,8 +64,23 @@ impl RendererBackends {
                 "Sonos renderer support has not been implemented yet",
             )),
             RendererKind::AndroidLocal => Ok(&self.android_local),
+            RendererKind::Group => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "group playback fan-out has not been implemented yet",
+            )),
         }
     }
+}
+
+pub(crate) fn renderer_group_queue_key(group_id: &str) -> String {
+    format!("group:{}", group_id.trim())
+}
+
+pub(crate) fn renderer_group_id_from_location(renderer_location: &str) -> Option<&str> {
+    renderer_location
+        .strip_prefix("group:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn renderer_kind_for_location(renderer_location: &str) -> RendererKind {
@@ -72,6 +88,8 @@ pub(crate) fn renderer_kind_for_location(renderer_location: &str) -> RendererKin
         RendererKind::AndroidLocal
     } else if renderer_location.starts_with("sonos:") {
         RendererKind::Sonos
+    } else if renderer_group_id_from_location(renderer_location).is_some() {
+        RendererKind::Group
     } else {
         RendererKind::Upnp
     }
@@ -82,5 +100,6 @@ pub(crate) fn renderer_kind_name(kind: RendererKind) -> &'static str {
         RendererKind::Upnp => "upnp",
         RendererKind::Sonos => "sonos",
         RendererKind::AndroidLocal => "android_local",
+        RendererKind::Group => "group",
     }
 }

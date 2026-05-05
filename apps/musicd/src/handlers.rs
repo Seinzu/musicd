@@ -16,7 +16,7 @@ use crate::types::{AlbumSummary, LibraryTrack, PlaybackQueue};
 use crate::util::json_escape;
 use crate::views::json::{
     album_summary_json, render_discovery_json, render_playback_event_json_for_renderer,
-    render_queue_json_for_renderer, session_payload_json_for_renderer,
+    render_queue_json_for_renderer, renderer_group_json, session_payload_json_for_renderer,
 };
 
 pub(crate) fn handle_play_request(
@@ -819,6 +819,60 @@ pub(crate) fn handle_api_renderer_discover_request(
         render_discovery_json(state)
     );
     respond_json(writer, "200 OK", &body)
+}
+
+pub(crate) fn handle_api_renderer_group_create_request(
+    writer: &mut TcpStream,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let members = request_value(request, "members")
+        .or_else(|| request_value(request, "renderer_locations"))
+        .map(parse_renderer_group_members)
+        .unwrap_or_default();
+    if members.len() < 2 {
+        return api_error(
+            writer,
+            "400 Bad Request",
+            "renderer groups require at least two members",
+        );
+    }
+
+    let name = request_value(request, "name").unwrap_or("");
+    let source_renderer_location = request_value(request, "source_renderer_location");
+    match state.create_renderer_group(name, &members, source_renderer_location) {
+        Ok(group) => {
+            let group_location = crate::renderer::renderer_group_queue_key(&group.id);
+            let body = format!(
+                r#"{{"ok":true,"message":"Renderer group '{}' created.","renderer_location":"{}","group":{},"queue":{}}}"#,
+                json_escape(&group.name),
+                json_escape(&group_location),
+                renderer_group_json(&group),
+                render_queue_json_for_renderer(state, &group_location),
+            );
+            respond_json(writer, "201 Created", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("renderer group create failed: {error}"),
+        ),
+    }
+}
+
+fn parse_renderer_group_members(value: &str) -> Vec<String> {
+    value
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|member| !member.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 pub(crate) fn handle_api_play_request(

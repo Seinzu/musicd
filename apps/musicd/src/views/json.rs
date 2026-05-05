@@ -5,10 +5,11 @@ use musicd_upnp::{discover_renderers, inspect_renderer};
 
 use crate::http::{HttpRequest, request_value};
 use crate::library::inspect_embedded_metadata;
-use crate::renderer::{renderer_kind_for_location, renderer_kind_name};
+use crate::renderer::{renderer_group_queue_key, renderer_kind_for_location, renderer_kind_name};
 use crate::service::ServiceState;
 use crate::types::{
-    AlbumSummary, ArtistSummary, EmbeddedMetadata, LibraryTrack, PlaybackSession, RendererRecord,
+    AlbumSummary, ArtistSummary, EmbeddedMetadata, LibraryTrack, PlaybackSession, RendererGroup,
+    RendererRecord,
 };
 use crate::util::{
     bool_json, json_escape, now_unix_timestamp, option_bool_json, option_i64_json,
@@ -253,12 +254,13 @@ pub(crate) fn render_album_artwork_candidates_json(
 
 pub(crate) fn render_renderers_json(state: &ServiceState) -> String {
     let renderers = state.enriched_renderer_snapshot();
+    let groups = state.renderer_group_snapshot();
     let selected = state
         .database
         .last_selected_renderer_location()
         .ok()
         .flatten();
-    let entries = renderers
+    let mut entries = renderers
         .into_iter()
         .map(|renderer| {
             renderer_record_json(
@@ -266,9 +268,59 @@ pub(crate) fn render_renderers_json(state: &ServiceState) -> String {
                 selected.as_deref() == Some(renderer.location.as_str()),
             )
         })
+        .collect::<Vec<_>>();
+    entries.extend(groups.into_iter().map(|group| {
+        let location = renderer_group_queue_key(&group.id);
+        renderer_group_as_renderer_json(&group, selected.as_deref() == Some(location.as_str()))
+    }));
+    let entries = entries.join(",");
+    format!("[{entries}]")
+}
+
+pub(crate) fn render_renderer_groups_json(state: &ServiceState) -> String {
+    let entries = state
+        .renderer_group_snapshot()
+        .into_iter()
+        .map(|group| renderer_group_json(&group))
         .collect::<Vec<_>>()
         .join(",");
     format!("[{entries}]")
+}
+
+pub(crate) fn render_playback_targets_json(state: &ServiceState) -> String {
+    let selected = state
+        .database
+        .last_selected_renderer_location()
+        .ok()
+        .flatten();
+    let mut targets = state
+        .enriched_renderer_snapshot()
+        .into_iter()
+        .map(|renderer| {
+            format!(
+                r#"{{"kind":"renderer","id":"{}","location":"{}","name":"{}","selected":{},"queue_summary":{}}}"#,
+                json_escape(&renderer.location),
+                json_escape(&renderer.location),
+                json_escape(&renderer.name),
+                bool_json(selected.as_deref() == Some(renderer.location.as_str())),
+                queue_summary_json_for_renderer(state, &renderer.location),
+            )
+        })
+        .collect::<Vec<_>>();
+    targets.extend(state.renderer_group_snapshot().into_iter().map(|group| {
+        let location = renderer_group_queue_key(&group.id);
+        format!(
+            r#"{{"kind":"group","id":"{}","location":"{}","name":"{}","member_count":{},"members":{},"selected":{},"queue_summary":{}}}"#,
+            json_escape(&group.id),
+            json_escape(&location),
+            json_escape(&group.name),
+            group.members.len(),
+            renderer_group_members_json(&group),
+            bool_json(selected.as_deref() == Some(location.as_str())),
+            queue_summary_json_for_renderer(state, &location),
+        )
+    }));
+    format!(r#"{{"targets":[{}]}}"#, targets.join(","))
 }
 
 pub(crate) fn render_server_json(state: &ServiceState) -> String {
@@ -583,4 +635,49 @@ pub(crate) fn renderer_record_json(renderer: &RendererRecord, selected: bool) ->
         bool_json(selected),
         renderer_kind_name(renderer_kind_for_location(&renderer.location)),
     )
+}
+
+pub(crate) fn renderer_group_json(group: &RendererGroup) -> String {
+    let location = renderer_group_queue_key(&group.id);
+    format!(
+        r#"{{"id":"{}","location":"{}","name":"{}","member_count":{},"members":{},"created_unix":{},"updated_unix":{}}}"#,
+        json_escape(&group.id),
+        json_escape(&location),
+        json_escape(&group.name),
+        group.members.len(),
+        renderer_group_members_json(group),
+        group.created_unix,
+        group.updated_unix,
+    )
+}
+
+pub(crate) fn renderer_group_as_renderer_json(group: &RendererGroup, selected: bool) -> String {
+    let location = renderer_group_queue_key(&group.id);
+    format!(
+        r#"{{"location":"{}","name":"{}","manufacturer":"musicd","model_name":"Renderer Group","av_transport_control_url":null,"capabilities":{{"av_transport_actions":[],"supports_set_next_av_transport_uri":false,"supports_pause":false,"supports_stop":false,"supports_next":false,"supports_previous":false,"supports_seek":false,"has_playlist_extension_service":false}},"health":{{"last_checked_unix":{},"last_reachable_unix":{},"last_error":null,"reachable":true}},"last_seen_unix":{},"selected":{},"kind":"group","group":{}}}"#,
+        json_escape(&location),
+        json_escape(&group.name),
+        group.updated_unix,
+        group.updated_unix,
+        group.updated_unix,
+        bool_json(selected),
+        renderer_group_json(group),
+    )
+}
+
+fn renderer_group_members_json(group: &RendererGroup) -> String {
+    let entries = group
+        .members
+        .iter()
+        .map(|member| {
+            format!(
+                r#"{{"renderer_location":"{}","position":{},"joined_unix":{}}}"#,
+                json_escape(&member.renderer_location),
+                member.position,
+                member.joined_unix,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{entries}]")
 }

@@ -7,6 +7,7 @@ use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OptionalExtension};
 
+mod groups;
 mod library;
 mod playback;
 mod queue;
@@ -99,6 +100,22 @@ impl Database {
                     last_seen_unix INTEGER NOT NULL DEFAULT 0
                 );
 
+                CREATE TABLE IF NOT EXISTS renderer_groups (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    created_unix INTEGER NOT NULL,
+                    updated_unix INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS renderer_group_members (
+                    group_id TEXT NOT NULL,
+                    renderer_location TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    joined_unix INTEGER NOT NULL,
+                    PRIMARY KEY(group_id, renderer_location),
+                    FOREIGN KEY(group_id) REFERENCES renderer_groups(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS app_state (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -160,6 +177,9 @@ impl Database {
 
                 CREATE INDEX IF NOT EXISTS idx_track_play_history_renderer
                 ON track_play_history(renderer_location, played_unix DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_renderer_group_members_group
+                ON renderer_group_members(group_id, position ASC);
                 "#,
             )
             .map_err(db_error)?;

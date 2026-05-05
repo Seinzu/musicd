@@ -14,6 +14,7 @@ use crate::types::{
 use crate::util::now_unix_timestamp;
 
 mod artwork;
+mod groups;
 mod poll;
 mod queue;
 mod renderers;

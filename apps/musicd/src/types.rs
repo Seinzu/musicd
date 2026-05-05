@@ -159,6 +159,22 @@ pub(crate) struct RendererRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RendererGroup {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) created_unix: i64,
+    pub(crate) updated_unix: i64,
+    pub(crate) members: Vec<RendererGroupMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RendererGroupMember {
+    pub(crate) renderer_location: String,
+    pub(crate) position: i64,
+    pub(crate) joined_unix: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlaybackQueue {
     pub(crate) renderer_location: String,
     pub(crate) name: String,

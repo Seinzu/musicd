@@ -10,23 +10,25 @@ use crate::handlers::{
     handle_api_queue_clear_request, handle_api_queue_move_request,
     handle_api_queue_play_next_album_request, handle_api_queue_play_next_track_request,
     handle_api_queue_remove_request, handle_api_register_android_local_renderer_request,
-    handle_api_renderer_discover_request, handle_api_transport_next_request,
-    handle_api_transport_pause_request, handle_api_transport_play_request,
-    handle_api_transport_previous_request, handle_api_transport_stop_request,
-    handle_play_album_request, handle_play_request, handle_queue_append_album_request,
-    handle_queue_append_track_request, handle_queue_clear_request, handle_queue_move_down_request,
-    handle_queue_move_up_request, handle_queue_play_next_album_request,
-    handle_queue_play_next_track_request, handle_queue_remove_entry_request, handle_rescan_request,
-    handle_track_artwork_request, handle_track_stream_request, handle_transport_next_request,
-    handle_transport_pause_request, handle_transport_play_request,
-    handle_transport_previous_request, handle_transport_stop_request,
+    handle_api_renderer_discover_request, handle_api_renderer_group_create_request,
+    handle_api_transport_next_request, handle_api_transport_pause_request,
+    handle_api_transport_play_request, handle_api_transport_previous_request,
+    handle_api_transport_stop_request, handle_play_album_request, handle_play_request,
+    handle_queue_append_album_request, handle_queue_append_track_request,
+    handle_queue_clear_request, handle_queue_move_down_request, handle_queue_move_up_request,
+    handle_queue_play_next_album_request, handle_queue_play_next_track_request,
+    handle_queue_remove_entry_request, handle_rescan_request, handle_track_artwork_request,
+    handle_track_stream_request, handle_transport_next_request, handle_transport_pause_request,
+    handle_transport_play_request, handle_transport_previous_request,
+    handle_transport_stop_request,
 };
 use crate::service::ServiceState;
 use crate::views::json::{
     render_album_artwork_candidates_json, render_album_detail_json, render_albums_json,
     render_artist_detail_json, render_artists_json, render_discovery_json, render_metrics_text,
-    render_now_playing_json, render_queue_json, render_renderers_json, render_server_json,
-    render_session_json, render_track_detail_json, render_tracks_json,
+    render_now_playing_json, render_playback_targets_json, render_queue_json,
+    render_renderer_groups_json, render_renderers_json, render_server_json, render_session_json,
+    render_track_detail_json, render_tracks_json,
 };
 use crate::views::{
     render_album_detail_page, render_home_page, render_queue_panel_html, render_track_detail_page,
@@ -98,6 +100,26 @@ pub(crate) fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/api/playback-targets") | ("HEAD", "/api/playback-targets") => {
+            let body = render_playback_targets_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/api/renderer-groups") | ("HEAD", "/api/renderer-groups") => {
+            let body = render_renderer_groups_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         ("GET", "/api/server") | ("HEAD", "/api/server") => {
             let body = render_server_json(&state);
             respond_text(
@@ -151,6 +173,9 @@ pub(crate) fn handle_service_request(
         }
         ("POST", "/api/renderers/discover") => {
             handle_api_renderer_discover_request(writer, request, &state)
+        }
+        ("POST", "/api/renderer-groups") => {
+            handle_api_renderer_group_create_request(writer, request, &state)
         }
         ("POST", "/api/renderers/register-android-local") => {
             handle_api_register_android_local_renderer_request(writer, request, &state)

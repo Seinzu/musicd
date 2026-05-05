@@ -30,8 +30,8 @@ mod tests {
         parse_vorbis_comment_block,
     };
     use crate::renderer::{
-        RendererBackends, RendererKind, renderer_is_viable, renderer_kind_for_location,
-        renderer_needs_refresh,
+        RendererBackends, RendererKind, renderer_group_queue_key, renderer_is_viable,
+        renderer_kind_for_location, renderer_needs_refresh,
     };
     use crate::service::{
         ServiceState, next_queue_entry_after, previous_queue_entry_before,
@@ -102,6 +102,10 @@ mod tests {
         assert_eq!(
             renderer_kind_for_location("sonos:RINCON_1234567890"),
             RendererKind::Sonos
+        );
+        assert_eq!(
+            renderer_kind_for_location("group:abc123"),
+            RendererKind::Group
         );
     }
 
@@ -249,6 +253,63 @@ mod tests {
         assert_eq!(appended.entries[1].track_id, "track-2");
 
         let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
+    fn renderer_group_copies_source_queue_on_create() {
+        let state = sample_state(Vec::new());
+        state
+            .database
+            .replace_queue(
+                "http://kitchen.local/description.xml",
+                "Kitchen Queue",
+                &[
+                    QueueMutationEntry {
+                        track_id: "track-1".to_string(),
+                        album_id: Some("album-1".to_string()),
+                        source_kind: "album".to_string(),
+                        source_ref: Some("album-1".to_string()),
+                    },
+                    QueueMutationEntry {
+                        track_id: "track-2".to_string(),
+                        album_id: Some("album-1".to_string()),
+                        source_kind: "album".to_string(),
+                        source_ref: Some("album-1".to_string()),
+                    },
+                ],
+            )
+            .expect("source queue should be created");
+
+        let group = state
+            .create_renderer_group(
+                "Downstairs",
+                &[
+                    "http://kitchen.local/description.xml".to_string(),
+                    "http://living-room.local/description.xml".to_string(),
+                ],
+                Some("http://kitchen.local/description.xml"),
+            )
+            .expect("group should be created");
+        assert_eq!(group.name, "Downstairs");
+        assert_eq!(group.members.len(), 2);
+
+        let group_queue_key = renderer_group_queue_key(&group.id);
+        let queue = state
+            .database
+            .load_queue(&group_queue_key)
+            .expect("group queue should load")
+            .expect("group queue should exist");
+        assert_eq!(queue.name, "Kitchen Queue");
+        assert_eq!(
+            queue
+                .entries
+                .iter()
+                .map(|entry| entry.track_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["track-1", "track-2"]
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
     }
 
     #[test]
