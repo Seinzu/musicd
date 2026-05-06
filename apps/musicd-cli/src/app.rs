@@ -137,6 +137,9 @@ impl App {
             Ok(info) => self.server = Some(info),
             Err(err) => self.set_error(format!("server: {err:#}")),
         }
+        if let Err(err) = self.api.register_cli_local_renderer("This CLI") {
+            self.set_error(format!("local renderer: {err:#}"));
+        }
         self.refresh_renderers();
         self.resolve_selected_renderer();
         self.refresh_library();

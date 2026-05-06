@@ -136,6 +136,22 @@ impl ApiClient {
             .with_context(|| format!("parsing JSON from {url}"))
     }
 
+    pub fn register_cli_local_renderer(&self, name: &str) -> Result<()> {
+        let renderer_location = self.cli_local_renderer_location();
+        self.post_form(
+            "/api/renderers/register-cli-local",
+            &[
+                ("renderer_location", renderer_location.as_str()),
+                ("name", name),
+                ("visibility", "private"),
+            ],
+        )
+    }
+
+    pub fn cli_local_renderer_location(&self) -> String {
+        format!("cli-local://{}", self.client_id)
+    }
+
     pub fn queue(&self, renderer_location: &str) -> Result<Queue> {
         let url = format!("{}/api/queue", self.base_url);
         let res = self
