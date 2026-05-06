@@ -499,13 +499,26 @@ pub fn build_previous_envelope(instance_id: u32) -> String {
     )
 }
 
+// These two envelopes are sent on every queue-worker poll tick. The InstanceID
+// field is always 0 in practice, so we precompute the rendered envelope and
+// skip the format-string parse on the hot path. Non-zero instance IDs (kept
+// for spec compatibility) fall through to the original `format!` path.
+const GET_TRANSPORT_INFO_ENVELOPE_INSTANCE_0: &str = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID></u:GetTransportInfo></s:Body></s:Envelope>"#;
+const GET_POSITION_INFO_ENVELOPE_INSTANCE_0: &str = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetPositionInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>0</InstanceID></u:GetPositionInfo></s:Body></s:Envelope>"#;
+
 pub fn build_get_transport_info_envelope(instance_id: u32) -> String {
+    if instance_id == 0 {
+        return GET_TRANSPORT_INFO_ENVELOPE_INSTANCE_0.to_string();
+    }
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:GetTransportInfo></s:Body></s:Envelope>"#
     )
 }
 
 pub fn build_get_position_info_envelope(instance_id: u32) -> String {
+    if instance_id == 0 {
+        return GET_POSITION_INFO_ENVELOPE_INSTANCE_0.to_string();
+    }
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetPositionInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:GetPositionInfo></s:Body></s:Envelope>"#
     )
@@ -924,11 +937,60 @@ fn didl_lite_metadata(
     )
 }
 
+/// Stack-allocated `<tag>` / `</tag>` patterns. Avoids the per-call
+/// `format!` allocation that the previous implementations paid on every
+/// `extract_first_tag` and friends.
+struct TagPattern {
+    /// Bytes 0..open_len hold `<tag>`; bytes 64..64+close_len hold `</tag>`.
+    buffer: [u8; 128],
+    open_len: usize,
+    close_len: usize,
+}
+
+impl TagPattern {
+    fn new(tag: &str) -> Self {
+        let tb = tag.as_bytes();
+        let open_len = tb.len() + 2;
+        let close_len = tb.len() + 3;
+        assert!(
+            close_len <= 64,
+            "tag {tag:?} too long for the upnp tag-pattern buffer"
+        );
+
+        let mut buffer = [0u8; 128];
+        buffer[0] = b'<';
+        buffer[1..1 + tb.len()].copy_from_slice(tb);
+        buffer[1 + tb.len()] = b'>';
+
+        buffer[64] = b'<';
+        buffer[65] = b'/';
+        buffer[66..66 + tb.len()].copy_from_slice(tb);
+        buffer[66 + tb.len()] = b'>';
+
+        Self {
+            buffer,
+            open_len,
+            close_len,
+        }
+    }
+
+    fn open(&self) -> &str {
+        // Safety: built from valid UTF-8 (`<` + ASCII tag + `>`).
+        std::str::from_utf8(&self.buffer[..self.open_len]).expect("tag pattern is valid utf-8")
+    }
+
+    fn close(&self) -> &str {
+        std::str::from_utf8(&self.buffer[64..64 + self.close_len])
+            .expect("tag pattern is valid utf-8")
+    }
+}
+
 fn extract_first_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
-    let open_tag = format!("<{tag}>");
-    let close_tag = format!("</{tag}>");
-    let start = xml.find(&open_tag)? + open_tag.len();
-    let end = xml[start..].find(&close_tag)? + start;
+    let pattern = TagPattern::new(tag);
+    let open_tag = pattern.open();
+    let close_tag = pattern.close();
+    let start = xml.find(open_tag)? + open_tag.len();
+    let end = xml[start..].find(close_tag)? + start;
     Some(&xml[start..end])
 }
 
@@ -937,15 +999,16 @@ fn extract_first_balanced_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
 }
 
 fn extract_all_tag_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
-    let open_tag = format!("<{tag}>");
-    let close_tag = format!("</{tag}>");
+    let pattern = TagPattern::new(tag);
+    let open_tag = pattern.open();
+    let close_tag = pattern.close();
     let mut blocks = Vec::new();
     let mut remainder = xml;
 
-    while let Some(start_index) = remainder.find(&open_tag) {
+    while let Some(start_index) = remainder.find(open_tag) {
         let content_start = start_index + open_tag.len();
         let after_open = &remainder[content_start..];
-        let Some(end_offset) = after_open.find(&close_tag) else {
+        let Some(end_offset) = after_open.find(close_tag) else {
             break;
         };
         blocks.push(&after_open[..end_offset]);
@@ -974,19 +1037,20 @@ fn find_balanced_tag_content_range(
     tag: &str,
     search_start: usize,
 ) -> Option<(usize, usize, usize)> {
-    let open_tag = format!("<{tag}>");
-    let close_tag = format!("</{tag}>");
+    let pattern = TagPattern::new(tag);
+    let open_tag = pattern.open();
+    let close_tag = pattern.close();
     let open_len = open_tag.len();
     let close_len = close_tag.len();
 
-    let open_index = xml[search_start..].find(&open_tag)? + search_start;
+    let open_index = xml[search_start..].find(open_tag)? + search_start;
     let content_start = open_index + open_len;
     let mut cursor = content_start;
     let mut depth = 1usize;
 
     while depth > 0 {
-        let next_open = xml[cursor..].find(&open_tag).map(|index| index + cursor);
-        let next_close = xml[cursor..].find(&close_tag).map(|index| index + cursor)?;
+        let next_open = xml[cursor..].find(open_tag).map(|index| index + cursor);
+        let next_close = xml[cursor..].find(close_tag).map(|index| index + cursor)?;
 
         if let Some(next_open_index) = next_open {
             if next_open_index < next_close {
