@@ -448,7 +448,8 @@ class MusicdPlaybackNotificationService : Service() {
         val nextStreamUrl = nextQueuedTrackStreamUrl(event)
         val currentUri = localPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
         val transportState = event.nowPlaying.session?.transportState.orEmpty()
-        val serverPositionMs = event.nowPlaying.session?.positionSeconds?.times(1000L)
+        val serverPositionMs = serverPlaybackPositionMillis(event)
+        val isGroupedLocalPlayback = isGroupedLocalRendererActive()
 
         if (currentUri == streamUrl) {
             pendingServerAdvanceTrackUri = null
@@ -477,7 +478,19 @@ class MusicdPlaybackNotificationService : Service() {
                 if (currentUri != streamUrl) {
                     lastAppliedServerSeekPositionMs = startPositionMs.takeIf { it > 0L }
                 }
-            } else if (shouldApplyServerSeek(localPlayer.currentPosition, serverPositionMs, transportState)) {
+            } else if (
+                shouldApplyServerSeek(
+                    currentPositionMs = localPlayer.currentPosition,
+                    serverPositionMs = serverPositionMs,
+                    transportState = transportState,
+                    toleranceMs = if (isGroupedLocalPlayback) {
+                        GROUP_SEEK_SYNC_TOLERANCE_MS
+                    } else {
+                        SERVER_SEEK_SYNC_TOLERANCE_MS
+                    },
+                    allowPlayingCorrection = isGroupedLocalPlayback,
+                )
+            ) {
                 localPlayer.seekTo(serverPositionMs ?: 0L)
                 lastAppliedServerSeekPositionMs = serverPositionMs
             }
@@ -496,6 +509,26 @@ class MusicdPlaybackNotificationService : Service() {
             suppressLocalPlayerSync = false
         }
         updateLocalPlaybackReportingLoop()
+    }
+
+    private fun serverPlaybackPositionMillis(event: PlaybackEventDto): Long? {
+        val session = event.nowPlaying.session ?: return null
+        val observedPositionMs = session.positionSeconds?.times(1000L) ?: return null
+        val durationMs = (session.durationSeconds ?: event.nowPlaying.currentTrack?.durationSeconds)
+            ?.times(1000L)
+        val elapsedSinceObservationMs = if (
+            session.transportState == "PLAYING" &&
+            session.lastObservedUnix > 0L &&
+            session.serverUnix > 0L
+        ) {
+            (session.serverUnix - session.lastObservedUnix)
+                .coerceIn(0L, MAX_SERVER_PLAYBACK_CLOCK_AGE_SECONDS)
+                .times(1000L)
+        } else {
+            0L
+        }
+        val targetPositionMs = observedPositionMs + elapsedSinceObservationMs
+        return durationMs?.let { targetPositionMs.coerceAtMost(it) } ?: targetPositionMs
     }
 
     private fun stopLocalPlayer() {
@@ -566,7 +599,7 @@ class MusicdPlaybackNotificationService : Service() {
         if (isLocalRendererActive()) {
             localPlayer.currentPosition.coerceAtLeast(0L)
         } else {
-            (event.nowPlaying.session?.positionSeconds ?: 0L) * 1000L
+            serverPlaybackPositionMillis(event) ?: 0L
         }
 
     private fun playbackDurationMillis(event: PlaybackEventDto): Long =
@@ -592,6 +625,8 @@ class MusicdPlaybackNotificationService : Service() {
         currentPositionMs: Long,
         serverPositionMs: Long?,
         transportState: String,
+        toleranceMs: Long = SERVER_SEEK_SYNC_TOLERANCE_MS,
+        allowPlayingCorrection: Boolean = false,
     ): Boolean {
         val targetPositionMs = serverPositionMs ?: return false
         if (targetPositionMs <= 0L || localPlayer.currentMediaItem == null) {
@@ -600,8 +635,11 @@ class MusicdPlaybackNotificationService : Service() {
         if (targetPositionMs == lastAppliedServerSeekPositionMs) {
             return false
         }
-        if (kotlin.math.abs(currentPositionMs - targetPositionMs) < SERVER_SEEK_SYNC_TOLERANCE_MS) {
+        if (kotlin.math.abs(currentPositionMs - targetPositionMs) < toleranceMs) {
             return false
+        }
+        if (allowPlayingCorrection && transportState == "PLAYING") {
+            return true
         }
         return !localPlayer.isPlaying ||
             transportState == "PAUSED_PLAYBACK" ||
@@ -746,6 +784,10 @@ class MusicdPlaybackNotificationService : Service() {
 
     private fun isLocalRendererActive(): Boolean =
         isLocalRendererLocation(currentRendererLocation) ||
+            isGroupedLocalRendererActive()
+
+    private fun isGroupedLocalRendererActive(): Boolean =
+        !isLocalRendererLocation(currentRendererLocation) &&
             (latestPlaybackEvent
                 ?.nowPlaying
                 ?.renderer
@@ -777,6 +819,8 @@ class MusicdPlaybackNotificationService : Service() {
 
         private const val REQUEST_OPEN_APP = 2001
         private const val SERVER_SEEK_SYNC_TOLERANCE_MS = 4_000L
+        private const val GROUP_SEEK_SYNC_TOLERANCE_MS = 1_500L
+        private const val MAX_SERVER_PLAYBACK_CLOCK_AGE_SECONDS = 30L
 
         fun start(
             context: Context,

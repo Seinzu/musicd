@@ -480,7 +480,7 @@ pub(crate) fn render_session_payload_json(
 ) -> String {
     let current_track = current_track_for_renderer(state, renderer_location);
     format!(
-        r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"last_error":{},"title":{},"artist":{},"album":{}}}"#,
+        r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"server_unix":{},"last_error":{},"title":{},"artist":{},"album":{}}}"#,
         json_escape(&session.transport_state),
         option_i64_json(session.queue_entry_id),
         option_i64_json(session.next_queue_entry_id),
@@ -488,6 +488,7 @@ pub(crate) fn render_session_payload_json(
         option_u64_json(session.position_seconds),
         option_u64_json(session.duration_seconds),
         session.last_observed_unix,
+        now_unix_timestamp(),
         option_string_json(session.last_error.as_deref()),
         option_string_json(current_track.as_ref().map(|track| track.title.as_str())),
         option_string_json(current_track.as_ref().map(|track| track.artist.as_str())),

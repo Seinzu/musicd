@@ -137,6 +137,7 @@ data class SessionDto(
     @SerialName("position_seconds") val positionSeconds: Long? = null,
     @SerialName("duration_seconds") val durationSeconds: Long? = null,
     @SerialName("last_observed_unix") val lastObservedUnix: Long = 0L,
+    @SerialName("server_unix") val serverUnix: Long = 0L,
     @SerialName("last_error") val lastError: String? = null,
     val title: String? = null,
     val artist: String? = null,
