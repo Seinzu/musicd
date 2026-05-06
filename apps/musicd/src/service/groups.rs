@@ -386,6 +386,7 @@ impl ServiceState {
             if next_entry_id.is_some() {
                 let _ = self.start_current_queue_entry(group_location)?;
             }
+            self.events.touch(group_location);
         }
 
         Ok(())

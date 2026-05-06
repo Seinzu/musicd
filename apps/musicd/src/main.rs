@@ -256,6 +256,118 @@ mod tests {
     }
 
     #[test]
+    fn final_queue_completion_clears_queue_and_session() {
+        let config_path = temp_config_path("queue-final-completion");
+        let database = Database::open(&config_path).expect("database should open");
+        let renderer_location = "http://renderer.local/description.xml";
+        let queue = database
+            .replace_queue(
+                renderer_location,
+                "Album Queue",
+                &[QueueMutationEntry {
+                    track_id: "track-1".to_string(),
+                    album_id: Some("album-1".to_string()),
+                    source_kind: "track".to_string(),
+                    source_ref: Some("track-1".to_string()),
+                }],
+            )
+            .expect("queue replace should succeed");
+        let current_entry_id = queue
+            .current_entry_id
+            .expect("queue should have current entry");
+        database
+            .mark_queue_play_started(
+                renderer_location,
+                current_entry_id,
+                "track-1",
+                "http://musicd.local/stream/track/track-1",
+                Some(180),
+            )
+            .expect("queue play should start");
+
+        let next_entry_id = database
+            .advance_queue_after_completion(renderer_location)
+            .expect("completion should be handled");
+
+        assert_eq!(next_entry_id, None);
+        assert!(
+            database
+                .load_queue(renderer_location)
+                .expect("queue lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            database
+                .load_playback_session(renderer_location)
+                .expect("session lookup should succeed")
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
+    fn queue_completion_advances_when_next_entry_exists() {
+        let config_path = temp_config_path("queue-mid-completion");
+        let database = Database::open(&config_path).expect("database should open");
+        let renderer_location = "http://renderer.local/description.xml";
+        let queue = database
+            .replace_queue(
+                renderer_location,
+                "Album Queue",
+                &[
+                    QueueMutationEntry {
+                        track_id: "track-1".to_string(),
+                        album_id: Some("album-1".to_string()),
+                        source_kind: "track".to_string(),
+                        source_ref: Some("track-1".to_string()),
+                    },
+                    QueueMutationEntry {
+                        track_id: "track-2".to_string(),
+                        album_id: Some("album-1".to_string()),
+                        source_kind: "track".to_string(),
+                        source_ref: Some("track-2".to_string()),
+                    },
+                ],
+            )
+            .expect("queue replace should succeed");
+        let current_entry_id = queue
+            .current_entry_id
+            .expect("queue should have current entry");
+        database
+            .mark_queue_play_started(
+                renderer_location,
+                current_entry_id,
+                "track-1",
+                "http://musicd.local/stream/track/track-1",
+                Some(180),
+            )
+            .expect("queue play should start");
+
+        let next_entry_id = database
+            .advance_queue_after_completion(renderer_location)
+            .expect("completion should be handled")
+            .expect("next entry should exist");
+        let advanced_queue = database
+            .load_queue(renderer_location)
+            .expect("queue lookup should succeed")
+            .expect("queue should still exist");
+        let session = database
+            .load_playback_session(renderer_location)
+            .expect("session lookup should succeed")
+            .expect("session should still exist");
+
+        assert_eq!(next_entry_id, queue.entries[1].id);
+        assert_eq!(advanced_queue.current_entry_id, Some(queue.entries[1].id));
+        assert_eq!(advanced_queue.status, "ready");
+        assert_eq!(advanced_queue.entries[0].entry_status, "completed");
+        assert_eq!(session.queue_entry_id, Some(queue.entries[1].id));
+        assert_eq!(session.transport_state, "READY");
+
+        let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
     fn renderer_group_copies_source_queue_on_create() {
         let state = sample_state(Vec::new());
         state

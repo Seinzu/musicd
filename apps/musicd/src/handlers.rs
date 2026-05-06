@@ -1202,6 +1202,7 @@ pub(crate) fn handle_api_android_local_completed_request(
                         &format!("failed to start next queue entry: {error}"),
                     );
                 }
+                state.events.touch(&renderer_location);
                 api_renderer_state_response(
                     writer,
                     state,
@@ -1209,6 +1210,7 @@ pub(crate) fn handle_api_android_local_completed_request(
                     "Advanced to the next local queue entry.",
                 )
             } else {
+                state.events.touch(&renderer_location);
                 api_renderer_state_response(
                     writer,
                     state,

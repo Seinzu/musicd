@@ -748,39 +748,53 @@ impl Database {
             .optional()
             .map_err(db_error)?;
 
+        if next_entry_id.is_none() {
+            transaction
+                .execute(
+                    "DELETE FROM queue_entries WHERE renderer_location = ?",
+                    [renderer_location],
+                )
+                .map_err(db_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM playback_queues WHERE renderer_location = ?",
+                    [renderer_location],
+                )
+                .map_err(db_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM playback_sessions WHERE renderer_location = ?",
+                    [renderer_location],
+                )
+                .map_err(db_error)?;
+            transaction.commit().map_err(db_error)?;
+            return Ok(None);
+        }
+
         transaction
             .execute(
                 "UPDATE playback_queues
-                 SET current_entry_id = ?, status = ?, updated_unix = ?, version = version + 1
+                 SET current_entry_id = ?, status = 'ready', updated_unix = ?, version = version + 1
                  WHERE renderer_location = ?",
-                params![
-                    next_entry_id,
-                    if next_entry_id.is_some() {
-                        "ready"
-                    } else {
-                        "completed"
-                    },
-                    now,
-                    renderer_location
-                ],
+                params![next_entry_id, now, renderer_location],
             )
             .map_err(db_error)?;
         transaction
             .execute(
-                "UPDATE playback_sessions
-                 SET queue_entry_id = ?, next_queue_entry_id = NULL, transport_state = ?, current_track_uri = NULL,
-                     position_seconds = NULL, duration_seconds = NULL, last_observed_unix = ?, last_error = NULL
-                 WHERE renderer_location = ?",
-                params![
-                    next_entry_id,
-                    if next_entry_id.is_some() {
-                        "READY"
-                    } else {
-                        "COMPLETED"
-                    },
-                    now,
-                    renderer_location
-                ],
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (?, ?, NULL, 'READY', NULL, NULL, NULL, ?, NULL)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    queue_entry_id = excluded.queue_entry_id,
+                    next_queue_entry_id = NULL,
+                    transport_state = 'READY',
+                    current_track_uri = NULL,
+                    position_seconds = NULL,
+                    duration_seconds = NULL,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = NULL",
+                params![renderer_location, next_entry_id, now],
             )
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
