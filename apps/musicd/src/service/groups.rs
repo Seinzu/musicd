@@ -57,13 +57,7 @@ impl ServiceState {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            Some(
-                self.database
-                    .load_queue(source_renderer_location)?
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::NotFound, "source queue not found")
-                    })?,
-            )
+            self.database.load_queue(source_renderer_location)?
         } else {
             None
         };

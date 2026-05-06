@@ -440,6 +440,32 @@ mod tests {
     }
 
     #[test]
+    fn renderer_group_create_allows_missing_source_queue() {
+        let state = sample_state(Vec::new());
+        let group = state
+            .create_renderer_group(
+                "Downstairs",
+                &[
+                    "http://kitchen.local/description.xml".to_string(),
+                    "http://living-room.local/description.xml".to_string(),
+                ],
+                Some("http://kitchen.local/description.xml"),
+            )
+            .expect("group should be created without a source queue");
+
+        assert_eq!(group.name, "Downstairs");
+        assert_eq!(group.members.len(), 2);
+        let queue = state
+            .database
+            .load_queue(&renderer_group_queue_key(&group.id))
+            .expect("group queue should load")
+            .expect("group queue should exist");
+        assert_eq!(queue.entries.len(), 0);
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
     fn renderer_group_lifecycle_rejects_invalid_members() {
         let state = sample_state(Vec::new());
         let duplicate_error = state
