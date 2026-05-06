@@ -289,6 +289,20 @@ class MusicdApi(
         mapOf("renderer_location" to rendererLocation),
     )
 
+    suspend fun updateRendererGroup(
+        baseUrl: String,
+        rendererLocation: String,
+        name: String,
+        memberLocations: List<String>,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/renderer-groups/update",
+        mapOf(
+            "renderer_location" to rendererLocation,
+            "name" to name,
+            "members" to memberLocations.joinToString(","),
+        ),
+    )
+
     suspend fun registerAndroidLocalRenderer(
         baseUrl: String,
         rendererLocation: String,

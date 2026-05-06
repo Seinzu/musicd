@@ -25,15 +25,7 @@ impl ServiceState {
         members: &[String],
         source_renderer_location: Option<&str>,
     ) -> io::Result<RendererGroup> {
-        if members
-            .iter()
-            .any(|member| renderer_group_id_from_location(member.trim()).is_some())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "renderer groups cannot contain other groups",
-            ));
-        }
+        reject_nested_group_members(members)?;
         let source_queue = if let Some(source_renderer_location) = source_renderer_location
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -69,6 +61,18 @@ impl ServiceState {
                 .replace_queue(&group_queue_key, &group.name, &[])?;
         }
         Ok(group)
+    }
+
+    pub(crate) fn update_renderer_group_by_queue_key(
+        &self,
+        renderer_location: &str,
+        name: &str,
+        members: &[String],
+    ) -> io::Result<RendererGroup> {
+        reject_nested_group_members(members)?;
+        let group = self.load_renderer_group_for_queue(renderer_location)?;
+        self.database
+            .update_renderer_group(&group.id, name, members)
     }
 
     pub(crate) fn load_renderer_group_for_queue(
@@ -409,4 +413,17 @@ impl ServiceState {
         }
         self.mark_renderer_unreachable(renderer_location, error)
     }
+}
+
+fn reject_nested_group_members(members: &[String]) -> io::Result<()> {
+    if members
+        .iter()
+        .any(|member| renderer_group_id_from_location(member.trim()).is_some())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "renderer groups cannot contain other groups",
+        ));
+    }
+    Ok(())
 }

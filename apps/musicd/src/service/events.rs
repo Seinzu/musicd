@@ -65,12 +65,7 @@ impl PlaybackEvents {
 
     /// Block until the renderer's version exceeds `last_seen`, or until `timeout`
     /// expires. Returns the most recent version observed under the lock.
-    pub(crate) fn wait_for_change(
-        &self,
-        location: &str,
-        last_seen: u64,
-        timeout: Duration,
-    ) -> u64 {
+    pub(crate) fn wait_for_change(&self, location: &str, last_seen: u64, timeout: Duration) -> u64 {
         let deadline = Instant::now() + timeout;
         let mut inner = self.inner.lock().expect("playback events lock poisoned");
         loop {

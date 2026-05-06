@@ -202,7 +202,9 @@ impl ServiceState {
         };
 
         let snapshot_fingerprint = fingerprint(&queue, &snapshot);
-        let state_changed = self.events.note_state(renderer_location, snapshot_fingerprint);
+        let state_changed = self
+            .events
+            .note_state(renderer_location, snapshot_fingerprint);
         if state_changed {
             self.database.record_transport_snapshot(
                 renderer_location,

@@ -248,6 +248,7 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/queue/remove",
     "/api/renderer-groups",
     "/api/renderer-groups/delete",
+    "/api/renderer-groups/update",
     "/api/renderers",
     "/api/renderers/android-local/completed",
     "/api/renderers/android-local/session",

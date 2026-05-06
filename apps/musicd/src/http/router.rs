@@ -10,16 +10,17 @@ use crate::handlers::{
     handle_api_queue_play_next_album_request, handle_api_queue_play_next_track_request,
     handle_api_queue_remove_request, handle_api_register_android_local_renderer_request,
     handle_api_renderer_discover_request, handle_api_renderer_group_create_request,
-    handle_api_renderer_group_delete_request, handle_api_transport_next_request,
-    handle_api_transport_pause_request, handle_api_transport_play_request,
-    handle_api_transport_previous_request, handle_api_transport_stop_request,
-    handle_play_album_request, handle_play_request, handle_queue_append_album_request,
-    handle_queue_append_track_request, handle_queue_clear_request, handle_queue_move_down_request,
-    handle_queue_move_up_request, handle_queue_play_next_album_request,
-    handle_queue_play_next_track_request, handle_queue_remove_entry_request, handle_rescan_request,
-    handle_track_artwork_request, handle_track_stream_request, handle_transport_next_request,
-    handle_transport_pause_request, handle_transport_play_request,
-    handle_transport_previous_request, handle_transport_stop_request,
+    handle_api_renderer_group_delete_request, handle_api_renderer_group_update_request,
+    handle_api_transport_next_request, handle_api_transport_pause_request,
+    handle_api_transport_play_request, handle_api_transport_previous_request,
+    handle_api_transport_stop_request, handle_play_album_request, handle_play_request,
+    handle_queue_append_album_request, handle_queue_append_track_request,
+    handle_queue_clear_request, handle_queue_move_down_request, handle_queue_move_up_request,
+    handle_queue_play_next_album_request, handle_queue_play_next_track_request,
+    handle_queue_remove_entry_request, handle_rescan_request, handle_track_artwork_request,
+    handle_track_stream_request, handle_transport_next_request, handle_transport_pause_request,
+    handle_transport_play_request, handle_transport_previous_request,
+    handle_transport_stop_request,
 };
 use crate::service::ServiceState;
 use crate::views::json::{
@@ -179,6 +180,9 @@ pub(crate) fn handle_service_request(
         }
         ("POST", "/api/renderer-groups/delete") => {
             handle_api_renderer_group_delete_request(writer, request, &state)
+        }
+        ("POST", "/api/renderer-groups/update") => {
+            handle_api_renderer_group_update_request(writer, request, &state)
         }
         ("POST", "/api/renderers/register-android-local") => {
             handle_api_register_android_local_renderer_request(writer, request, &state)

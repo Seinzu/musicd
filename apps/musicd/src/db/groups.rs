@@ -16,13 +16,7 @@ impl Database {
         name: &str,
         members: &[String],
     ) -> io::Result<RendererGroup> {
-        let normalized_members = normalized_members(members);
-        if normalized_members.len() < 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "renderer groups require at least two members",
-            ));
-        }
+        let normalized_members = validate_renderer_group_members(members)?;
 
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(db_error)?;
@@ -60,6 +54,95 @@ impl Database {
         transaction.commit().map_err(db_error)?;
         self.load_renderer_group(&id)?
             .ok_or_else(|| io::Error::other("renderer group disappeared after create"))
+    }
+
+    pub(crate) fn update_renderer_group(
+        &self,
+        id: &str,
+        name: &str,
+        members: &[String],
+    ) -> io::Result<RendererGroup> {
+        let normalized_members = validate_renderer_group_members(members)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let Some(existing_group) = transaction
+            .query_row(
+                "SELECT id, name, created_unix, updated_unix
+                 FROM renderer_groups
+                 WHERE id = ?",
+                [id],
+                |row| {
+                    Ok(RendererGroup {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        created_unix: row.get(2)?,
+                        updated_unix: row.get(3)?,
+                        members: Vec::new(),
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_error)?
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "renderer group not found",
+            ));
+        };
+        let existing_members = Self::load_renderer_group_members_with(&transaction, id)?;
+        let now = now_unix_timestamp();
+        let display_name = normalized_group_name(name, &normalized_members);
+        transaction
+            .execute(
+                "UPDATE renderer_groups
+                 SET name = ?, updated_unix = ?
+                 WHERE id = ?",
+                params![&display_name, now, id],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM renderer_group_members WHERE group_id = ?",
+                [id],
+            )
+            .map_err(db_error)?;
+
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO renderer_group_members
+                     (group_id, renderer_location, position, joined_unix)
+                     VALUES (?, ?, ?, ?)",
+                )
+                .map_err(db_error)?;
+            for (index, renderer_location) in normalized_members.iter().enumerate() {
+                let joined_unix = existing_members
+                    .iter()
+                    .find(|member| member.renderer_location == *renderer_location)
+                    .map(|member| member.joined_unix)
+                    .unwrap_or(now);
+                statement
+                    .execute(params![
+                        id,
+                        renderer_location,
+                        i64::try_from(index + 1).unwrap_or(i64::MAX),
+                        joined_unix
+                    ])
+                    .map_err(db_error)?;
+            }
+        }
+
+        transaction
+            .execute(
+                "UPDATE playback_queues
+                 SET name = ?, updated_unix = ?, version = version + 1
+                 WHERE renderer_location = ?",
+                params![&display_name, now, renderer_group_queue_key(id)],
+            )
+            .map_err(db_error)?;
+        transaction.commit().map_err(db_error)?;
+        self.load_renderer_group(&existing_group.id)?
+            .ok_or_else(|| io::Error::other("renderer group disappeared after update"))
     }
 
     pub(crate) fn list_renderer_groups(&self) -> io::Result<Vec<RendererGroup>> {
@@ -202,16 +285,28 @@ impl Database {
     }
 }
 
-fn normalized_members(members: &[String]) -> Vec<String> {
+fn validate_renderer_group_members(members: &[String]) -> io::Result<Vec<String>> {
     let mut normalized = Vec::new();
     for member in members {
         let member = member.trim();
-        if member.is_empty() || normalized.iter().any(|existing| existing == member) {
+        if member.is_empty() {
             continue;
+        }
+        if normalized.iter().any(|existing| existing == member) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "renderer groups cannot contain duplicate members",
+            ));
         }
         normalized.push(member.to_string());
     }
-    normalized
+    if normalized.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "renderer groups require at least two members",
+        ));
+    }
+    Ok(normalized)
 }
 
 fn normalized_group_name(name: &str, members: &[String]) -> String {

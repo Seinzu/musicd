@@ -894,6 +894,46 @@ pub(crate) fn handle_api_renderer_group_delete_request(
     }
 }
 
+pub(crate) fn handle_api_renderer_group_update_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let members = request_value(request, "members")
+        .or_else(|| request_value(request, "renderer_locations"))
+        .map(parse_renderer_group_members)
+        .unwrap_or_default();
+    let name = request_value(request, "name").unwrap_or("");
+
+    match state.update_renderer_group_by_queue_key(&renderer_location, name, &members) {
+        Ok(group) => {
+            let body = format!(
+                r#"{{"ok":true,"message":"Renderer group '{}' updated.","renderer_location":"{}","group":{},"queue":{}}}"#,
+                json_escape(&group.name),
+                json_escape(&renderer_location),
+                renderer_group_json(&group),
+                render_queue_json_for_renderer(state, &renderer_location),
+            );
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("renderer group update failed: {error}"),
+        ),
+    }
+}
+
 fn parse_renderer_group_members(value: &str) -> Vec<String> {
     value
         .split([',', '\n'])
@@ -1620,11 +1660,10 @@ pub(crate) fn respond_sse_stream(
     write_sse_event(writer, "playback", &last_payload)?;
 
     loop {
-        let new_version = state.events.wait_for_change(
-            renderer_location,
-            last_version,
-            Duration::from_secs(15),
-        );
+        let new_version =
+            state
+                .events
+                .wait_for_change(renderer_location, last_version, Duration::from_secs(15));
         let payload = render_playback_event_json_for_renderer(state, renderer_location);
         if payload != last_payload {
             write_sse_event(writer, "playback", &payload)?;

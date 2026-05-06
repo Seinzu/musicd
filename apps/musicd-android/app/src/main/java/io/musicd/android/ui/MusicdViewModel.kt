@@ -76,6 +76,7 @@ data class MusicdUiState(
     val rendererGroupNameInput: String = "",
     val rendererGroupMemberLocations: Set<String> = emptySet(),
     val rendererGroupUseCurrentQueue: Boolean = true,
+    val rendererGroupEditingLocation: String? = null,
     val isCreatingRendererGroup: Boolean = false,
     val rendererGroupErrorMessage: String? = null,
     val isConnecting: Boolean = false,
@@ -442,7 +443,20 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun toggleRendererPicker(show: Boolean) {
-        _uiState.update { it.copy(showRendererPicker = show) }
+        _uiState.update {
+            if (show) {
+                it.copy(showRendererPicker = true)
+            } else {
+                it.copy(
+                    showRendererPicker = false,
+                    rendererGroupEditingLocation = null,
+                    rendererGroupNameInput = "",
+                    rendererGroupMemberLocations = emptySet(),
+                    rendererGroupUseCurrentQueue = true,
+                    rendererGroupErrorMessage = null,
+                )
+            }
+        }
     }
 
     fun updateRendererGroupName(value: String) {
@@ -467,6 +481,35 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update {
             it.copy(
                 rendererGroupUseCurrentQueue = value,
+                rendererGroupErrorMessage = null,
+            )
+        }
+    }
+
+    fun editRendererGroup(location: String) {
+        val group = uiState.value.renderers
+            .firstOrNull { it.location == location && it.kind == "group" }
+            ?.group ?: return
+        _uiState.update {
+            it.copy(
+                rendererGroupEditingLocation = location,
+                rendererGroupNameInput = group.name,
+                rendererGroupMemberLocations = group.members
+                    .map { member -> member.rendererLocation }
+                    .toSet(),
+                rendererGroupUseCurrentQueue = false,
+                rendererGroupErrorMessage = null,
+            )
+        }
+    }
+
+    fun cancelRendererGroupEdit() {
+        _uiState.update {
+            it.copy(
+                rendererGroupEditingLocation = null,
+                rendererGroupNameInput = "",
+                rendererGroupMemberLocations = emptySet(),
+                rendererGroupUseCurrentQueue = true,
                 rendererGroupErrorMessage = null,
             )
         }
@@ -519,6 +562,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         renderers = renderers,
                         selectedRendererLocation = groupLocation ?: it.selectedRendererLocation,
+                        rendererGroupEditingLocation = null,
                         rendererGroupNameInput = "",
                         rendererGroupMemberLocations = emptySet(),
                         rendererGroupUseCurrentQueue = true,
@@ -572,8 +616,70 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         renderers = renderers,
                         selectedRendererLocation = nextSelection,
+                        rendererGroupEditingLocation = it.rendererGroupEditingLocation.takeUnless { editing ->
+                            editing == location
+                        },
                         isCreatingRendererGroup = false,
                         infoMessage = response.message ?: "Renderer group deleted.",
+                    )
+                }
+                syncPlaybackNotificationService()
+                refreshPlaybackSurfaces()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    fun updateRendererGroup() {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        val editingLocation = state.rendererGroupEditingLocation.orEmpty()
+        val memberLocations = state.rendererGroupMemberLocations
+            .filter { location -> state.renderers.any { it.location == location && it.kind != "group" } }
+        if (baseUrl.isBlank() || editingLocation.isBlank()) return
+        if (memberLocations.size < 2) {
+            _uiState.update {
+                it.copy(rendererGroupErrorMessage = "Choose at least two renderers for the group.")
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isCreatingRendererGroup = true,
+                    rendererGroupErrorMessage = null,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching {
+                val response = repository.updateRendererGroup(
+                    baseUrl = baseUrl,
+                    rendererLocation = editingLocation,
+                    name = state.rendererGroupNameInput,
+                    memberLocations = memberLocations,
+                )
+                val renderers = repository.getRenderers(baseUrl)
+                response to renderers
+            }.onSuccess { (response, renderers) ->
+                _uiState.update {
+                    it.copy(
+                        renderers = renderers,
+                        rendererGroupEditingLocation = null,
+                        rendererGroupNameInput = "",
+                        rendererGroupMemberLocations = emptySet(),
+                        rendererGroupUseCurrentQueue = true,
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = null,
+                        infoMessage = response.message ?: "Renderer group updated.",
                     )
                 }
                 syncPlaybackNotificationService()

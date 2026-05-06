@@ -79,7 +79,10 @@ fn candidate_from_embedded(picture: EmbeddedPicture, album_id: &str) -> Option<A
     let extension = image_extension_for_mime(&picture.mime_type)?;
     Some(ArtworkCandidate {
         cache_key: stable_track_id(&format!("embedded:{album_id}")),
-        source: format!("Embedded artwork ({}, {})", picture.pic_type, picture.tag_label),
+        source: format!(
+            "Embedded artwork ({}, {})",
+            picture.pic_type, picture.tag_label
+        ),
         mime_type: picture.mime_type,
         extension,
         data: ArtworkData::Bytes(picture.bytes),

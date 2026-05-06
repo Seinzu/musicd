@@ -128,18 +128,16 @@ fn build_library_track(
     let id = stable_track_id(&relative_path);
     let album_id = stable_album_id(&artist, &album);
 
-    let artwork = resolve_album_artwork(
-        artwork_cache,
-        &album_id,
-        || resolve_track_artwork(
+    let artwork = resolve_album_artwork(artwork_cache, &album_id, || {
+        resolve_track_artwork(
             root,
             path,
             &relative_components,
             &album_id,
             embedded_picture,
             artwork_cache_dir,
-        ),
-    );
+        )
+    });
 
     Some(LibraryTrack {
         id,

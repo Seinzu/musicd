@@ -40,6 +40,7 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speaker
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -162,6 +163,9 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onToggleRendererGroupMember = viewModel::toggleRendererGroupMember,
         onToggleRendererGroupUseCurrentQueue = viewModel::toggleRendererGroupUseCurrentQueue,
         onCreateRendererGroup = viewModel::createRendererGroup,
+        onEditRendererGroup = viewModel::editRendererGroup,
+        onCancelRendererGroupEdit = viewModel::cancelRendererGroupEdit,
+        onUpdateRendererGroup = viewModel::updateRendererGroup,
         onDeleteRendererGroup = viewModel::deleteRendererGroup,
         onPlay = viewModel::transportPlay,
         onPause = viewModel::transportPause,
@@ -215,6 +219,9 @@ private fun MusicdRoot(
     onToggleRendererGroupMember: (String) -> Unit,
     onToggleRendererGroupUseCurrentQueue: (Boolean) -> Unit,
     onCreateRendererGroup: () -> Unit,
+    onEditRendererGroup: (String) -> Unit,
+    onCancelRendererGroupEdit: () -> Unit,
+    onUpdateRendererGroup: () -> Unit,
     onDeleteRendererGroup: (String) -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
@@ -280,6 +287,7 @@ private fun MusicdRoot(
                 groupNameInput = state.rendererGroupNameInput,
                 selectedGroupMemberLocations = state.rendererGroupMemberLocations,
                 useCurrentQueue = state.rendererGroupUseCurrentQueue,
+                editingGroupLocation = state.rendererGroupEditingLocation,
                 isCreatingGroup = state.isCreatingRendererGroup,
                 groupErrorMessage = state.rendererGroupErrorMessage,
                 onSelectRenderer = onSelectRenderer,
@@ -288,6 +296,9 @@ private fun MusicdRoot(
                 onToggleGroupMember = onToggleRendererGroupMember,
                 onUseCurrentQueueChange = onToggleRendererGroupUseCurrentQueue,
                 onCreateGroup = onCreateRendererGroup,
+                onEditGroup = onEditRendererGroup,
+                onCancelGroupEdit = onCancelRendererGroupEdit,
+                onUpdateGroup = onUpdateRendererGroup,
                 onDeleteGroup = onDeleteRendererGroup,
             )
         }
@@ -1469,6 +1480,7 @@ private fun RendererPickerSheet(
     groupNameInput: String,
     selectedGroupMemberLocations: Set<String>,
     useCurrentQueue: Boolean,
+    editingGroupLocation: String?,
     isCreatingGroup: Boolean,
     groupErrorMessage: String?,
     onSelectRenderer: (String) -> Unit,
@@ -1477,6 +1489,9 @@ private fun RendererPickerSheet(
     onToggleGroupMember: (String) -> Unit,
     onUseCurrentQueueChange: (Boolean) -> Unit,
     onCreateGroup: () -> Unit,
+    onEditGroup: (String) -> Unit,
+    onCancelGroupEdit: () -> Unit,
+    onUpdateGroup: () -> Unit,
     onDeleteGroup: (String) -> Unit,
 ) {
     val accentColor = Color(0xFFF5AF43)
@@ -1487,6 +1502,8 @@ private fun RendererPickerSheet(
     val selectedPhysicalCount = selectedGroupMemberLocations
         .count { selected -> physicalRenderers.any { it.location == selected } }
     val canCreateGroup = selectedPhysicalCount >= 2 && !isCreatingGroup
+    val isEditingGroup = editingGroupLocation != null
+    var pendingDeleteGroup by remember { mutableStateOf<RendererDto?>(null) }
 
     Column(
         modifier = Modifier
@@ -1549,7 +1566,8 @@ private fun RendererPickerSheet(
                 selectedContainer = accentContainer,
                 selectedAccent = accentColor,
                 onSelectRenderer = onSelectRenderer,
-                onDeleteGroup = onDeleteGroup,
+                onEditGroup = onEditGroup,
+                onDeleteGroup = { pendingDeleteGroup = renderer },
             )
         }
         if (physicalRenderers.isNotEmpty()) {
@@ -1568,7 +1586,8 @@ private fun RendererPickerSheet(
                 selectedContainer = accentContainer,
                 selectedAccent = accentColor,
                 onSelectRenderer = onSelectRenderer,
-                onDeleteGroup = onDeleteGroup,
+                onEditGroup = onEditGroup,
+                onDeleteGroup = { pendingDeleteGroup = renderer },
             )
         }
         if (physicalRenderers.size >= 2) {
@@ -1606,7 +1625,7 @@ private fun RendererPickerSheet(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "Create group",
+                                if (isEditingGroup) "Edit group" else "Create group",
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.SemiBold,
                             )
@@ -1639,12 +1658,14 @@ private fun RendererPickerSheet(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    FilterChip(
-                        selected = useCurrentQueue,
-                        onClick = { onUseCurrentQueueChange(!useCurrentQueue) },
-                        enabled = selectedRendererLocation.isNotBlank(),
-                        label = { Text("Use current queue") },
-                    )
+                    if (!isEditingGroup) {
+                        FilterChip(
+                            selected = useCurrentQueue,
+                            onClick = { onUseCurrentQueueChange(!useCurrentQueue) },
+                            enabled = selectedRendererLocation.isNotBlank(),
+                            label = { Text("Use current queue") },
+                        )
+                    }
                     groupErrorMessage?.let {
                         Text(
                             it,
@@ -1652,23 +1673,75 @@ private fun RendererPickerSheet(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
-                    Button(
-                        onClick = onCreateGroup,
-                        enabled = canCreateGroup,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        if (isCreatingGroup) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        } else {
-                            Text("Create group")
+                    if (isEditingGroup) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = onCancelGroupEdit,
+                                enabled = !isCreatingGroup,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Cancel")
+                            }
+                            Button(
+                                onClick = onUpdateGroup,
+                                enabled = canCreateGroup,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                if (isCreatingGroup) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                    )
+                                } else {
+                                    Text("Save")
+                                }
+                            }
+                        }
+                    } else {
+                        Button(
+                            onClick = onCreateGroup,
+                            enabled = canCreateGroup,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            if (isCreatingGroup) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                            } else {
+                                Text("Create group")
+                            }
                         }
                     }
                 }
             }
+        }
+        pendingDeleteGroup?.let { group ->
+            AlertDialog(
+                onDismissRequest = { pendingDeleteGroup = null },
+                title = { Text("Delete group?") },
+                text = { Text("Delete ${rendererDisplayName(group)} and its group queue.") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pendingDeleteGroup = null
+                            onDeleteGroup(group.location)
+                        },
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDeleteGroup = null }) {
+                        Text("Cancel")
+                    }
+                },
+            )
         }
         Row(
             modifier = Modifier
@@ -1709,6 +1782,7 @@ private fun RendererPickerRow(
     selectedContainer: Color,
     selectedAccent: Color,
     onSelectRenderer: (String) -> Unit,
+    onEditGroup: (String) -> Unit,
     onDeleteGroup: (String) -> Unit,
 ) {
     Card(
@@ -1796,16 +1870,16 @@ private fun RendererPickerRow(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    if (renderer.kind == "group") {
-                        TextButton(onClick = { onDeleteGroup(renderer.location) }) {
-                            Text("Delete")
-                        }
-                    }
                 }
             }
-            if (isSelected && renderer.kind == "group") {
-                TextButton(onClick = { onDeleteGroup(renderer.location) }) {
-                    Text("Delete")
+            if (renderer.kind == "group") {
+                Column(horizontalAlignment = Alignment.End) {
+                    TextButton(onClick = { onEditGroup(renderer.location) }) {
+                        Text("Edit")
+                    }
+                    TextButton(onClick = { onDeleteGroup(renderer.location) }) {
+                        Text("Delete")
+                    }
                 }
             }
         }

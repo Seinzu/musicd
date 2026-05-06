@@ -97,6 +97,20 @@ class MusicdRepository(
         api.deleteRendererGroup(baseUrl.normalizeBaseUrl(), rendererLocation)
     }
 
+    suspend fun updateRendererGroup(
+        baseUrl: String,
+        rendererLocation: String,
+        name: String,
+        memberLocations: List<String>,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.updateRendererGroup(
+            baseUrl.normalizeBaseUrl(),
+            rendererLocation,
+            name,
+            memberLocations,
+        )
+    }
+
     suspend fun registerAndroidLocalRenderer(
         baseUrl: String,
         rendererLocation: String,

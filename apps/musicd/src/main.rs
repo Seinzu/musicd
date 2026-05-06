@@ -39,7 +39,7 @@ mod tests {
     };
     use crate::types::{
         LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
-        RendererRecord, TrackArtwork,
+        RendererGroup, RendererRecord, TrackArtwork,
     };
     use crate::util::{
         cleanup_track_label, infer_artist_and_album, infer_disc_and_track_numbers,
@@ -321,6 +321,207 @@ mod tests {
                 .database
                 .load_renderer_group(&group.id)
                 .unwrap()
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_lifecycle_rejects_invalid_members() {
+        let state = sample_state(Vec::new());
+        let duplicate_error = state
+            .create_renderer_group(
+                "Duplicate",
+                &renderer_locations(&[
+                    "http://kitchen.local/description.xml",
+                    "http://kitchen.local/description.xml",
+                    "http://living-room.local/description.xml",
+                ]),
+                None,
+            )
+            .expect_err("duplicate members should be rejected");
+        assert_eq!(duplicate_error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            duplicate_error.to_string(),
+            "renderer groups cannot contain duplicate members"
+        );
+
+        let nested_error = state
+            .create_renderer_group(
+                "Nested",
+                &renderer_locations(&["group:nested", "http://living-room.local/description.xml"]),
+                None,
+            )
+            .expect_err("nested groups should be rejected");
+        assert_eq!(nested_error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            nested_error.to_string(),
+            "renderer groups cannot contain other groups"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_lifecycle_updates_members_and_queue_name() {
+        let state = sample_state(Vec::new());
+        let group = create_sample_renderer_group(
+            &state,
+            "Downstairs",
+            &[
+                "http://kitchen.local/description.xml",
+                "http://living-room.local/description.xml",
+            ],
+        );
+        let group_location = renderer_group_queue_key(&group.id);
+        assert_group_members(
+            &group,
+            &[
+                "http://kitchen.local/description.xml",
+                "http://living-room.local/description.xml",
+            ],
+        );
+
+        let updated = state
+            .update_renderer_group_by_queue_key(
+                &group_location,
+                "Evening",
+                &renderer_locations(&[
+                    "http://living-room.local/description.xml",
+                    "android-local://phone",
+                ]),
+            )
+            .expect("group should update");
+        assert_eq!(updated.name, "Evening");
+        assert_group_members(
+            &updated,
+            &[
+                "http://living-room.local/description.xml",
+                "android-local://phone",
+            ],
+        );
+        let preserved_member = updated
+            .members
+            .iter()
+            .find(|member| member.renderer_location == "http://living-room.local/description.xml")
+            .expect("unchanged member should remain");
+        let original_joined = group
+            .members
+            .iter()
+            .find(|member| member.renderer_location == "http://living-room.local/description.xml")
+            .expect("original member should exist")
+            .joined_unix;
+        assert_eq!(preserved_member.joined_unix, original_joined);
+
+        let queue = state
+            .database
+            .load_queue(&group_location)
+            .expect("group queue should load")
+            .expect("group queue should exist");
+        assert_eq!(queue.name, "Evening");
+
+        let too_small_error = state
+            .update_renderer_group_by_queue_key(
+                &group_location,
+                "Too Small",
+                &renderer_locations(&["android-local://phone"]),
+            )
+            .expect_err("single-member groups should be rejected");
+        assert_eq!(too_small_error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            too_small_error.to_string(),
+            "renderer groups require at least two members"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_queue_mutations_require_existing_group() {
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let state = sample_state(vec![track.clone()]);
+        let error = state
+            .append_track_to_queue("group:missing", &track)
+            .expect_err("missing group queue mutations should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "renderer group not found");
+        assert!(
+            state
+                .database
+                .load_queue("group:missing")
+                .expect("queue lookup should succeed")
+                .is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_queue_mutations_refresh_active_group_preload() {
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let track_3 = sample_track("track-3", Some(1), Some(3), "Track 3");
+        let state = sample_state(vec![track_1.clone(), track_2.clone(), track_3.clone()]);
+        let group = create_sample_renderer_group(
+            &state,
+            "Phones",
+            &["android-local://phone-a", "android-local://phone-b"],
+        );
+        let group_location = renderer_group_queue_key(&group.id);
+        let queue = state
+            .database
+            .replace_queue(
+                &group_location,
+                "Phones",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("group queue should be created");
+        state
+            .start_current_queue_entry(&group_location)
+            .expect("group playback should start");
+        let stale_next_entry_id = queue.entries[1].id;
+        state
+            .database
+            .mark_next_queue_entry_preloaded(&group_location, Some(stale_next_entry_id))
+            .expect("test should install stale preload");
+
+        let updated = state
+            .play_next_track(&group_location, &track_3)
+            .expect("play-next should update group queue");
+        assert_eq!(
+            updated
+                .entries
+                .iter()
+                .map(|entry| entry.track_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["track-1", "track-3", "track-2"]
+        );
+        let session = state
+            .database
+            .load_playback_session(&group_location)
+            .expect("group session should load")
+            .expect("group session should exist");
+        assert_eq!(session.next_queue_entry_id, None);
+
+        state
+            .clear_queue(&group_location)
+            .expect("group queue should clear");
+        assert!(
+            state
+                .database
+                .load_queue(&group_location)
+                .expect("queue lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            state
+                .database
+                .load_playback_session(&group_location)
+                .expect("session lookup should succeed")
                 .is_none()
         );
 
@@ -1028,6 +1229,51 @@ mod tests {
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
             events: crate::service::PlaybackEvents::new(),
+        }
+    }
+
+    fn renderer_locations(locations: &[&str]) -> Vec<String> {
+        locations
+            .iter()
+            .map(|location| (*location).to_string())
+            .collect()
+    }
+
+    fn create_sample_renderer_group(
+        state: &ServiceState,
+        name: &str,
+        members: &[&str],
+    ) -> RendererGroup {
+        state
+            .create_renderer_group(name, &renderer_locations(members), None)
+            .expect("sample renderer group should be created")
+    }
+
+    fn assert_group_members(group: &RendererGroup, expected: &[&str]) {
+        assert_eq!(
+            group
+                .members
+                .iter()
+                .map(|member| member.renderer_location.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            group
+                .members
+                .iter()
+                .map(|member| member.position)
+                .collect::<Vec<_>>(),
+            (1..=i64::try_from(expected.len()).unwrap_or(i64::MAX)).collect::<Vec<_>>()
+        );
+    }
+
+    fn queue_entry_for_track(track: &LibraryTrack) -> QueueMutationEntry {
+        QueueMutationEntry {
+            track_id: track.id.clone(),
+            album_id: Some(track.album_id.clone()),
+            source_kind: "track".to_string(),
+            source_ref: Some(track.id.clone()),
         }
     }
 

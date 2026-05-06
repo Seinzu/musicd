@@ -113,7 +113,11 @@ pub(crate) fn respond_text(
     )
 }
 
-pub(crate) fn respond_json(writer: &mut ResponseWriter, status: &str, body: &str) -> io::Result<()> {
+pub(crate) fn respond_json(
+    writer: &mut ResponseWriter,
+    status: &str,
+    body: &str,
+) -> io::Result<()> {
     respond_text(
         writer,
         status,
