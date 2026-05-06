@@ -1,4 +1,4 @@
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,10 +8,13 @@ use std::time::Instant;
 use crate::metrics;
 use crate::service::ServiceState;
 
+use super::ResponseWriter;
 use super::request::{HttpRequest, read_http_request};
 use super::response::{
     is_expected_client_disconnect, respond_not_found, respond_text, respond_with_file,
 };
+
+const RESPONSE_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) enum ServerMode {
@@ -41,7 +44,8 @@ pub(crate) fn serve_tcp(bind_address: &str, mode: ServerMode) -> io::Result<()> 
 
 fn handle_client(stream: TcpStream, mode: ServerMode) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
-    let mut writer = stream.try_clone()?;
+    let mut writer: ResponseWriter =
+        BufWriter::with_capacity(RESPONSE_BUFFER_BYTES, stream.try_clone()?);
     let mut reader = BufReader::new(stream);
 
     let request = match read_http_request(&mut reader)? {
@@ -77,11 +81,12 @@ fn handle_client(stream: TcpStream, mode: ServerMode) -> io::Result<()> {
         }
     }
 
+    let _ = writer.flush();
     result
 }
 
 fn handle_single_file_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     file_path: Arc<PathBuf>,
 ) -> io::Result<()> {

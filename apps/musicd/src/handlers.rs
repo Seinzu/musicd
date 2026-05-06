@@ -1,10 +1,10 @@
 use std::io::{self, Write};
-use std::net::TcpStream;
 use std::time::Duration;
 
 use crate::http::{
-    HttpRequest, api_error, redirect_album, redirect_home, redirect_to_path, request_value,
-    respond_json, respond_not_found, respond_with_file, write_sse_comment, write_sse_event,
+    HttpRequest, ResponseWriter, api_error, redirect_album, redirect_home, redirect_to_path,
+    request_value, respond_json, respond_not_found, respond_with_file, write_sse_comment,
+    write_sse_event,
 };
 use crate::metrics;
 use crate::renderer::{
@@ -19,7 +19,7 @@ use crate::views::json::{
 };
 
 pub(crate) fn handle_play_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -80,7 +80,7 @@ pub(crate) fn handle_play_request(
 }
 
 pub(crate) fn handle_play_album_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -154,7 +154,7 @@ pub(crate) fn handle_play_album_request(
 }
 
 pub(crate) fn handle_queue_append_track_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -222,7 +222,7 @@ pub(crate) fn handle_queue_append_track_request(
 }
 
 pub(crate) fn handle_queue_play_next_track_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -289,7 +289,7 @@ pub(crate) fn handle_queue_play_next_track_request(
 }
 
 pub(crate) fn handle_transport_play_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -333,7 +333,7 @@ pub(crate) fn handle_transport_play_request(
 }
 
 pub(crate) fn handle_transport_pause_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -377,7 +377,7 @@ pub(crate) fn handle_transport_pause_request(
 }
 
 pub(crate) fn handle_transport_stop_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -421,7 +421,7 @@ pub(crate) fn handle_transport_stop_request(
 }
 
 pub(crate) fn handle_transport_next_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -465,7 +465,7 @@ pub(crate) fn handle_transport_next_request(
 }
 
 pub(crate) fn handle_transport_previous_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -509,7 +509,7 @@ pub(crate) fn handle_transport_previous_request(
 }
 
 pub(crate) fn handle_queue_append_album_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -577,7 +577,7 @@ pub(crate) fn handle_queue_append_album_request(
 }
 
 pub(crate) fn handle_queue_play_next_album_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -644,7 +644,7 @@ pub(crate) fn handle_queue_play_next_album_request(
 }
 
 pub(crate) fn handle_queue_move_up_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -654,7 +654,7 @@ pub(crate) fn handle_queue_move_up_request(
 }
 
 pub(crate) fn handle_queue_move_down_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -668,7 +668,7 @@ pub(crate) fn handle_queue_move_down_request(
 }
 
 pub(crate) fn handle_queue_remove_entry_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -678,7 +678,7 @@ pub(crate) fn handle_queue_remove_entry_request(
 }
 
 pub(crate) fn handle_queue_entry_mutation_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
     action_label: &str,
@@ -741,7 +741,7 @@ pub(crate) fn handle_queue_entry_mutation_request(
 }
 
 pub(crate) fn handle_queue_clear_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -785,7 +785,7 @@ pub(crate) fn handle_queue_clear_request(
 }
 
 pub(crate) fn handle_rescan_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -809,7 +809,7 @@ pub(crate) fn handle_rescan_request(
 }
 
 pub(crate) fn handle_api_renderer_discover_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     _request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -821,7 +821,7 @@ pub(crate) fn handle_api_renderer_discover_request(
 }
 
 pub(crate) fn handle_api_renderer_group_create_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -866,7 +866,7 @@ pub(crate) fn handle_api_renderer_group_create_request(
 }
 
 pub(crate) fn handle_api_renderer_group_delete_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -904,7 +904,7 @@ fn parse_renderer_group_members(value: &str) -> Vec<String> {
 }
 
 pub(crate) fn handle_api_play_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -942,7 +942,7 @@ pub(crate) fn handle_api_play_request(
 }
 
 pub(crate) fn handle_api_play_album_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -980,7 +980,7 @@ pub(crate) fn handle_api_play_album_request(
 }
 
 pub(crate) fn handle_api_album_artwork_select_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1014,7 +1014,7 @@ pub(crate) fn handle_api_album_artwork_select_request(
 }
 
 pub(crate) fn handle_api_events_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1032,7 +1032,7 @@ pub(crate) fn handle_api_events_request(
 }
 
 pub(crate) fn handle_api_register_android_local_renderer_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1083,7 +1083,7 @@ pub(crate) fn handle_api_register_android_local_renderer_request(
 }
 
 pub(crate) fn handle_api_android_local_session_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1134,7 +1134,7 @@ pub(crate) fn handle_api_android_local_session_request(
 }
 
 pub(crate) fn handle_api_android_local_completed_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1186,7 +1186,7 @@ pub(crate) fn handle_api_android_local_completed_request(
 }
 
 pub(crate) fn handle_api_transport_play_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1196,7 +1196,7 @@ pub(crate) fn handle_api_transport_play_request(
 }
 
 pub(crate) fn handle_api_transport_pause_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1206,7 +1206,7 @@ pub(crate) fn handle_api_transport_pause_request(
 }
 
 pub(crate) fn handle_api_transport_stop_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1216,7 +1216,7 @@ pub(crate) fn handle_api_transport_stop_request(
 }
 
 pub(crate) fn handle_api_transport_next_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1226,7 +1226,7 @@ pub(crate) fn handle_api_transport_next_request(
 }
 
 pub(crate) fn handle_api_transport_previous_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1236,7 +1236,7 @@ pub(crate) fn handle_api_transport_previous_request(
 }
 
 pub(crate) fn handle_api_transport_action(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
     apply: impl Fn(&ServiceState, &str) -> io::Result<String>,
@@ -1256,7 +1256,7 @@ pub(crate) fn handle_api_transport_action(
 }
 
 pub(crate) fn handle_api_queue_append_track_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1276,7 +1276,7 @@ pub(crate) fn handle_api_queue_append_track_request(
 }
 
 pub(crate) fn handle_api_queue_play_next_track_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1296,7 +1296,7 @@ pub(crate) fn handle_api_queue_play_next_track_request(
 }
 
 pub(crate) fn handle_api_queue_append_album_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1316,7 +1316,7 @@ pub(crate) fn handle_api_queue_append_album_request(
 }
 
 pub(crate) fn handle_api_queue_play_next_album_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1336,7 +1336,7 @@ pub(crate) fn handle_api_queue_play_next_album_request(
 }
 
 pub(crate) fn handle_api_queue_track_action(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
     apply: impl Fn(&ServiceState, &str, &LibraryTrack) -> io::Result<PlaybackQueue>,
@@ -1366,7 +1366,7 @@ pub(crate) fn handle_api_queue_track_action(
 }
 
 pub(crate) fn handle_api_queue_album_action(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
     apply: impl Fn(&ServiceState, &str, &AlbumSummary) -> io::Result<PlaybackQueue>,
@@ -1396,7 +1396,7 @@ pub(crate) fn handle_api_queue_album_action(
 }
 
 pub(crate) fn handle_api_queue_move_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1444,7 +1444,7 @@ pub(crate) fn handle_api_queue_move_request(
 }
 
 pub(crate) fn handle_api_queue_remove_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1476,7 +1476,7 @@ pub(crate) fn handle_api_queue_remove_request(
 }
 
 pub(crate) fn handle_api_queue_clear_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1512,7 +1512,7 @@ pub(crate) fn required_request_value(
 }
 
 pub(crate) fn api_queue_response(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     state: &ServiceState,
     renderer_location: &str,
     message: &str,
@@ -1528,7 +1528,7 @@ pub(crate) fn api_queue_response(
 }
 
 pub(crate) fn api_renderer_state_response(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     state: &ServiceState,
     renderer_location: &str,
     message: &str,
@@ -1544,7 +1544,7 @@ pub(crate) fn api_renderer_state_response(
 }
 
 pub(crate) fn handle_track_stream_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1562,7 +1562,7 @@ pub(crate) fn handle_track_stream_request(
 }
 
 pub(crate) fn handle_track_artwork_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1583,7 +1583,7 @@ pub(crate) fn handle_track_artwork_request(
 }
 
 pub(crate) fn handle_album_artwork_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
@@ -1601,7 +1601,7 @@ pub(crate) fn handle_album_artwork_request(
 }
 
 pub(crate) fn respond_sse_stream(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     state: &ServiceState,
     renderer_location: &str,
 ) -> io::Result<()> {

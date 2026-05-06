@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
 use std::path::Path;
 
@@ -8,8 +8,10 @@ use crate::util::{infer_mime_type, json_escape, url_encode};
 
 use super::request::parse_range_header;
 
+pub(crate) type ResponseWriter = BufWriter<TcpStream>;
+
 pub(crate) fn respond_with_file(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     file_path: &Path,
     head_only: bool,
     range_header: Option<String>,
@@ -75,9 +77,9 @@ pub(crate) fn respond_with_file(
     }
 }
 
-pub(crate) fn copy_exact_bytes(
+fn copy_exact_bytes(
     reader: &mut File,
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     mut bytes_left: u64,
 ) -> io::Result<()> {
     let mut buffer = [0_u8; 16 * 1024];
@@ -94,7 +96,7 @@ pub(crate) fn copy_exact_bytes(
 }
 
 pub(crate) fn respond_text(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     status: &str,
     content_type: &str,
     body: &[u8],
@@ -111,7 +113,7 @@ pub(crate) fn respond_text(
     )
 }
 
-pub(crate) fn respond_json(writer: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
+pub(crate) fn respond_json(writer: &mut ResponseWriter, status: &str, body: &str) -> io::Result<()> {
     respond_text(
         writer,
         status,
@@ -121,7 +123,7 @@ pub(crate) fn respond_json(writer: &mut TcpStream, status: &str, body: &str) -> 
     )
 }
 
-pub(crate) fn api_error(writer: &mut TcpStream, status: &str, error: &str) -> io::Result<()> {
+pub(crate) fn api_error(writer: &mut ResponseWriter, status: &str, error: &str) -> io::Result<()> {
     respond_json(
         writer,
         status,
@@ -139,7 +141,7 @@ pub(crate) fn is_expected_client_disconnect(error: &io::Error) -> bool {
     )
 }
 
-pub(crate) fn respond_not_found(writer: &mut TcpStream, head_only: bool) -> io::Result<()> {
+pub(crate) fn respond_not_found(writer: &mut ResponseWriter, head_only: bool) -> io::Result<()> {
     respond_text(
         writer,
         "404 Not Found",
@@ -149,7 +151,7 @@ pub(crate) fn respond_not_found(writer: &mut TcpStream, head_only: bool) -> io::
     )
 }
 
-pub(crate) fn respond_method_not_allowed(writer: &mut TcpStream) -> io::Result<()> {
+pub(crate) fn respond_method_not_allowed(writer: &mut ResponseWriter) -> io::Result<()> {
     respond_text(
         writer,
         "405 Method Not Allowed",
@@ -160,7 +162,7 @@ pub(crate) fn respond_method_not_allowed(writer: &mut TcpStream) -> io::Result<(
 }
 
 pub(crate) fn redirect_home(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     renderer_location: Option<&str>,
     message: Option<&str>,
     error: Option<&str>,
@@ -169,7 +171,7 @@ pub(crate) fn redirect_home(
 }
 
 pub(crate) fn redirect_to_path(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     path: &str,
     renderer_location: Option<&str>,
     message: Option<&str>,
@@ -206,7 +208,7 @@ pub(crate) fn redirect_to_path(
 }
 
 pub(crate) fn redirect_album(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     album_id: &str,
     renderer_location: Option<&str>,
     message: Option<&str>,
@@ -243,7 +245,7 @@ pub(crate) fn redirect_album(
 }
 
 pub(crate) fn write_response_owned(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     status: &str,
     headers: &[(String, String)],
     body: Option<&[u8]>,

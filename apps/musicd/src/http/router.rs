@@ -1,5 +1,4 @@
 use std::io;
-use std::net::TcpStream;
 use std::sync::Arc;
 
 use crate::handlers::{
@@ -34,11 +33,12 @@ use crate::views::{
     render_album_detail_page, render_home_page, render_queue_panel_html, render_track_detail_page,
 };
 
+use super::ResponseWriter;
 use super::request::HttpRequest;
 use super::response::{respond_method_not_allowed, respond_not_found, respond_text};
 
 pub(crate) fn handle_service_request(
-    writer: &mut TcpStream,
+    writer: &mut ResponseWriter,
     request: &HttpRequest,
     state: Arc<ServiceState>,
 ) -> io::Result<()> {
