@@ -14,6 +14,33 @@ use super::poll::{
     should_auto_advance,
 };
 
+pub(crate) struct GroupFanOutResult {
+    succeeded: Vec<RendererRecord>,
+    failed: Vec<String>,
+    total: usize,
+}
+
+impl GroupFanOutResult {
+    pub(crate) fn succeeded_count(&self) -> usize {
+        self.succeeded.len()
+    }
+
+    pub(crate) fn total_count(&self) -> usize {
+        self.total
+    }
+
+    pub(crate) fn warning_message(&self, action_label: &str) -> Option<String> {
+        (!self.failed.is_empty()).then(|| {
+            format!(
+                "Group {action_label} partially failed on {} of {} renderers: {}",
+                self.failed.len(),
+                self.total,
+                self.failed.join("; ")
+            )
+        })
+    }
+}
+
 impl ServiceState {
     pub(crate) fn renderer_group_snapshot(&self) -> Vec<RendererGroup> {
         self.database.list_renderer_groups().unwrap_or_default()
@@ -103,7 +130,7 @@ impl ServiceState {
         &self,
         group: &RendererGroup,
         resource: &StreamResource,
-    ) -> io::Result<Vec<RendererRecord>> {
+    ) -> io::Result<GroupFanOutResult> {
         let mut started = Vec::new();
         let mut errors = Vec::new();
         for member in &group.members {
@@ -121,13 +148,13 @@ impl ServiceState {
             )));
         }
 
-        if !errors.is_empty() {
-            self.debug_log(
-                "group-partial-start",
-                format!("group={} errors={}", group.id, errors.join("; ")),
-            );
-        }
-        Ok(started)
+        let result = GroupFanOutResult {
+            succeeded: started,
+            failed: errors,
+            total: group.members.len(),
+        };
+        self.record_group_fanout_warning(group, "start", &result);
+        Ok(result)
     }
 
     pub(crate) fn fan_out_group_transport_action(
@@ -135,8 +162,8 @@ impl ServiceState {
         group: &RendererGroup,
         action_label: &str,
         apply: impl Fn(&ServiceState, &str, &RendererRecord) -> io::Result<()>,
-    ) -> io::Result<usize> {
-        let mut succeeded = 0usize;
+    ) -> io::Result<GroupFanOutResult> {
+        let mut succeeded = Vec::new();
         let mut errors = Vec::new();
         for member in &group.members {
             let renderer_location = &member.renderer_location;
@@ -147,8 +174,8 @@ impl ServiceState {
                     Ok(renderer)
                 }) {
                 Ok(renderer) => {
-                    succeeded += 1;
                     let _ = self.mark_renderer_reachable(&renderer);
+                    succeeded.push(renderer);
                 }
                 Err(error) => {
                     let _ = self.mark_group_member_unreachable(renderer_location, &error);
@@ -157,25 +184,69 @@ impl ServiceState {
             }
         }
 
-        if succeeded == 0 {
+        if succeeded.is_empty() {
             return Err(io::Error::other(format!(
                 "group {action_label} failed on all members: {}",
                 errors.join("; ")
             )));
         }
 
-        if !errors.is_empty() {
+        let result = GroupFanOutResult {
+            succeeded,
+            failed: errors,
+            total: group.members.len(),
+        };
+        self.record_group_fanout_warning(group, action_label, &result);
+        Ok(result)
+    }
+
+    pub(crate) fn record_group_session_warning(
+        &self,
+        renderer_location: &str,
+        action_label: &str,
+        result: &GroupFanOutResult,
+    ) {
+        if let Some(warning) = result.warning_message(action_label) {
+            let _ = self
+                .database
+                .record_playback_session_warning(renderer_location, &warning);
+        }
+    }
+
+    pub(crate) fn group_fanout_message(
+        &self,
+        action_label: &str,
+        result: &GroupFanOutResult,
+    ) -> String {
+        if result.succeeded_count() == result.total_count() {
+            format!(
+                "Group playback {action_label} on {} renderers.",
+                result.succeeded_count()
+            )
+        } else {
+            format!(
+                "Group playback {action_label} on {} of {} renderers.",
+                result.succeeded_count(),
+                result.total_count()
+            )
+        }
+    }
+
+    fn record_group_fanout_warning(
+        &self,
+        group: &RendererGroup,
+        action_label: &str,
+        result: &GroupFanOutResult,
+    ) {
+        if let Some(warning) = result.warning_message(action_label) {
             self.debug_log(
                 "group-partial-action",
                 format!(
-                    "group={} action={} errors={}",
-                    group.id,
-                    action_label,
-                    errors.join("; ")
+                    "group={} action={} warning={}",
+                    group.id, action_label, warning
                 ),
             );
         }
-        Ok(succeeded)
     }
 
     pub(crate) fn preload_next_group_queue_entry(

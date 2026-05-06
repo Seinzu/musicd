@@ -1264,7 +1264,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     nowPlaying = event.nowPlaying,
                     queue = event.queue,
-                    warningMessage = null,
+                    warningMessage = event.nowPlaying.session?.lastError,
                 )
             }
         }

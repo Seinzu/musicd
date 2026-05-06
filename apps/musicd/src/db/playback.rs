@@ -370,6 +370,47 @@ impl Database {
         Ok(())
     }
 
+    pub(crate) fn record_playback_session_warning(
+        &self,
+        renderer_location: &str,
+        warning: &str,
+    ) -> io::Result<()> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (
+                    ?,
+                    (SELECT current_entry_id FROM playback_queues WHERE renderer_location = ?),
+                    (SELECT next_queue_entry_id FROM playback_sessions WHERE renderer_location = ?),
+                    COALESCE((SELECT transport_state FROM playback_sessions WHERE renderer_location = ?), 'READY'),
+                    (SELECT current_track_uri FROM playback_sessions WHERE renderer_location = ?),
+                    (SELECT position_seconds FROM playback_sessions WHERE renderer_location = ?),
+                    (SELECT duration_seconds FROM playback_sessions WHERE renderer_location = ?),
+                    ?,
+                    ?
+                 )
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    renderer_location,
+                    now_unix_timestamp(),
+                    warning,
+                ],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
     pub(crate) fn mark_next_queue_entry_preloaded(
         &self,
         renderer_location: &str,

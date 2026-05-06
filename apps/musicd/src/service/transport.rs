@@ -165,7 +165,7 @@ impl ServiceState {
             RendererKind::Group
         ) {
             let group = self.load_renderer_group_for_queue(renderer_location)?;
-            let member_count = self.fan_out_group_transport_action(
+            let fanout = self.fan_out_group_transport_action(
                 &group,
                 "pause",
                 |state, member_location, renderer| {
@@ -176,9 +176,8 @@ impl ServiceState {
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
             self.database
                 .set_queue_status(renderer_location, "paused", "PAUSED_PLAYBACK")?;
-            return Ok(format!(
-                "Group playback paused on {member_count} renderers."
-            ));
+            self.record_group_session_warning(renderer_location, "pause", &fanout);
+            return Ok(self.group_fanout_message("paused", &fanout));
         }
         if matches!(
             renderer_kind_for_location(renderer_location),
@@ -235,7 +234,7 @@ impl ServiceState {
             RendererKind::Group
         ) {
             let group = self.load_renderer_group_for_queue(renderer_location)?;
-            let member_count = self.fan_out_group_transport_action(
+            let fanout = self.fan_out_group_transport_action(
                 &group,
                 "stop",
                 |state, member_location, renderer| {
@@ -246,9 +245,8 @@ impl ServiceState {
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
             self.database
                 .set_queue_status(renderer_location, "stopped", "STOPPED")?;
-            return Ok(format!(
-                "Group playback stopped on {member_count} renderers."
-            ));
+            self.record_group_session_warning(renderer_location, "stop", &fanout);
+            return Ok(self.group_fanout_message("stopped", &fanout));
         }
         if matches!(
             renderer_kind_for_location(renderer_location),
@@ -481,7 +479,7 @@ impl ServiceState {
         ) {
             let group = self.load_renderer_group_for_queue(renderer_location)?;
             return match self.play_stream_on_group_members(&group, &resource) {
-                Ok(started_renderers) => {
+                Ok(fanout) => {
                     self.database.mark_queue_play_started(
                         renderer_location,
                         current_entry.id,
@@ -499,10 +497,20 @@ impl ServiceState {
                             "group next-track preload failed for {renderer_location}: {error}"
                         );
                     }
+                    self.record_group_session_warning(renderer_location, "start", &fanout);
                     Ok((
                         track,
                         current_entry.id,
-                        format!("{} ({} renderers)", group.name, started_renderers.len()),
+                        if fanout.succeeded_count() == fanout.total_count() {
+                            format!("{} ({} renderers)", group.name, fanout.succeeded_count())
+                        } else {
+                            format!(
+                                "{} ({} of {} renderers)",
+                                group.name,
+                                fanout.succeeded_count(),
+                                fanout.total_count()
+                            )
+                        },
                         renderer_location.to_string(),
                     ))
                 }
@@ -584,7 +592,7 @@ impl ServiceState {
             ));
         }
 
-        let member_count = self.fan_out_group_transport_action(
+        let fanout = self.fan_out_group_transport_action(
             &group,
             "play",
             |state, member_location, renderer| {
@@ -593,8 +601,7 @@ impl ServiceState {
         )?;
         self.database
             .set_queue_status(renderer_location, "playing", "PLAYING")?;
-        Ok(format!(
-            "Group playback resumed on {member_count} renderers."
-        ))
+        self.record_group_session_warning(renderer_location, "play", &fanout);
+        Ok(self.group_fanout_message("resumed", &fanout))
     }
 }

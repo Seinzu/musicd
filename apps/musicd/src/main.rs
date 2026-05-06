@@ -529,6 +529,88 @@ mod tests {
     }
 
     #[test]
+    fn renderer_group_partial_fanout_records_session_warning() {
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let state = sample_state(vec![track.clone()]);
+        let group = create_sample_renderer_group(
+            &state,
+            "Mixed",
+            &["android-local://phone", "sonos:kitchen"],
+        );
+        let group_location = renderer_group_queue_key(&group.id);
+        state
+            .database
+            .replace_queue(&group_location, "Mixed", &[queue_entry_for_track(&track)])
+            .expect("group queue should be created");
+
+        let (_, _, renderer_name, renderer_location) = state
+            .start_current_queue_entry(&group_location)
+            .expect("partial fan-out should still start");
+        assert_eq!(renderer_name, "Mixed (1 of 2 renderers)");
+        assert_eq!(renderer_location, group_location);
+        let session = state
+            .database
+            .load_playback_session(&renderer_location)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "PLAYING");
+        assert!(session.last_error.as_deref().is_some_and(|error| {
+            error.contains("Group start partially failed on 1 of 2 renderers")
+                && error.contains("sonos:kitchen")
+        }));
+
+        let pause_message = state
+            .pause_renderer(&renderer_location)
+            .expect("partial pause should still succeed");
+        assert_eq!(pause_message, "Group playback paused on 1 of 2 renderers.");
+        let session = state
+            .database
+            .load_playback_session(&renderer_location)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "PAUSED_PLAYBACK");
+        assert!(session.last_error.as_deref().is_some_and(|error| {
+            error.contains("Group pause partially failed on 1 of 2 renderers")
+                && error.contains("sonos:kitchen")
+        }));
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_total_fanout_failure_marks_queue_error() {
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let state = sample_state(vec![track.clone()]);
+        let group = create_sample_renderer_group(&state, "Broken", &["sonos:kitchen", "sonos:den"]);
+        let group_location = renderer_group_queue_key(&group.id);
+        let queue = state
+            .database
+            .replace_queue(&group_location, "Broken", &[queue_entry_for_track(&track)])
+            .expect("group queue should be created");
+
+        let error = state
+            .start_current_queue_entry(&group_location)
+            .expect_err("total fan-out failure should fail playback");
+        assert!(
+            error
+                .to_string()
+                .contains("group playback failed on all members")
+        );
+        let session = state
+            .database
+            .load_playback_session(&group_location)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "ERROR");
+        assert_eq!(session.queue_entry_id, Some(queue.entries[0].id));
+        assert!(session.last_error.as_deref().is_some_and(|error| {
+            error.contains("sonos:kitchen") && error.contains("sonos:den")
+        }));
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
     fn renderer_group_fans_out_playback_to_members() {
         let track = sample_track("track-1", Some(1), Some(1), "Track 1");
         let state = sample_state(vec![track.clone()]);

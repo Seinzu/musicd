@@ -24,8 +24,17 @@ data class RendererDto(
     @SerialName("last_seen_unix") val lastSeenUnix: Long = 0L,
     val selected: Boolean = false,
     val kind: String = "upnp",
+    val health: RendererHealthDto? = null,
     val error: String? = null,
     val group: RendererGroupDto? = null,
+)
+
+@Serializable
+data class RendererHealthDto(
+    @SerialName("last_checked_unix") val lastCheckedUnix: Long = 0L,
+    @SerialName("last_reachable_unix") val lastReachableUnix: Long? = null,
+    @SerialName("last_error") val lastError: String? = null,
+    val reachable: Boolean = false,
 )
 
 @Serializable

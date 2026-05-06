@@ -288,6 +288,10 @@ private fun MusicdRoot(
                 selectedGroupMemberLocations = state.rendererGroupMemberLocations,
                 useCurrentQueue = state.rendererGroupUseCurrentQueue,
                 editingGroupLocation = state.rendererGroupEditingLocation,
+                groupPlaybackWarning = state.nowPlaying
+                    ?.session
+                    ?.lastError
+                    ?.takeIf { state.selectedRendererLocation.startsWith("group:") },
                 isCreatingGroup = state.isCreatingRendererGroup,
                 groupErrorMessage = state.rendererGroupErrorMessage,
                 onSelectRenderer = onSelectRenderer,
@@ -1481,6 +1485,7 @@ private fun RendererPickerSheet(
     selectedGroupMemberLocations: Set<String>,
     useCurrentQueue: Boolean,
     editingGroupLocation: String?,
+    groupPlaybackWarning: String?,
     isCreatingGroup: Boolean,
     groupErrorMessage: String?,
     onSelectRenderer: (String) -> Unit,
@@ -1559,9 +1564,13 @@ private fun RendererPickerSheet(
             )
         }
         groupRenderers.forEach { renderer ->
-            RendererPickerRow(
+            RendererGroupPanel(
                 renderer = renderer,
+                renderers = renderers,
                 isSelected = renderer.location == selectedRendererLocation,
+                playbackWarning = groupPlaybackWarning.takeIf {
+                    renderer.location == selectedRendererLocation
+                },
                 sheetBackground = sheetBackground,
                 selectedContainer = accentContainer,
                 selectedAccent = accentColor,
@@ -1775,6 +1784,215 @@ private fun RendererPickerSheet(
 }
 
 @Composable
+private fun RendererGroupPanel(
+    renderer: RendererDto,
+    renderers: List<RendererDto>,
+    isSelected: Boolean,
+    playbackWarning: String?,
+    sheetBackground: Color,
+    selectedContainer: Color,
+    selectedAccent: Color,
+    onSelectRenderer: (String) -> Unit,
+    onEditGroup: (String) -> Unit,
+    onDeleteGroup: (String) -> Unit,
+) {
+    val group = renderer.group
+    val members = group?.members.orEmpty()
+    val physicalByLocation = renderers
+        .filter { it.kind != "group" }
+        .associateBy { it.location }
+    val leaderLocation = members
+        .map { it.rendererLocation }
+        .firstOrNull { physicalByLocation[it]?.kind != "android_local" }
+        ?: members.firstOrNull()?.rendererLocation
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) selectedContainer else sheetBackground,
+        ),
+        border = BorderStroke(
+            width = if (isSelected) 1.5.dp else 1.dp,
+            color = if (isSelected) {
+                selectedAccent.copy(alpha = 0.75f)
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+            },
+        ),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(58.dp)
+                        .background(Color(0xFF17181F), RoundedCornerShape(18.dp))
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(18.dp),
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.QueueMusic,
+                        contentDescription = null,
+                        tint = if (isSelected) selectedAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        rendererDisplayName(renderer),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        rendererDescriptor(renderer),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (isSelected) {
+                    Row(
+                        modifier = Modifier
+                            .background(selectedAccent, RoundedCornerShape(99.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(12.dp)
+                                .background(Color(0xFF1B140D), CircleShape)
+                        )
+                        Text(
+                            "Active",
+                            color = Color(0xFF1B140D),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+
+            if (!playbackWarning.isNullOrBlank()) {
+                Text(
+                    playbackWarning,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Members",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                members.forEach { member ->
+                    val memberRenderer = physicalByLocation[member.rendererLocation]
+                    RendererGroupMemberRow(
+                        memberLocation = member.rendererLocation,
+                        memberRenderer = memberRenderer,
+                        isLeader = member.rendererLocation == leaderLocation,
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (!isSelected) {
+                    Button(
+                        onClick = { onSelectRenderer(renderer.location) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Use")
+                    }
+                }
+                OutlinedButton(
+                    onClick = { onEditGroup(renderer.location) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Edit")
+                }
+                TextButton(
+                    onClick = { onDeleteGroup(renderer.location) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Delete")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RendererGroupMemberRow(
+    memberLocation: String,
+    memberRenderer: RendererDto?,
+    isLeader: Boolean,
+) {
+    val statusLabel = rendererHealthLabel(memberRenderer)
+    val statusColor = rendererHealthColor(memberRenderer)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            rendererIcon(memberRenderer),
+            contentDescription = null,
+            tint = statusColor,
+            modifier = Modifier.size(18.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                memberRenderer?.let(::rendererDisplayName)
+                    ?: rendererLocationHost(memberLocation)
+                    ?: memberLocation,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            memberRenderer
+                ?.health
+                ?.lastError
+                ?.takeIf { it.isNotBlank() }
+                ?.let { error ->
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+        }
+        if (isLeader) {
+            AssistChip(
+                onClick = {},
+                label = { Text("Leader") },
+            )
+        }
+        Text(
+            statusLabel,
+            style = MaterialTheme.typography.labelLarge,
+            color = statusColor,
+        )
+    }
+}
+
+@Composable
 private fun RendererPickerRow(
     renderer: RendererDto,
     isSelected: Boolean,
@@ -1907,8 +2125,27 @@ private fun rendererDescriptor(renderer: RendererDto): String {
     return parts.joinToString(" · ").ifBlank { "Renderer" }
 }
 
-private fun rendererIcon(renderer: RendererDto) =
-    when (renderer.kind) {
+private fun rendererHealthLabel(renderer: RendererDto?): String =
+    when {
+        renderer == null -> "Missing"
+        renderer.health?.reachable == false || renderer.health?.lastError != null -> "Issue"
+        renderer.health?.reachable == true -> "Online"
+        else -> "Saved"
+    }
+
+@Composable
+private fun rendererHealthColor(renderer: RendererDto?): Color =
+    when {
+        renderer == null -> MaterialTheme.colorScheme.error
+        renderer.health?.reachable == false || renderer.health?.lastError != null -> {
+            MaterialTheme.colorScheme.error
+        }
+        renderer.health?.reachable == true -> Color(0xFF70D49A)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+private fun rendererIcon(renderer: RendererDto?) =
+    when (renderer?.kind) {
         "android_local" -> Icons.Rounded.PhoneAndroid
         "group" -> Icons.AutoMirrored.Rounded.QueueMusic
         else -> Icons.Rounded.Speaker
