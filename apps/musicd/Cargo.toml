@@ -4,6 +4,9 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 arc-swap = "1.7"
 lofty = "0.24"

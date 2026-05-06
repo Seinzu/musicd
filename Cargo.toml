@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/musicd",
+    "apps/musicd-cli",
     "crates/musicd-core",
     "crates/musicd-upnp",
 ]
@@ -10,3 +11,8 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 version = "2.1.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
