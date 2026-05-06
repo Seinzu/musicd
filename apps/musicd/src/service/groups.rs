@@ -423,7 +423,7 @@ impl ServiceState {
             let renderer_location = &member.renderer_location;
             if matches!(
                 renderer_kind_for_location(renderer_location),
-                RendererKind::AndroidLocal
+                RendererKind::AndroidLocal | RendererKind::CliLocal
             ) {
                 continue;
             }

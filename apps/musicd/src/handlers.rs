@@ -8,7 +8,8 @@ use crate::http::{
 };
 use crate::metrics;
 use crate::renderer::{
-    RendererKind, android_local_renderer_capabilities, renderer_kind_for_location,
+    RendererKind, android_local_renderer_capabilities, local_renderer_capabilities,
+    renderer_kind_for_location,
 };
 use crate::service::{ServiceState, queue_status_for_transport};
 use crate::types::{AlbumSummary, LibraryTrack, PlaybackQueue};
@@ -1150,6 +1151,69 @@ pub(crate) fn handle_api_register_android_local_renderer_request(
         None,
         visibility,
         client_id,
+        false,
+    ) {
+        Ok(()) => api_renderer_state_response(
+            writer,
+            state,
+            &renderer_location,
+            &format!("Registered local renderer '{}'.", name),
+        ),
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("renderer registration failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_register_cli_local_renderer_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !matches!(
+        renderer_kind_for_location(&renderer_location),
+        RendererKind::CliLocal
+    ) {
+        return api_error(
+            writer,
+            "400 Bad Request",
+            "renderer_location must use the cli-local:// scheme",
+        );
+    }
+
+    let name = request_value(request, "name").unwrap_or("This CLI");
+    let client_id = request_client_id(request);
+    let visibility = request_value(request, "visibility").unwrap_or(if client_id.is_some() {
+        "private"
+    } else {
+        "public"
+    });
+    if visibility.eq_ignore_ascii_case("private") && client_id.is_none() {
+        return api_error(
+            writer,
+            "400 Bad Request",
+            "client_id is required for private renderers",
+        );
+    }
+    let capabilities = local_renderer_capabilities();
+
+    match state.remember_renderer_details_with_visibility(
+        &renderer_location,
+        name,
+        Some("musicdctl"),
+        request_value(request, "model_name"),
+        None,
+        Some(&capabilities),
+        None,
+        visibility,
+        client_id,
+        false,
     ) {
         Ok(()) => api_renderer_state_response(
             writer,

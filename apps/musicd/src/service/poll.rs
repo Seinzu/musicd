@@ -164,7 +164,7 @@ impl ServiceState {
             }
             if matches!(
                 renderer_kind_for_location(&renderer_location),
-                RendererKind::AndroidLocal
+                RendererKind::AndroidLocal | RendererKind::CliLocal
             ) {
                 continue;
             }

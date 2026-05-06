@@ -20,7 +20,7 @@ pub(crate) fn renderer_is_viable(renderer: &RendererRecord) -> bool {
     match renderer_kind_for_location(&renderer.location) {
         RendererKind::Upnp => renderer.av_transport_control_url.is_some(),
         RendererKind::Sonos => true,
-        RendererKind::AndroidLocal => true,
+        RendererKind::AndroidLocal | RendererKind::CliLocal => true,
         RendererKind::Group => true,
     }
 }

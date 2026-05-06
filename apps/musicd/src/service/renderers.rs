@@ -6,8 +6,9 @@ use crate::ids::{
     normalized_renderer_name, renderer_location_host, renderer_name_looks_like_location,
 };
 use crate::renderer::{
-    RendererKind, android_local_renderer_capabilities, renderer_group_id_from_location,
-    renderer_is_viable, renderer_kind_for_location, renderer_needs_refresh,
+    RendererKind, android_local_renderer_capabilities, local_renderer_capabilities,
+    renderer_group_id_from_location, renderer_is_viable, renderer_kind_for_location,
+    renderer_needs_refresh,
 };
 use crate::types::RendererRecord;
 use crate::util::now_unix_timestamp;
@@ -115,15 +116,20 @@ impl ServiceState {
 
         if matches!(
             renderer_kind_for_location(location),
-            RendererKind::AndroidLocal
+            RendererKind::AndroidLocal | RendererKind::CliLocal
         ) {
+            let is_cli = matches!(renderer_kind_for_location(location), RendererKind::CliLocal);
             let renderer = RendererRecord {
                 location: location.to_string(),
-                name: "This phone".to_string(),
-                manufacturer: Some("Android".to_string()),
+                name: if is_cli { "This CLI" } else { "This phone" }.to_string(),
+                manufacturer: Some(if is_cli { "musicdctl" } else { "Android" }.to_string()),
                 model_name: None,
                 av_transport_control_url: None,
-                capabilities: android_local_renderer_capabilities(),
+                capabilities: if is_cli {
+                    local_renderer_capabilities()
+                } else {
+                    android_local_renderer_capabilities()
+                },
                 visibility: "public".to_string(),
                 owner_client_id: None,
                 last_checked_unix: now_unix_timestamp(),
@@ -177,6 +183,7 @@ impl ServiceState {
             last_error,
             "public",
             None,
+            true,
         )
     }
 
@@ -191,6 +198,7 @@ impl ServiceState {
         last_error: Option<&str>,
         visibility: &str,
         owner_client_id: Option<&str>,
+        update_selection: bool,
     ) -> io::Result<()> {
         let existing = self.database.load_renderer(location)?;
         let now = now_unix_timestamp();
@@ -227,7 +235,11 @@ impl ServiceState {
             last_seen_unix,
         };
         self.database.upsert_renderer(&renderer)?;
-        self.database.set_last_selected_renderer_location(location)
+        if update_selection {
+            self.database
+                .set_last_selected_renderer_location(location)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn remember_renderer_record(&self, renderer: &RendererRecord) -> io::Result<()> {

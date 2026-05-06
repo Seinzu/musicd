@@ -5,7 +5,7 @@ use musicd_upnp::{RendererCapabilities, StreamResource, TransportSnapshot};
 use crate::types::RendererRecord;
 use crate::util::now_unix_timestamp;
 
-use super::RendererBackend;
+use super::{RendererBackend, RendererKind, renderer_kind_for_location};
 
 #[derive(Debug, Default)]
 pub(crate) struct AndroidLocalRendererBackend;
@@ -22,11 +22,20 @@ impl RendererBackend for AndroidLocalRendererBackend {
 
         Ok(RendererRecord {
             location: renderer_location.to_string(),
-            name: "This phone".to_string(),
-            manufacturer: Some("Android".to_string()),
+            name: match renderer_kind_for_location(renderer_location) {
+                RendererKind::CliLocal => "This CLI".to_string(),
+                _ => "This phone".to_string(),
+            },
+            manufacturer: Some(
+                match renderer_kind_for_location(renderer_location) {
+                    RendererKind::CliLocal => "musicdctl",
+                    _ => "Android",
+                }
+                .to_string(),
+            ),
             model_name: None,
             av_transport_control_url: None,
-            capabilities: android_local_renderer_capabilities(),
+            capabilities: local_renderer_capabilities(),
             visibility: "public".to_string(),
             owner_client_id: None,
             last_checked_unix: now_unix_timestamp(),
@@ -81,6 +90,10 @@ impl RendererBackend for AndroidLocalRendererBackend {
 }
 
 pub(crate) fn android_local_renderer_capabilities() -> RendererCapabilities {
+    local_renderer_capabilities()
+}
+
+pub(crate) fn local_renderer_capabilities() -> RendererCapabilities {
     RendererCapabilities {
         av_transport_actions: Some(vec![
             "Play".to_string(),

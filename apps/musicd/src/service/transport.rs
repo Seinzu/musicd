@@ -84,7 +84,7 @@ impl ServiceState {
         let _ = self.remember_renderer_location(renderer_location);
         if matches!(
             renderer_kind_for_location(renderer_location),
-            RendererKind::AndroidLocal
+            RendererKind::AndroidLocal | RendererKind::CliLocal
         ) {
             if let Some(queue) = self.queue_snapshot(renderer_location) {
                 if queue.current_entry_id.is_some() {
@@ -181,7 +181,7 @@ impl ServiceState {
         }
         if matches!(
             renderer_kind_for_location(renderer_location),
-            RendererKind::AndroidLocal
+            RendererKind::AndroidLocal | RendererKind::CliLocal
         ) {
             self.database
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
@@ -250,7 +250,7 @@ impl ServiceState {
         }
         if matches!(
             renderer_kind_for_location(renderer_location),
-            RendererKind::AndroidLocal
+            RendererKind::AndroidLocal | RendererKind::CliLocal
         ) {
             self.database
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
@@ -294,7 +294,7 @@ impl ServiceState {
 
         if matches!(
             renderer_kind_for_location(renderer_location),
-            RendererKind::AndroidLocal | RendererKind::Group
+            RendererKind::AndroidLocal | RendererKind::CliLocal | RendererKind::Group
         ) {
             return Ok("No later track in the queue.".to_string());
         }
@@ -333,7 +333,7 @@ impl ServiceState {
 
         if matches!(
             renderer_kind_for_location(renderer_location),
-            RendererKind::AndroidLocal | RendererKind::Group
+            RendererKind::AndroidLocal | RendererKind::CliLocal | RendererKind::Group
         ) {
             return Ok("No earlier track in the queue.".to_string());
         }

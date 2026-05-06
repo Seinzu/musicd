@@ -8,7 +8,9 @@ mod android_local;
 mod health;
 mod upnp;
 
-pub(crate) use android_local::{AndroidLocalRendererBackend, android_local_renderer_capabilities};
+pub(crate) use android_local::{
+    AndroidLocalRendererBackend, android_local_renderer_capabilities, local_renderer_capabilities,
+};
 pub(crate) use health::{
     parse_renderer_actions_json, renderer_actions_json, renderer_is_viable, renderer_needs_refresh,
 };
@@ -19,6 +21,7 @@ pub(crate) enum RendererKind {
     Upnp,
     Sonos,
     AndroidLocal,
+    CliLocal,
     Group,
 }
 
@@ -63,7 +66,7 @@ impl RendererBackends {
                 io::ErrorKind::Unsupported,
                 "Sonos renderer support has not been implemented yet",
             )),
-            RendererKind::AndroidLocal => Ok(&self.android_local),
+            RendererKind::AndroidLocal | RendererKind::CliLocal => Ok(&self.android_local),
             RendererKind::Group => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "group playback fan-out has not been implemented yet",
@@ -86,6 +89,8 @@ pub(crate) fn renderer_group_id_from_location(renderer_location: &str) -> Option
 pub(crate) fn renderer_kind_for_location(renderer_location: &str) -> RendererKind {
     if renderer_location.starts_with("android-local://") {
         RendererKind::AndroidLocal
+    } else if renderer_location.starts_with("cli-local://") {
+        RendererKind::CliLocal
     } else if renderer_location.starts_with("sonos:") {
         RendererKind::Sonos
     } else if renderer_group_id_from_location(renderer_location).is_some() {
@@ -100,6 +105,7 @@ pub(crate) fn renderer_kind_name(kind: RendererKind) -> &'static str {
         RendererKind::Upnp => "upnp",
         RendererKind::Sonos => "sonos",
         RendererKind::AndroidLocal => "android_local",
+        RendererKind::CliLocal => "cli_local",
         RendererKind::Group => "group",
     }
 }

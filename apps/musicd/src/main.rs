@@ -104,6 +104,14 @@ mod tests {
             RendererKind::Sonos
         );
         assert_eq!(
+            renderer_kind_for_location("android-local://phone"),
+            RendererKind::AndroidLocal
+        );
+        assert_eq!(
+            renderer_kind_for_location("cli-local://terminal"),
+            RendererKind::CliLocal
+        );
+        assert_eq!(
             renderer_kind_for_location("group:abc123"),
             RendererKind::Group
         );
