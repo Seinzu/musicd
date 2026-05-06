@@ -215,7 +215,9 @@ impl App {
             KeyCode::Char('a') => self.append_selection(),
             KeyCode::Char(' ') => self.toggle_play_pause(),
             KeyCode::Char('n') => self.transport(|api, loc| api.transport_next(loc), "Next"),
-            KeyCode::Char('p') => self.transport(|api, loc| api.transport_previous(loc), "Previous"),
+            KeyCode::Char('p') => {
+                self.transport(|api, loc| api.transport_previous(loc), "Previous")
+            }
             KeyCode::Char('s') => self.transport(|api, loc| api.transport_stop(loc), "Stopped"),
             KeyCode::Char('C') => self.transport(|api, loc| api.queue_clear(loc), "Queue cleared"),
             KeyCode::Char('r') => {
@@ -312,9 +314,13 @@ impl App {
         };
         match self.tab {
             Tab::Albums => {
-                let Some(&album_idx) = self.filtered_albums.get(idx) else { return };
+                let Some(&album_idx) = self.filtered_albums.get(idx) else {
+                    return;
+                };
                 let album = self.albums[album_idx].clone();
-                let Some(loc) = self.renderer_location() else { return };
+                let Some(loc) = self.renderer_location() else {
+                    return;
+                };
                 match self.api.play_album(&loc, &album.id) {
                     Ok(()) => {
                         self.set_info(format!("Playing album: {}", album.title));
@@ -324,9 +330,13 @@ impl App {
                 }
             }
             Tab::Tracks => {
-                let Some(&track_idx) = self.filtered_tracks.get(idx) else { return };
+                let Some(&track_idx) = self.filtered_tracks.get(idx) else {
+                    return;
+                };
                 let track = self.tracks[track_idx].clone();
-                let Some(loc) = self.renderer_location() else { return };
+                let Some(loc) = self.renderer_location() else {
+                    return;
+                };
                 match self.api.play_track(&loc, &track.id) {
                     Ok(()) => {
                         self.set_info(format!("Playing: {}", track.title));
@@ -353,10 +363,14 @@ impl App {
         let Some(idx) = self.list_state.selected() else {
             return;
         };
-        let Some(loc) = self.renderer_location() else { return };
+        let Some(loc) = self.renderer_location() else {
+            return;
+        };
         match self.tab {
             Tab::Albums => {
-                let Some(&album_idx) = self.filtered_albums.get(idx) else { return };
+                let Some(&album_idx) = self.filtered_albums.get(idx) else {
+                    return;
+                };
                 let album = self.albums[album_idx].clone();
                 match self.api.append_album(&loc, &album.id) {
                     Ok(()) => {
@@ -367,7 +381,9 @@ impl App {
                 }
             }
             Tab::Tracks => {
-                let Some(&track_idx) = self.filtered_tracks.get(idx) else { return };
+                let Some(&track_idx) = self.filtered_tracks.get(idx) else {
+                    return;
+                };
                 let track = self.tracks[track_idx].clone();
                 match self.api.append_track(&loc, &track.id) {
                     Ok(()) => {
@@ -382,7 +398,9 @@ impl App {
     }
 
     fn toggle_play_pause(&mut self) {
-        let Some(loc) = self.renderer_location() else { return };
+        let Some(loc) = self.renderer_location() else {
+            return;
+        };
         let state = self
             .queue
             .session
@@ -407,7 +425,9 @@ impl App {
     where
         F: FnOnce(&ApiClient, &str) -> Result<()>,
     {
-        let Some(loc) = self.renderer_location() else { return };
+        let Some(loc) = self.renderer_location() else {
+            return;
+        };
         match f(&self.api, &loc) {
             Ok(()) => {
                 self.set_info(label.to_string());
@@ -558,7 +578,11 @@ impl App {
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let title = if active { "search (Esc to cancel)" } else { "search (/)" };
+        let title = if active {
+            "search (Esc to cancel)"
+        } else {
+            "search (/)"
+        };
         let p = Paragraph::new(body)
             .style(style)
             .block(Block::default().borders(Borders::ALL).title(title));
@@ -575,7 +599,11 @@ impl App {
                         ListItem::new(format!("{}  ·  {}", a.title, a.artist))
                     })
                     .collect(),
-                format!("Albums ({}/{})", self.filtered_albums.len(), self.albums.len()),
+                format!(
+                    "Albums ({}/{})",
+                    self.filtered_albums.len(),
+                    self.albums.len()
+                ),
             ),
             Tab::Tracks => (
                 self.filtered_tracks
@@ -586,10 +614,17 @@ impl App {
                             .duration_seconds
                             .map(format_secs)
                             .unwrap_or_else(|| "—".to_string());
-                        ListItem::new(format!("{:>6}  {}  ·  {}  ·  {}", dur, t.title, t.artist, t.album))
+                        ListItem::new(format!(
+                            "{:>6}  {}  ·  {}  ·  {}",
+                            dur, t.title, t.artist, t.album
+                        ))
                     })
                     .collect(),
-                format!("Tracks ({}/{})", self.filtered_tracks.len(), self.tracks.len()),
+                format!(
+                    "Tracks ({}/{})",
+                    self.filtered_tracks.len(),
+                    self.tracks.len()
+                ),
             ),
             Tab::Queue => {
                 let items = self
@@ -604,7 +639,13 @@ impl App {
                         };
                         let title = e.title.clone().unwrap_or_else(|| "(unknown)".into());
                         let artist = e.artist.clone().unwrap_or_default();
-                        ListItem::new(format!("{}{}. {}  ·  {}", marker, e.position + 1, title, artist))
+                        ListItem::new(format!(
+                            "{}{}. {}  ·  {}",
+                            marker,
+                            e.position + 1,
+                            title,
+                            artist
+                        ))
                     })
                     .collect();
                 let status = if self.queue.status.is_empty() {
@@ -612,7 +653,10 @@ impl App {
                 } else {
                     format!("queue [{}]", self.queue.status)
                 };
-                (items, format!("{} — {} entries", status, self.queue.entries.len()))
+                (
+                    items,
+                    format!("{} — {} entries", status, self.queue.entries.len()),
+                )
             }
             Tab::Renderers => {
                 let items = self
@@ -636,7 +680,10 @@ impl App {
                     .collect();
                 (
                     items,
-                    format!("Renderers ({})  D=discover  Enter=select", self.renderers.len()),
+                    format!(
+                        "Renderers ({})  D=discover  Enter=select",
+                        self.renderers.len()
+                    ),
                 )
             }
         };
@@ -711,8 +758,14 @@ fn format_now_playing(session: &Session) -> String {
     let title = session.title.clone().unwrap_or_else(|| "(idle)".into());
     let artist = session.artist.clone().unwrap_or_default();
     let album = session.album.clone().unwrap_or_default();
-    let pos = session.position_seconds.map(format_secs).unwrap_or_default();
-    let dur = session.duration_seconds.map(format_secs).unwrap_or_default();
+    let pos = session
+        .position_seconds
+        .map(format_secs)
+        .unwrap_or_default();
+    let dur = session
+        .duration_seconds
+        .map(format_secs)
+        .unwrap_or_default();
     let time = if pos.is_empty() && dur.is_empty() {
         String::new()
     } else {

@@ -85,17 +85,19 @@ pub struct Session {
 
 pub struct ApiClient {
     base_url: String,
+    client_id: String,
     http: Client,
 }
 
 impl ApiClient {
-    pub fn new(base_url: &str) -> Result<Self> {
+    pub fn new(base_url: &str, client_id: &str) -> Result<Self> {
         let http = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .context("building HTTP client")?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
+            client_id: client_id.to_string(),
             http,
         })
     }
@@ -125,6 +127,7 @@ impl ApiClient {
         let res = self
             .http
             .post(&url)
+            .form(&[("client_id", self.client_id.as_str())])
             .send()
             .with_context(|| format!("POST {url}"))?
             .error_for_status()
@@ -138,7 +141,10 @@ impl ApiClient {
         let res = self
             .http
             .get(&url)
-            .query(&[("renderer_location", renderer_location)])
+            .query(&[
+                ("renderer_location", renderer_location),
+                ("client_id", self.client_id.as_str()),
+            ])
             .send()
             .with_context(|| format!("GET {url}"))?
             .error_for_status()
@@ -234,6 +240,7 @@ impl ApiClient {
         let res = self
             .http
             .get(&url)
+            .query(&[("client_id", self.client_id.as_str())])
             .send()
             .with_context(|| format!("GET {url}"))?
             .error_for_status()
@@ -244,9 +251,12 @@ impl ApiClient {
 
     fn post_form(&self, path: &str, params: &[(&str, &str)]) -> Result<()> {
         let url = format!("{}{path}", self.base_url);
+        let mut form = Vec::with_capacity(params.len() + 1);
+        form.push(("client_id", self.client_id.as_str()));
+        form.extend_from_slice(params);
         self.http
             .post(&url)
-            .form(params)
+            .form(&form)
             .send()
             .with_context(|| format!("POST {url}"))?
             .error_for_status()
