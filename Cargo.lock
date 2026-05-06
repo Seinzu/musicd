@@ -917,6 +917,9 @@ version = "2.1.0"
 [[package]]
 name = "musicd-upnp"
 version = "2.1.0"
+dependencies = [
+ "reqwest",
+]
 
 [[package]]
 name = "ogg_pager"

@@ -1,8 +1,13 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
+use std::io;
+use std::net::UdpSocket;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+use reqwest::Method;
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 const MEDIA_RENDERER_ST: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
@@ -747,165 +752,86 @@ fn parse_service_actions(xml: &str) -> Vec<String> {
     actions
 }
 
+fn shared_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .user_agent("musicd/0.1")
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(8))
+            .pool_idle_timeout(Some(Duration::from_secs(60)))
+            .build()
+            .expect("failed to build reqwest client for upnp")
+    })
+}
+
 fn http_request(
     method: &str,
     url: &str,
     headers: &[(&str, &str)],
     body: Option<&[u8]>,
 ) -> io::Result<HttpResponse> {
-    let parsed = parse_http_url(url)?;
-    let mut request = format!(
-        "{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: musicd/0.1\r\n",
-        parsed.path_and_query, parsed.host
-    );
-
-    for (name, value) in headers {
-        request.push_str(name);
-        request.push_str(": ");
-        request.push_str(value);
-        request.push_str("\r\n");
-    }
-
-    let body = body.unwrap_or(&[]);
-    request.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
-
-    let mut stream = open_tcp_stream(&parsed)?;
-    stream.write_all(request.as_bytes())?;
-    if !body.is_empty() {
-        stream.write_all(body)?;
-    }
-    stream.flush()?;
-
-    let mut response_bytes = Vec::new();
-    stream.read_to_end(&mut response_bytes)?;
-    parse_http_response(&response_bytes)
-}
-
-fn open_tcp_stream(url: &HttpUrl) -> io::Result<TcpStream> {
-    let address = format!("{}:{}", url.host, url.port);
-    let mut addrs = address.to_socket_addrs()?;
-    let socket_addr = addrs.next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::AddrNotAvailable,
-            format!("could not resolve {address}"),
-        )
-    })?;
-
-    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    Ok(stream)
-}
-
-fn parse_http_response(bytes: &[u8]) -> io::Result<HttpResponse> {
-    let header_end = bytes
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "HTTP response was missing headers",
-            )
-        })?;
-    let header_bytes = &bytes[..header_end];
-    let body_bytes = &bytes[header_end + 4..];
-
-    let header_text = String::from_utf8(header_bytes.to_vec()).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("HTTP headers were not valid UTF-8: {error}"),
-        )
-    })?;
-
-    let mut lines = header_text.lines();
-    let status_line = lines.next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "HTTP response was missing a status line",
-        )
-    })?;
-
-    let mut status_parts = status_line.splitn(3, ' ');
-    let _version = status_parts.next();
-    let status_code = status_parts
-        .next()
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "HTTP status line was malformed")
-        })?
-        .parse::<u16>()
-        .map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("HTTP status code was invalid: {error}"),
-            )
-        })?;
-    let reason_phrase = status_parts.next().unwrap_or("").trim().to_string();
-    let headers = parse_header_lines(lines);
-
-    let body = if headers
-        .get("transfer-encoding")
-        .map(|value| value.eq_ignore_ascii_case("chunked"))
-        .unwrap_or(false)
-    {
-        decode_chunked_body(body_bytes)?
-    } else {
-        body_bytes.to_vec()
+    let method = match method {
+        "GET" => Method::GET,
+        "POST" => Method::POST,
+        "HEAD" => Method::HEAD,
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported HTTP method: {other}"),
+            ));
+        }
     };
+
+    let mut header_map = HeaderMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid header name {name}: {error}"),
+            )
+        })?;
+        let value = HeaderValue::from_str(value).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid header value: {error}"),
+            )
+        })?;
+        header_map.append(name, value);
+    }
+
+    let mut request = shared_client().request(method, url).headers(header_map);
+    if let Some(body) = body {
+        request = request.body(body.to_vec());
+    }
+
+    let response = request
+        .send()
+        .map_err(|error| io::Error::other(format!("HTTP request to {url} failed: {error}")))?;
+
+    let status_code = response.status().as_u16();
+    let reason_phrase = response
+        .status()
+        .canonical_reason()
+        .unwrap_or("")
+        .to_string();
+    let mut response_headers = HashMap::with_capacity(response.headers().len());
+    for (name, value) in response.headers().iter() {
+        if let Ok(value) = value.to_str() {
+            response_headers.insert(name.as_str().to_ascii_lowercase(), value.to_string());
+        }
+    }
+    let body = response
+        .bytes()
+        .map_err(|error| io::Error::other(format!("HTTP body read from {url} failed: {error}")))?
+        .to_vec();
 
     Ok(HttpResponse {
         status_code,
         reason_phrase,
-        headers,
+        headers: response_headers,
         body,
     })
-}
-
-fn decode_chunked_body(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    let mut output = Vec::new();
-    let mut cursor = 0;
-
-    while cursor < bytes.len() {
-        let line_end = find_crlf(bytes, cursor).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "chunked response was missing chunk size",
-            )
-        })?;
-        let size_line = std::str::from_utf8(&bytes[cursor..line_end]).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("chunk size line was not valid UTF-8: {error}"),
-            )
-        })?;
-        let size_hex = size_line.split(';').next().unwrap_or("").trim();
-        let chunk_size = usize::from_str_radix(size_hex, 16).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("chunk size was invalid: {error}"),
-            )
-        })?;
-        cursor = line_end + 2;
-
-        if chunk_size == 0 {
-            return Ok(output);
-        }
-
-        let chunk_end = cursor + chunk_size;
-        if chunk_end > bytes.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "chunk extended beyond available response body",
-            ));
-        }
-
-        output.extend_from_slice(&bytes[cursor..chunk_end]);
-        cursor = chunk_end + 2;
-    }
-
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "chunked response terminated unexpectedly",
-    ))
 }
 
 fn parse_http_url(url: &str) -> io::Result<HttpUrl> {
@@ -1080,13 +1006,6 @@ fn find_balanced_tag_content_range(
     None
 }
 
-fn find_crlf(bytes: &[u8], start: usize) -> Option<usize> {
-    bytes[start..]
-        .windows(2)
-        .position(|window| window == b"\r\n")
-        .map(|offset| start + offset)
-}
-
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1154,9 +1073,8 @@ mod tests {
         build_get_position_info_envelope, build_get_transport_info_envelope, build_next_envelope,
         build_pause_envelope, build_play_envelope, build_previous_envelope,
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
-        build_stop_envelope, decode_chunked_body, is_transition_not_available_fault,
-        parse_device_description, parse_http_response, parse_http_url,
-        parse_position_info_response, parse_service_actions, parse_ssdp_response,
+        build_stop_envelope, is_transition_not_available_fault, parse_device_description,
+        parse_http_url, parse_position_info_response, parse_service_actions, parse_ssdp_response,
         parse_transport_info_response, resolve_url, select_renderer_device_section,
     };
     use std::collections::HashMap;
@@ -1381,22 +1299,6 @@ mod tests {
         assert_eq!(parsed.host, "192.168.1.55");
         assert_eq!(parsed.port, 49152);
         assert_eq!(parsed.path_and_query, "/description.xml");
-    }
-
-    #[test]
-    fn decodes_chunked_http_bodies() {
-        let body = decode_chunked_body(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n").unwrap();
-        assert_eq!(body, b"Wikipedia");
-    }
-
-    #[test]
-    fn parses_chunked_http_response() {
-        let response = parse_http_response(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n",
-        )
-        .unwrap();
-        assert_eq!(response.status_code, 200);
-        assert_eq!(response.body, b"test");
     }
 
     #[test]
