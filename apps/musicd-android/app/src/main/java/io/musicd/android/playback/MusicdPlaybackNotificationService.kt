@@ -9,6 +9,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
@@ -37,6 +38,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private data class GroupPlaybackClock(
+    val trackId: String,
+    val positionMs: Long,
+    val capturedElapsedMs: Long,
+    val durationMs: Long?,
+    val transportState: String,
+)
+
 class MusicdPlaybackNotificationService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val repository by lazy { MusicdRepository(applicationContext) }
@@ -45,6 +54,7 @@ class MusicdPlaybackNotificationService : Service() {
     private lateinit var localPlayer: ExoPlayer
     private var observerJob: Job? = null
     private var localPlaybackReportJob: Job? = null
+    private var groupPlaybackSyncJob: Job? = null
     private var currentBaseUrl: String = ""
     private var currentRendererLocation: String = ""
     private var currentLocalRendererLocation: String = ""
@@ -55,6 +65,8 @@ class MusicdPlaybackNotificationService : Service() {
     private var suppressLocalPlayerSync = false
     private var lastReportedLocalSessionSignature: String? = null
     private var lastAppliedServerSeekPositionMs: Long? = null
+    private var lastGroupHardSeekElapsedMs: Long = 0L
+    private var groupPlaybackClock: GroupPlaybackClock? = null
     private var pendingServerAdvanceTrackUri: String? = null
 
     override fun onCreate() {
@@ -450,6 +462,7 @@ class MusicdPlaybackNotificationService : Service() {
         val transportState = event.nowPlaying.session?.transportState.orEmpty()
         val serverPositionMs = serverPlaybackPositionMillis(event)
         val isGroupedLocalPlayback = isGroupedLocalRendererActive()
+        updateGroupPlaybackClock(event, track.id, serverPositionMs, isGroupedLocalPlayback)
 
         if (currentUri == streamUrl) {
             pendingServerAdvanceTrackUri = null
@@ -484,11 +497,11 @@ class MusicdPlaybackNotificationService : Service() {
                     serverPositionMs = serverPositionMs,
                     transportState = transportState,
                     toleranceMs = if (isGroupedLocalPlayback) {
-                        GROUP_SEEK_SYNC_TOLERANCE_MS
+                        GROUP_HARD_SEEK_SYNC_TOLERANCE_MS
                     } else {
                         SERVER_SEEK_SYNC_TOLERANCE_MS
                     },
-                    allowPlayingCorrection = isGroupedLocalPlayback,
+                    allowPlayingCorrection = false,
                 )
             ) {
                 localPlayer.seekTo(serverPositionMs ?: 0L)
@@ -531,9 +544,138 @@ class MusicdPlaybackNotificationService : Service() {
         return durationMs?.let { targetPositionMs.coerceAtMost(it) } ?: targetPositionMs
     }
 
+    private fun updateGroupPlaybackClock(
+        event: PlaybackEventDto,
+        trackId: String,
+        serverPositionMs: Long?,
+        isGroupedLocalPlayback: Boolean,
+    ) {
+        val session = event.nowPlaying.session
+        if (!isGroupedLocalPlayback || session == null || serverPositionMs == null) {
+            clearGroupPlaybackSync(resetSpeed = true)
+            return
+        }
+        groupPlaybackClock = GroupPlaybackClock(
+            trackId = trackId,
+            positionMs = serverPositionMs,
+            capturedElapsedMs = SystemClock.elapsedRealtime(),
+            durationMs = (session.durationSeconds ?: event.nowPlaying.currentTrack?.durationSeconds)
+                ?.times(1000L),
+            transportState = session.transportState,
+        )
+        updateGroupPlaybackSyncLoop()
+    }
+
+    private fun updateGroupPlaybackSyncLoop() {
+        val clock = groupPlaybackClock
+        if (
+            !isGroupedLocalRendererActive() ||
+            clock == null ||
+            clock.transportState != "PLAYING"
+        ) {
+            clearGroupPlaybackSync(resetSpeed = true)
+            return
+        }
+        if (groupPlaybackSyncJob?.isActive == true) {
+            return
+        }
+        groupPlaybackSyncJob = serviceScope.launch {
+            while (isActive && isGroupedLocalRendererActive()) {
+                applyGroupPlaybackDriftCorrection()
+                delay(GROUP_SYNC_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun applyGroupPlaybackDriftCorrection() {
+        val clock = groupPlaybackClock ?: return
+        if (clock.transportState != "PLAYING" || localPlayer.currentMediaItem == null) {
+            resetLocalPlaybackSpeed()
+            return
+        }
+        val currentTrackId = localPlayer.currentMediaItem?.mediaId
+        if (currentTrackId != clock.trackId) {
+            resetLocalPlaybackSpeed()
+            return
+        }
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        val clockAgeMs = nowElapsedMs - clock.capturedElapsedMs
+        if (clockAgeMs > MAX_SERVER_PLAYBACK_CLOCK_AGE_SECONDS * 1000L) {
+            resetLocalPlaybackSpeed()
+            return
+        }
+
+        val targetPositionMs = estimatedGroupPlaybackPositionMillis(clock, nowElapsedMs)
+            ?: return
+        val currentPositionMs = localPlayer.currentPosition.coerceAtLeast(0L)
+        val driftMs = targetPositionMs - currentPositionMs
+        val absoluteDriftMs = kotlin.math.abs(driftMs)
+
+        if (
+            absoluteDriftMs >= GROUP_HARD_SEEK_SYNC_TOLERANCE_MS &&
+            nowElapsedMs - lastGroupHardSeekElapsedMs >= GROUP_HARD_SEEK_COOLDOWN_MS
+        ) {
+            localPlayer.seekTo(targetPositionMs)
+            lastAppliedServerSeekPositionMs = targetPositionMs
+            lastGroupHardSeekElapsedMs = nowElapsedMs
+            resetLocalPlaybackSpeed()
+            return
+        }
+
+        if (!localPlayer.isPlaying) {
+            resetLocalPlaybackSpeed()
+            return
+        }
+
+        when {
+            absoluteDriftMs >= GROUP_SPEED_SYNC_TOLERANCE_MS && driftMs > 0L -> {
+                setLocalPlaybackSpeed(GROUP_SPEED_UP)
+            }
+            absoluteDriftMs >= GROUP_SPEED_SYNC_TOLERANCE_MS && driftMs < 0L -> {
+                setLocalPlaybackSpeed(GROUP_SLOW_DOWN)
+            }
+            absoluteDriftMs <= GROUP_SPEED_RESET_TOLERANCE_MS -> resetLocalPlaybackSpeed()
+        }
+    }
+
+    private fun estimatedGroupPlaybackPositionMillis(
+        clock: GroupPlaybackClock,
+        nowElapsedMs: Long,
+    ): Long? {
+        val elapsedMs = if (clock.transportState == "PLAYING") {
+            (nowElapsedMs - clock.capturedElapsedMs)
+                .coerceIn(0L, MAX_SERVER_PLAYBACK_CLOCK_AGE_SECONDS * 1000L)
+        } else {
+            0L
+        }
+        val positionMs = clock.positionMs + elapsedMs
+        return clock.durationMs?.let { positionMs.coerceAtMost(it) } ?: positionMs
+    }
+
+    private fun clearGroupPlaybackSync(resetSpeed: Boolean) {
+        groupPlaybackSyncJob?.cancel()
+        groupPlaybackSyncJob = null
+        groupPlaybackClock = null
+        lastGroupHardSeekElapsedMs = 0L
+        if (resetSpeed) {
+            resetLocalPlaybackSpeed()
+        }
+    }
+
+    private fun setLocalPlaybackSpeed(speed: Float) {
+        if (kotlin.math.abs(localPlayer.playbackParameters.speed - speed) > 0.001f) {
+            localPlayer.setPlaybackSpeed(speed)
+        }
+    }
+
+    private fun resetLocalPlaybackSpeed() {
+        setLocalPlaybackSpeed(1f)
+    }
+
     private fun stopLocalPlayer() {
         suppressLocalPlayerSync = true
         try {
+            clearGroupPlaybackSync(resetSpeed = true)
             localPlayer.stop()
             localPlayer.clearMediaItems()
             lastAppliedServerSeekPositionMs = null
@@ -819,7 +961,13 @@ class MusicdPlaybackNotificationService : Service() {
 
         private const val REQUEST_OPEN_APP = 2001
         private const val SERVER_SEEK_SYNC_TOLERANCE_MS = 4_000L
-        private const val GROUP_SEEK_SYNC_TOLERANCE_MS = 1_500L
+        private const val GROUP_SPEED_SYNC_TOLERANCE_MS = 1_100L
+        private const val GROUP_SPEED_RESET_TOLERANCE_MS = 650L
+        private const val GROUP_HARD_SEEK_SYNC_TOLERANCE_MS = 3_000L
+        private const val GROUP_HARD_SEEK_COOLDOWN_MS = 8_000L
+        private const val GROUP_SYNC_INTERVAL_MS = 750L
+        private const val GROUP_SPEED_UP = 1.04f
+        private const val GROUP_SLOW_DOWN = 0.96f
         private const val MAX_SERVER_PLAYBACK_CLOCK_AGE_SECONDS = 30L
 
         fun start(
