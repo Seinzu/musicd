@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,8 @@ pub struct CliConfig {
     pub server_url: Option<String>,
     #[serde(default)]
     pub renderer_location: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
 }
 
 impl CliConfig {
@@ -19,6 +22,23 @@ impl CliConfig {
         self.server_url
             .clone()
             .unwrap_or_else(|| DEFAULT_SERVER.to_string())
+    }
+
+    pub fn client_id(&mut self) -> String {
+        if let Some(client_id) = self
+            .client_id
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return client_id.clone();
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let client_id = format!("cli-{now}-{}", std::process::id());
+        self.client_id = Some(client_id.clone());
+        client_id
     }
 }
 
@@ -32,16 +52,14 @@ pub fn load() -> Result<CliConfig> {
     if !path.exists() {
         return Ok(CliConfig::default());
     }
-    let body = fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let body = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     toml::from_str(&body).with_context(|| format!("parsing {}", path.display()))
 }
 
 pub fn save(config: &CliConfig) -> Result<()> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let body = toml::to_string_pretty(config).context("serializing config")?;
     fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;

@@ -24,17 +24,27 @@ fn main() -> Result<()> {
     }
 
     let mut config = config::load().unwrap_or_default();
+    let mut server_url = config.server_url();
 
     if let Some(server) = parse_flag(&args, "--server") {
         config.server_url = Some(server);
         config::save(&config)?;
+        server_url = config.server_url();
     } else if let Ok(env) = std::env::var("MUSICD_URL") {
         if !env.trim().is_empty() {
-            config.server_url = Some(env);
+            server_url = env;
         }
     }
 
-    let api = ApiClient::new(&config.server_url())?;
+    let had_client_id = config
+        .client_id
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let client_id = config.client_id();
+    if !had_client_id {
+        config::save(&config)?;
+    }
+    let api = ApiClient::new(&server_url, &client_id)?;
 
     install_panic_hook();
     let mut terminal = setup_terminal()?;
