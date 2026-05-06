@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
@@ -167,6 +168,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onCancelRendererGroupEdit = viewModel::cancelRendererGroupEdit,
         onUpdateRendererGroup = viewModel::updateRendererGroup,
         onDeleteRendererGroup = viewModel::deleteRendererGroup,
+        onRemoveRendererGroupMember = viewModel::removeRendererGroupMember,
         onPlay = viewModel::transportPlay,
         onPause = viewModel::transportPause,
         onStop = viewModel::transportStop,
@@ -223,6 +225,7 @@ private fun MusicdRoot(
     onCancelRendererGroupEdit: () -> Unit,
     onUpdateRendererGroup: () -> Unit,
     onDeleteRendererGroup: (String) -> Unit,
+    onRemoveRendererGroupMember: (String, String) -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onStop: () -> Unit,
@@ -304,6 +307,7 @@ private fun MusicdRoot(
                 onCancelGroupEdit = onCancelRendererGroupEdit,
                 onUpdateGroup = onUpdateRendererGroup,
                 onDeleteGroup = onDeleteRendererGroup,
+                onRemoveGroupMember = onRemoveRendererGroupMember,
             )
         }
     }
@@ -1498,17 +1502,38 @@ private fun RendererPickerSheet(
     onCancelGroupEdit: () -> Unit,
     onUpdateGroup: () -> Unit,
     onDeleteGroup: (String) -> Unit,
+    onRemoveGroupMember: (String, String) -> Unit,
 ) {
     val accentColor = Color(0xFFF5AF43)
     val accentContainer = Color(0xFF4B3B2B)
     val sheetBackground = Color(0xFF1F1F25)
     val physicalRenderers = renderers.filter { it.kind != "group" }
     val groupRenderers = renderers.filter { it.kind == "group" }
+    val selectedRenderer = renderers.firstOrNull { it.location == selectedRendererLocation }
+    val baseMemberLocations = if (editingGroupLocation == null) {
+        rendererGroupBaseMemberLocations(selectedRenderer)
+    } else {
+        emptyList()
+    }
     val selectedPhysicalCount = selectedGroupMemberLocations
         .count { selected -> physicalRenderers.any { it.location == selected } }
-    val canCreateGroup = selectedPhysicalCount >= 2 && !isCreatingGroup
+    val totalCreateMemberLocations = (baseMemberLocations + selectedGroupMemberLocations)
+        .filter { location -> physicalRenderers.any { it.location == location } }
+        .distinct()
+    val additionalCreateMemberCount = totalCreateMemberLocations.count { it !in baseMemberLocations }
+    val canCreateGroup = if (editingGroupLocation == null) {
+        totalCreateMemberLocations.size >= 2 &&
+            (baseMemberLocations.isEmpty() || additionalCreateMemberCount > 0) &&
+            !isCreatingGroup
+    } else {
+        selectedPhysicalCount >= 2 && !isCreatingGroup
+    }
     val isEditingGroup = editingGroupLocation != null
     var pendingDeleteGroup by remember { mutableStateOf<RendererDto?>(null) }
+    val targetSummary = listOfNotNull(
+        groupRenderers.size.takeIf { it > 0 }?.let { "$it GROUP${if (it == 1) "" else "S"}" },
+        physicalRenderers.size.takeIf { it > 0 }?.let { "$it RENDERER${if (it == 1) "" else "S"}" },
+    ).joinToString(" / ").ifBlank { "0 TARGETS" }
 
     Column(
         modifier = Modifier
@@ -1540,7 +1565,7 @@ private fun RendererPickerSheet(
                 fontWeight = FontWeight.Light,
             )
             Text(
-                text = "${renderers.size} TARGETS",
+                text = targetSummary,
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1556,10 +1581,9 @@ private fun RendererPickerSheet(
             Spacer(Modifier.height(14.dp))
         }
         if (groupRenderers.isNotEmpty()) {
-            Text(
-                "Groups",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            RendererSectionHeader(
+                title = "Groups",
+                meta = "${groupRenderers.size}",
                 modifier = Modifier.padding(bottom = 10.dp),
             )
         }
@@ -1568,6 +1592,7 @@ private fun RendererPickerSheet(
                 renderer = renderer,
                 renderers = renderers,
                 isSelected = renderer.location == selectedRendererLocation,
+                isBusy = isCreatingGroup,
                 playbackWarning = groupPlaybackWarning.takeIf {
                     renderer.location == selectedRendererLocation
                 },
@@ -1577,13 +1602,15 @@ private fun RendererPickerSheet(
                 onSelectRenderer = onSelectRenderer,
                 onEditGroup = onEditGroup,
                 onDeleteGroup = { pendingDeleteGroup = renderer },
+                onRemoveMember = { memberLocation ->
+                    onRemoveGroupMember(renderer.location, memberLocation)
+                },
             )
         }
         if (physicalRenderers.isNotEmpty()) {
-            Text(
-                "Renderers",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            RendererSectionHeader(
+                title = "Renderers",
+                meta = "${physicalRenderers.size}",
                 modifier = Modifier.padding(top = if (groupRenderers.isEmpty()) 0.dp else 6.dp, bottom = 10.dp),
             )
         }
@@ -1591,6 +1618,7 @@ private fun RendererPickerSheet(
             RendererPickerRow(
                 renderer = renderer,
                 isSelected = renderer.location == selectedRendererLocation,
+                groupNames = rendererGroupNames(renderer, groupRenderers),
                 sheetBackground = sheetBackground,
                 selectedContainer = accentContainer,
                 selectedAccent = accentColor,
@@ -1634,12 +1662,22 @@ private fun RendererPickerSheet(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                if (isEditingGroup) "Edit group" else "Create group",
+                                when {
+                                    isEditingGroup -> "Edit group"
+                                    baseMemberLocations.isNotEmpty() -> "Add renderers"
+                                    else -> "Create group"
+                                },
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                "$selectedPhysicalCount selected",
+                                groupSelectionSummary(
+                                    isEditingGroup = isEditingGroup,
+                                    selectedPhysicalCount = selectedPhysicalCount,
+                                    totalPhysicalCount = physicalRenderers.size,
+                                    baseMemberCount = baseMemberLocations.size,
+                                    additionalMemberCount = additionalCreateMemberCount,
+                                ),
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1653,16 +1691,39 @@ private fun RendererPickerSheet(
                         label = { Text("Group name") },
                     )
                     physicalRenderers.forEach { renderer ->
-                        val selected = renderer.location in selectedGroupMemberLocations
+                        val isBaseMember = renderer.location in baseMemberLocations
+                        val selected = isBaseMember || renderer.location in selectedGroupMemberLocations
+                        val membershipLabel = when {
+                            isBaseMember && selectedRenderer?.kind == "group" -> "Current group member"
+                            isBaseMember -> "Current target"
+                            else -> rendererMembershipLabel(rendererGroupNames(renderer, groupRenderers))
+                        }
                         FilterChip(
                             selected = selected,
-                            onClick = { onToggleGroupMember(renderer.location) },
+                            onClick = {
+                                if (!isBaseMember) {
+                                    onToggleGroupMember(renderer.location)
+                                }
+                            },
+                            enabled = !isBaseMember && !isCreatingGroup,
                             label = {
-                                Text(
-                                    rendererDisplayName(renderer),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                Column {
+                                    Text(
+                                        rendererDisplayName(renderer),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        listOfNotNull(
+                                            rendererDescriptor(renderer),
+                                            membershipLabel,
+                                        ).joinToString(" · "),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             },
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -1672,7 +1733,15 @@ private fun RendererPickerSheet(
                             selected = useCurrentQueue,
                             onClick = { onUseCurrentQueueChange(!useCurrentQueue) },
                             enabled = selectedRendererLocation.isNotBlank(),
-                            label = { Text("Use current queue") },
+                            label = {
+                                Text(
+                                    selectedRenderer
+                                        ?.let { "Use ${rendererDisplayName(it)} queue" }
+                                        ?: "Use current queue",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
                         )
                     }
                     groupErrorMessage?.let {
@@ -1723,7 +1792,13 @@ private fun RendererPickerSheet(
                                     color = MaterialTheme.colorScheme.onPrimary,
                                 )
                             } else {
-                                Text("Create group")
+                                Text(
+                                    if (baseMemberLocations.isNotEmpty()) {
+                                        "Create ad hoc group"
+                                    } else {
+                                        "Create group"
+                                    }
+                                )
                             }
                         }
                     }
@@ -1788,6 +1863,7 @@ private fun RendererGroupPanel(
     renderer: RendererDto,
     renderers: List<RendererDto>,
     isSelected: Boolean,
+    isBusy: Boolean,
     playbackWarning: String?,
     sheetBackground: Color,
     selectedContainer: Color,
@@ -1795,12 +1871,25 @@ private fun RendererGroupPanel(
     onSelectRenderer: (String) -> Unit,
     onEditGroup: (String) -> Unit,
     onDeleteGroup: (String) -> Unit,
+    onRemoveMember: (String) -> Unit,
 ) {
     val group = renderer.group
     val members = group?.members.orEmpty()
     val physicalByLocation = renderers
         .filter { it.kind != "group" }
         .associateBy { it.location }
+    val memberIssueCount = members.count { member ->
+        val memberRenderer = physicalByLocation[member.rendererLocation]
+        memberRenderer == null ||
+            memberRenderer.health?.reachable == false ||
+            memberRenderer.health?.lastError != null
+    }
+    val memberStatusSummary = when {
+        members.isEmpty() -> "No members"
+        memberIssueCount == 0 -> "All members available"
+        memberIssueCount == 1 -> "1 member needs attention"
+        else -> "$memberIssueCount members need attention"
+    }
     val leaderLocation = members
         .map { it.rendererLocation }
         .firstOrNull { physicalByLocation[it]?.kind != "android_local" }
@@ -1859,6 +1948,17 @@ private fun RendererGroupPanel(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    Text(
+                        memberStatusSummary,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (memberIssueCount > 0) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 if (isSelected) {
                     Row(
@@ -1903,6 +2003,8 @@ private fun RendererGroupPanel(
                         memberLocation = member.rendererLocation,
                         memberRenderer = memberRenderer,
                         isLeader = member.rendererLocation == leaderLocation,
+                        isBusy = isBusy,
+                        onRemove = onRemoveMember,
                     )
                 }
             }
@@ -1941,6 +2043,8 @@ private fun RendererGroupMemberRow(
     memberLocation: String,
     memberRenderer: RendererDto?,
     isLeader: Boolean,
+    isBusy: Boolean,
+    onRemove: (String) -> Unit,
 ) {
     val statusLabel = rendererHealthLabel(memberRenderer)
     val statusColor = rendererHealthColor(memberRenderer)
@@ -1989,6 +2093,16 @@ private fun RendererGroupMemberRow(
             style = MaterialTheme.typography.labelLarge,
             color = statusColor,
         )
+        IconButton(
+            onClick = { onRemove(memberLocation) },
+            enabled = !isBusy,
+        ) {
+            Icon(
+                Icons.Rounded.Close,
+                contentDescription = "Remove from group",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -1996,6 +2110,7 @@ private fun RendererGroupMemberRow(
 private fun RendererPickerRow(
     renderer: RendererDto,
     isSelected: Boolean,
+    groupNames: List<String>,
     sheetBackground: Color,
     selectedContainer: Color,
     selectedAccent: Color,
@@ -2003,6 +2118,7 @@ private fun RendererPickerRow(
     onEditGroup: (String) -> Unit,
     onDeleteGroup: (String) -> Unit,
 ) {
+    val membershipLabel = rendererMembershipLabel(groupNames)
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -2060,6 +2176,15 @@ private fun RendererPickerRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                membershipLabel?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (isSelected) selectedAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             if (isSelected) {
                 Row(
@@ -2104,6 +2229,30 @@ private fun RendererPickerRow(
     }
 }
 
+@Composable
+private fun RendererSectionHeader(
+    title: String,
+    meta: String,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            meta,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 private fun rendererDescriptor(renderer: RendererDto): String {
     if (renderer.kind == "group") {
         val memberCount = renderer.group?.memberCount ?: renderer.group?.members?.size ?: 0
@@ -2124,6 +2273,45 @@ private fun rendererDescriptor(renderer: RendererDto): String {
     )
     return parts.joinToString(" · ").ifBlank { "Renderer" }
 }
+
+private fun rendererGroupNames(renderer: RendererDto, groups: List<RendererDto>): List<String> =
+    groups
+        .filter { group ->
+            group.group?.members.orEmpty().any { member ->
+                member.rendererLocation == renderer.location
+            }
+        }
+        .map(::rendererDisplayName)
+
+private fun rendererMembershipLabel(groupNames: List<String>): String? =
+    when (groupNames.size) {
+        0 -> null
+        1 -> "In ${groupNames.first()}"
+        else -> "In ${groupNames.size} groups"
+    }
+
+private fun rendererGroupBaseMemberLocations(renderer: RendererDto?): List<String> =
+    when {
+        renderer == null -> emptyList()
+        renderer.kind == "group" -> renderer.group
+            ?.members
+            .orEmpty()
+            .map { it.rendererLocation }
+        else -> listOf(renderer.location)
+    }
+
+private fun groupSelectionSummary(
+    isEditingGroup: Boolean,
+    selectedPhysicalCount: Int,
+    totalPhysicalCount: Int,
+    baseMemberCount: Int,
+    additionalMemberCount: Int,
+): String =
+    when {
+        isEditingGroup -> "$selectedPhysicalCount of $totalPhysicalCount selected"
+        baseMemberCount > 0 -> "$baseMemberCount current + $additionalMemberCount added"
+        else -> "$selectedPhysicalCount of $totalPhysicalCount selected"
+    }
 
 private fun rendererHealthLabel(renderer: RendererDto?): String =
     when {

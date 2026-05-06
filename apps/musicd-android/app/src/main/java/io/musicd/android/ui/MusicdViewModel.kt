@@ -518,9 +518,25 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     fun createRendererGroup() {
         val state = uiState.value
         val baseUrl = state.baseUrl
-        val memberLocations = state.rendererGroupMemberLocations
-            .filter { location -> state.renderers.any { it.location == location && it.kind != "group" } }
+        val physicalRendererLocations = state.renderers
+            .filter { it.kind != "group" }
+            .map { it.location }
+            .toSet()
+        val baseMemberLocations = rendererGroupBaseMemberLocations(
+            renderers = state.renderers,
+            selectedRendererLocation = state.selectedRendererLocation,
+        )
+        val memberLocations = (baseMemberLocations + state.rendererGroupMemberLocations)
+            .filter { it in physicalRendererLocations }
+            .distinct()
+        val additionalMemberCount = memberLocations.count { it !in baseMemberLocations }
         if (baseUrl.isBlank()) return
+        if (baseMemberLocations.isNotEmpty() && additionalMemberCount == 0) {
+            _uiState.update {
+                it.copy(rendererGroupErrorMessage = "Choose at least one more renderer to add.")
+            }
+            return
+        }
         if (memberLocations.size < 2) {
             _uiState.update {
                 it.copy(rendererGroupErrorMessage = "Choose at least two renderers for the group.")
@@ -621,6 +637,68 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                         },
                         isCreatingRendererGroup = false,
                         infoMessage = response.message ?: "Renderer group deleted.",
+                    )
+                }
+                syncPlaybackNotificationService()
+                refreshPlaybackSurfaces()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeRendererGroupMember(groupLocation: String, memberLocation: String) {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        if (baseUrl.isBlank() || groupLocation.isBlank() || memberLocation.isBlank()) return
+        val group = state.renderers
+            .firstOrNull { it.location == groupLocation && it.kind == "group" }
+            ?.group ?: return
+        val remainingMemberLocations = group.members
+            .map { it.rendererLocation }
+            .filterNot { it == memberLocation }
+        if (remainingMemberLocations.size == group.members.size) return
+        if (remainingMemberLocations.size < 2) {
+            deleteRendererGroup(groupLocation)
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isCreatingRendererGroup = true,
+                    rendererGroupErrorMessage = null,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching {
+                val response = repository.updateRendererGroup(
+                    baseUrl = baseUrl,
+                    rendererLocation = groupLocation,
+                    name = group.name,
+                    memberLocations = remainingMemberLocations,
+                )
+                val renderers = repository.getRenderers(baseUrl)
+                response to renderers
+            }.onSuccess { (response, renderers) ->
+                _uiState.update {
+                    it.copy(
+                        renderers = renderers,
+                        rendererGroupMemberLocations = if (it.rendererGroupEditingLocation == groupLocation) {
+                            remainingMemberLocations.toSet()
+                        } else {
+                            it.rendererGroupMemberLocations
+                        },
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = null,
+                        infoMessage = response.message ?: "Renderer removed from group.",
                     )
                 }
                 syncPlaybackNotificationService()
@@ -1278,6 +1356,22 @@ private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
     state.queue?.entries?.isNotEmpty() == true ||
         state.nowPlaying?.currentTrack != null ||
         state.nowPlaying?.session?.queueEntryId != null
+
+private fun rendererGroupBaseMemberLocations(
+    renderers: List<RendererDto>,
+    selectedRendererLocation: String,
+): List<String> {
+    val selectedRenderer = renderers.firstOrNull { it.location == selectedRendererLocation }
+        ?: return emptyList()
+    return if (selectedRenderer.kind == "group") {
+        selectedRenderer.group
+            ?.members
+            .orEmpty()
+            .map { it.rendererLocation }
+    } else {
+        listOf(selectedRenderer.location)
+    }
+}
 
 private fun isUnavailableAlbumError(
     error: Throwable,
