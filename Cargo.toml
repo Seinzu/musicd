@@ -10,7 +10,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "2.1.0"
+version = "2.3.0"
 
 # The profile that 'dist' will build with
 [profile.dist]
