@@ -252,6 +252,8 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/renderers",
     "/api/renderers/android-local/completed",
     "/api/renderers/android-local/session",
+    "/api/renderers/cli-local/completed",
+    "/api/renderers/cli-local/session",
     "/api/renderers/discover",
     "/api/renderers/register-android-local",
     "/api/renderers/register-cli-local",

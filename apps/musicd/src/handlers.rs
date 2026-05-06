@@ -1283,6 +1283,60 @@ pub(crate) fn handle_api_android_local_session_request(
     api_renderer_state_response(writer, state, &renderer_location, "Session updated.")
 }
 
+pub(crate) fn handle_api_cli_local_session_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !matches!(
+        renderer_kind_for_location(&renderer_location),
+        RendererKind::CliLocal
+    ) {
+        return api_error(writer, "400 Bad Request", "renderer is not cli_local");
+    }
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
+
+    let transport_state = match required_request_value(request, "transport_state") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let current_track_uri = request_value(request, "current_track_uri");
+    let position_seconds =
+        request_value(request, "position_seconds").and_then(|value| value.parse::<u64>().ok());
+    let duration_seconds =
+        request_value(request, "duration_seconds").and_then(|value| value.parse::<u64>().ok());
+    let renderer = match state.resolve_renderer(&renderer_location) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            return api_error(
+                writer,
+                "500 Internal Server Error",
+                &format!("failed to resolve renderer: {error}"),
+            );
+        }
+    };
+    let _ = state.mark_renderer_reachable(&renderer);
+    let _ = state.database.record_transport_snapshot(
+        &renderer_location,
+        &transport_state,
+        current_track_uri,
+        position_seconds,
+        duration_seconds,
+    );
+    let _ = state.database.sync_queue_status(
+        &renderer_location,
+        queue_status_for_transport(&transport_state),
+    );
+
+    api_renderer_state_response(writer, state, &renderer_location, "Session updated.")
+}
+
 pub(crate) fn handle_api_android_local_completed_request(
     writer: &mut ResponseWriter,
     request: &HttpRequest,
@@ -1329,6 +1383,63 @@ pub(crate) fn handle_api_android_local_completed_request(
                     state,
                     &renderer_location,
                     "Local queue completed.",
+                )
+            }
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("completion handling failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_cli_local_completed_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !matches!(
+        renderer_kind_for_location(&renderer_location),
+        RendererKind::CliLocal
+    ) {
+        return api_error(writer, "400 Bad Request", "renderer is not cli_local");
+    }
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
+
+    match state
+        .database
+        .advance_queue_after_completion(&renderer_location)
+    {
+        Ok(next_entry_id) => {
+            if next_entry_id.is_some() {
+                if let Err(error) = state.start_current_queue_entry(&renderer_location) {
+                    return api_error(
+                        writer,
+                        "500 Internal Server Error",
+                        &format!("failed to start next queue entry: {error}"),
+                    );
+                }
+                state.events.touch(&renderer_location);
+                api_renderer_state_response(
+                    writer,
+                    state,
+                    &renderer_location,
+                    "Advanced to the next CLI queue entry.",
+                )
+            } else {
+                state.events.touch(&renderer_location);
+                api_renderer_state_response(
+                    writer,
+                    state,
+                    &renderer_location,
+                    "CLI queue completed.",
                 )
             }
         }

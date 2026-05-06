@@ -4,8 +4,9 @@ use std::sync::Arc;
 use crate::handlers::{
     authorize_direct_renderer_access, handle_album_artwork_request,
     handle_api_album_artwork_select_request, handle_api_android_local_completed_request,
-    handle_api_android_local_session_request, handle_api_events_request,
-    handle_api_play_album_request, handle_api_play_request, handle_api_queue_append_album_request,
+    handle_api_android_local_session_request, handle_api_cli_local_completed_request,
+    handle_api_cli_local_session_request, handle_api_events_request, handle_api_play_album_request,
+    handle_api_play_request, handle_api_queue_append_album_request,
     handle_api_queue_append_track_request, handle_api_queue_clear_request,
     handle_api_queue_move_request, handle_api_queue_play_next_album_request,
     handle_api_queue_play_next_track_request, handle_api_queue_remove_request,
@@ -217,6 +218,12 @@ pub(crate) fn handle_service_request(
         }
         ("POST", "/api/renderers/android-local/completed") => {
             handle_api_android_local_completed_request(writer, request, &state)
+        }
+        ("POST", "/api/renderers/cli-local/session") => {
+            handle_api_cli_local_session_request(writer, request, &state)
+        }
+        ("POST", "/api/renderers/cli-local/completed") => {
+            handle_api_cli_local_completed_request(writer, request, &state)
         }
         ("POST", "/api/play") => handle_api_play_request(writer, request, &state),
         ("POST", "/api/play-album") => handle_api_play_album_request(writer, request, &state),
