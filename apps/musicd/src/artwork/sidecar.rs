@@ -1,58 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use lofty::file::TaggedFileExt;
-use lofty::picture::PictureType;
-use lofty::read_from_path;
-
 use crate::ids::stable_track_id;
 use crate::util::looks_like_disc_folder;
 
-use super::mime::{
-    image_extension_for_mime, infer_image_mime_from_bytes, infer_image_mime_from_path,
-};
+use super::mime::{image_extension_for_mime, infer_image_mime_from_path};
 use super::{ArtworkCandidate, ArtworkData};
-
-pub(super) fn read_embedded_artwork(track_path: &Path, track_id: &str) -> Option<ArtworkCandidate> {
-    let tagged_file = read_from_path(track_path).ok()?;
-    let (picture, tag_label) = tagged_file
-        .tags()
-        .iter()
-        .find_map(|tag| {
-            tag.get_picture_type(PictureType::CoverFront)
-                .map(|picture| (picture, format!("{:?}", tag.tag_type())))
-        })
-        .or_else(|| {
-            tagged_file.tags().iter().find_map(|tag| {
-                tag.pictures()
-                    .first()
-                    .map(|picture| (picture, format!("{:?}", tag.tag_type())))
-            })
-        })
-        .or_else(|| {
-            tagged_file
-                .primary_tag()
-                .or_else(|| tagged_file.first_tag())
-                .and_then(|tag| {
-                    tag.get_picture_type(PictureType::CoverFront)
-                        .or_else(|| tag.pictures().first())
-                        .map(|picture| (picture, format!("{:?}", tag.tag_type())))
-                })
-        })?;
-    let mime_type = picture
-        .mime_type()
-        .map(|value| value.as_str().to_string())
-        .or_else(|| infer_image_mime_from_bytes(picture.data()).map(ToString::to_string))?;
-    let extension = image_extension_for_mime(&mime_type)?;
-
-    Some(ArtworkCandidate {
-        cache_key: stable_track_id(&format!("embedded:{track_id}")),
-        source: format!("Embedded artwork ({:?}, {})", picture.pic_type(), tag_label),
-        mime_type,
-        extension,
-        data: ArtworkData::Bytes(picture.data().to_vec()),
-    })
-}
 
 pub(super) fn find_sidecar_artwork(
     root: &Path,

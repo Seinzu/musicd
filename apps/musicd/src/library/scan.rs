@@ -1,20 +1,31 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
+use lofty::picture::PictureType;
 use lofty::read_from_path;
 use lofty::tag::Accessor;
+use rayon::prelude::*;
 
-use crate::artwork::resolve_track_artwork;
+use crate::artwork::{EmbeddedPicture, resolve_track_artwork};
 use crate::ids::{stable_album_id, stable_track_id};
-use crate::types::{LibraryTrack, ParsedTrackTags};
+use crate::types::{LibraryTrack, ParsedTrackTags, TrackArtwork};
 use crate::util::{
     component_to_string, infer_artist_and_album, infer_disc_and_track_numbers, infer_mime_type,
     inferred_title, is_supported_audio_file, should_skip_entry,
 };
 
 use super::sort::compare_library_tracks;
+
+type AlbumArtworkCache = Arc<Mutex<HashMap<String, Arc<OnceLock<Option<TrackArtwork>>>>>>;
+
+struct AudioFileEntry {
+    path: PathBuf,
+    file_size: u64,
+}
 
 pub(crate) fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<LibraryTrack>> {
     if !root.exists() {
@@ -26,18 +37,26 @@ pub(crate) fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<Li
 
     let artwork_cache_dir = config_path.join("artwork");
     fs::create_dir_all(&artwork_cache_dir)?;
-    let mut tracks = Vec::new();
-    scan_dir(root, root, &artwork_cache_dir, &mut tracks)?;
+
+    let mut audio_files = Vec::new();
+    collect_audio_files(root, &mut audio_files)?;
+
+    let artwork_cache: AlbumArtworkCache = Arc::new(Mutex::new(HashMap::new()));
+
+    let mut tracks: Vec<LibraryTrack> = audio_files
+        .par_iter()
+        .filter_map(|file| build_library_track(root, file, &artwork_cache_dir, &artwork_cache))
+        .collect();
+
     tracks.sort_by(compare_library_tracks);
     Ok(tracks)
 }
 
-fn scan_dir(
-    root: &Path,
-    dir: &Path,
-    artwork_cache_dir: &Path,
-    tracks: &mut Vec<LibraryTrack>,
-) -> io::Result<()> {
+fn collect_audio_files(root: &Path, output: &mut Vec<AudioFileEntry>) -> io::Result<()> {
+    walk_dir(root, output)
+}
+
+fn walk_dir(dir: &Path, output: &mut Vec<AudioFileEntry>) -> io::Result<()> {
     let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
 
@@ -52,7 +71,7 @@ fn scan_dir(
         }
 
         if metadata.is_dir() {
-            scan_dir(root, &path, artwork_cache_dir, tracks)?;
+            walk_dir(&path, output)?;
             continue;
         }
 
@@ -60,66 +79,111 @@ fn scan_dir(
             continue;
         }
 
-        let relative_components = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .components()
-            .filter_map(component_to_string)
-            .collect::<Vec<_>>();
-        let relative_path = relative_components.join("/");
-        let parsed_tags = read_lofty_track_tags(&path);
-        let title = parsed_tags
-            .title
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| inferred_title(&path));
-        let (fallback_artist, fallback_album) = infer_artist_and_album(&relative_components);
-        let artist = parsed_tags
-            .artist
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(fallback_artist);
-        let album = parsed_tags
-            .album
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(fallback_album);
-        let (fallback_disc_number, fallback_track_number) =
-            infer_disc_and_track_numbers(&relative_components);
-        let disc_number = parsed_tags.disc_number.or(fallback_disc_number);
-        let track_number = parsed_tags.track_number.or(fallback_track_number);
-        let mime_type = infer_mime_type(&path).to_string();
-        let id = stable_track_id(&relative_path);
-        let album_id = stable_album_id(&artist, &album);
-        let artwork =
-            resolve_track_artwork(root, &path, &relative_components, &id, artwork_cache_dir);
-
-        tracks.push(LibraryTrack {
-            id,
-            album_id,
-            title,
-            artist,
-            album,
-            disc_number,
-            track_number,
-            duration_seconds: parsed_tags.duration_seconds,
-            relative_path,
+        output.push(AudioFileEntry {
             path,
-            mime_type,
             file_size: metadata.len(),
-            artwork,
         });
     }
-
     Ok(())
 }
 
-fn read_lofty_track_tags(path: &Path) -> ParsedTrackTags {
-    let tagged_file = match read_from_path(path) {
-        Ok(tagged_file) => tagged_file,
-        Err(_) => return ParsedTrackTags::default(),
-    };
+fn build_library_track(
+    root: &Path,
+    file: &AudioFileEntry,
+    artwork_cache_dir: &Path,
+    artwork_cache: &AlbumArtworkCache,
+) -> Option<LibraryTrack> {
+    let path = &file.path;
+    let relative_components = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .filter_map(component_to_string)
+        .collect::<Vec<_>>();
+    let relative_path = relative_components.join("/");
 
+    let (parsed_tags, embedded_picture) = read_track_metadata(path);
+
+    let title = parsed_tags
+        .title
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| inferred_title(path));
+    let (fallback_artist, fallback_album) = infer_artist_and_album(&relative_components);
+    let artist = parsed_tags
+        .artist
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_artist);
+    let album = parsed_tags
+        .album
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(fallback_album);
+    let (fallback_disc_number, fallback_track_number) =
+        infer_disc_and_track_numbers(&relative_components);
+    let disc_number = parsed_tags.disc_number.or(fallback_disc_number);
+    let track_number = parsed_tags.track_number.or(fallback_track_number);
+    let mime_type = infer_mime_type(path).to_string();
+    let id = stable_track_id(&relative_path);
+    let album_id = stable_album_id(&artist, &album);
+
+    let artwork = resolve_album_artwork(
+        artwork_cache,
+        &album_id,
+        || resolve_track_artwork(
+            root,
+            path,
+            &relative_components,
+            &album_id,
+            embedded_picture,
+            artwork_cache_dir,
+        ),
+    );
+
+    Some(LibraryTrack {
+        id,
+        album_id,
+        title,
+        artist,
+        album,
+        disc_number,
+        track_number,
+        duration_seconds: parsed_tags.duration_seconds,
+        relative_path,
+        path: path.clone(),
+        mime_type,
+        file_size: file.file_size,
+        artwork,
+    })
+}
+
+/// Resolve artwork for an album, deduping concurrent requests so each album's
+/// extraction (and disk write) runs at most once per scan. Workers that arrive
+/// after the first one block on `OnceLock::get_or_init`.
+fn resolve_album_artwork(
+    cache: &AlbumArtworkCache,
+    album_id: &str,
+    resolver: impl FnOnce() -> Option<TrackArtwork>,
+) -> Option<TrackArtwork> {
+    let cell = {
+        let mut guard = cache.lock().expect("artwork cache poisoned");
+        Arc::clone(guard.entry(album_id.to_string()).or_default())
+    };
+    cell.get_or_init(resolver).clone()
+}
+
+fn read_track_metadata(path: &Path) -> (ParsedTrackTags, Option<EmbeddedPicture>) {
+    let tagged_file = match read_from_path(path) {
+        Ok(file) => file,
+        Err(_) => return (ParsedTrackTags::default(), None),
+    };
+    let tags = extract_tags(&tagged_file);
+    let picture = extract_embedded_picture(&tagged_file);
+    (tags, picture)
+}
+
+fn extract_tags(tagged_file: &TaggedFile) -> ParsedTrackTags {
     let Some(tag) = tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag())
@@ -138,4 +202,44 @@ fn read_lofty_track_tags(path: &Path) -> ParsedTrackTags {
             if seconds == 0 { None } else { Some(seconds) }
         },
     }
+}
+
+fn extract_embedded_picture(tagged_file: &TaggedFile) -> Option<EmbeddedPicture> {
+    let (picture, tag_label) = tagged_file
+        .tags()
+        .iter()
+        .find_map(|tag| {
+            tag.get_picture_type(PictureType::CoverFront)
+                .map(|picture| (picture, format!("{:?}", tag.tag_type())))
+        })
+        .or_else(|| {
+            tagged_file.tags().iter().find_map(|tag| {
+                tag.pictures()
+                    .first()
+                    .map(|picture| (picture, format!("{:?}", tag.tag_type())))
+            })
+        })
+        .or_else(|| {
+            tagged_file
+                .primary_tag()
+                .or_else(|| tagged_file.first_tag())
+                .and_then(|tag| {
+                    tag.get_picture_type(PictureType::CoverFront)
+                        .or_else(|| tag.pictures().first())
+                        .map(|picture| (picture, format!("{:?}", tag.tag_type())))
+                })
+        })?;
+    let mime_type = picture
+        .mime_type()
+        .map(|value| value.as_str().to_string())
+        .or_else(|| {
+            crate::artwork::infer_image_mime_from_bytes(picture.data()).map(ToString::to_string)
+        })?;
+
+    Some(EmbeddedPicture {
+        bytes: picture.data().to_vec(),
+        mime_type,
+        pic_type: format!("{:?}", picture.pic_type()),
+        tag_label,
+    })
 }
