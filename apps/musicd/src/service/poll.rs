@@ -9,6 +9,10 @@ use crate::renderer::{RendererKind, renderer_kind_for_location};
 use crate::types::{PlaybackQueue, PlaybackSession, QueueEntry};
 
 use super::ServiceState;
+use super::events::fingerprint;
+
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(15);
 
 pub(crate) fn spawn_queue_worker(state: Arc<ServiceState>) {
     thread::spawn(move || {
@@ -16,7 +20,12 @@ pub(crate) fn spawn_queue_worker(state: Arc<ServiceState>) {
             if let Err(error) = state.poll_active_queues() {
                 eprintln!("queue worker error: {error}");
             }
-            thread::sleep(Duration::from_secs(2));
+            let interval = if state.events.any_subscribers() {
+                ACTIVE_POLL_INTERVAL
+            } else {
+                IDLE_POLL_INTERVAL
+            };
+            thread::sleep(interval);
         }
     });
 }
@@ -192,17 +201,21 @@ impl ServiceState {
             }
         };
 
-        self.database.record_transport_snapshot(
-            renderer_location,
-            &snapshot.transport_info.transport_state,
-            snapshot.position_info.track_uri.as_deref(),
-            snapshot.position_info.rel_time_seconds,
-            snapshot.position_info.track_duration_seconds,
-        )?;
-        self.database.sync_queue_status(
-            renderer_location,
-            queue_status_for_transport(&snapshot.transport_info.transport_state),
-        )?;
+        let snapshot_fingerprint = fingerprint(&queue, &snapshot);
+        let state_changed = self.events.note_state(renderer_location, snapshot_fingerprint);
+        if state_changed {
+            self.database.record_transport_snapshot(
+                renderer_location,
+                &snapshot.transport_info.transport_state,
+                snapshot.position_info.track_uri.as_deref(),
+                snapshot.position_info.rel_time_seconds,
+                snapshot.position_info.track_duration_seconds,
+            )?;
+            self.database.sync_queue_status(
+                renderer_location,
+                queue_status_for_transport(&snapshot.transport_info.transport_state),
+            )?;
+        }
         if self.debug_enabled() {
             let previous_state = session
                 .as_ref()

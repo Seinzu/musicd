@@ -10,16 +10,18 @@ impl ServiceState {
         renderer_location: &str,
         track: &LibraryTrack,
     ) -> io::Result<PlaybackQueue> {
-        self.database.replace_queue(
-            renderer_location,
-            &format!("Track: {}", track.title),
-            &[QueueMutationEntry {
-                track_id: track.id.clone(),
-                album_id: Some(track.album_id.clone()),
-                source_kind: "track".to_string(),
-                source_ref: Some(track.id.clone()),
-            }],
-        )
+        self.database
+            .replace_queue(
+                renderer_location,
+                &format!("Track: {}", track.title),
+                &[QueueMutationEntry {
+                    track_id: track.id.clone(),
+                    album_id: Some(track.album_id.clone()),
+                    source_kind: "track".to_string(),
+                    source_ref: Some(track.id.clone()),
+                }],
+            )
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn replace_queue_with_album(
@@ -39,6 +41,7 @@ impl ServiceState {
             .collect::<Vec<_>>();
         self.database
             .replace_queue(renderer_location, &album.title, &entries)
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn append_track_to_queue(
@@ -46,16 +49,18 @@ impl ServiceState {
         renderer_location: &str,
         track: &LibraryTrack,
     ) -> io::Result<PlaybackQueue> {
-        self.database.append_queue_entries(
-            renderer_location,
-            &format!("Track: {}", track.title),
-            &[QueueMutationEntry {
-                track_id: track.id.clone(),
-                album_id: Some(track.album_id.clone()),
-                source_kind: "track".to_string(),
-                source_ref: Some(track.id.clone()),
-            }],
-        )
+        self.database
+            .append_queue_entries(
+                renderer_location,
+                &format!("Track: {}", track.title),
+                &[QueueMutationEntry {
+                    track_id: track.id.clone(),
+                    album_id: Some(track.album_id.clone()),
+                    source_kind: "track".to_string(),
+                    source_ref: Some(track.id.clone()),
+                }],
+            )
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn append_album_to_queue(
@@ -75,6 +80,7 @@ impl ServiceState {
             .collect::<Vec<_>>();
         self.database
             .append_queue_entries(renderer_location, &album.title, &entries)
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn play_next_track(
@@ -82,16 +88,18 @@ impl ServiceState {
         renderer_location: &str,
         track: &LibraryTrack,
     ) -> io::Result<PlaybackQueue> {
-        self.database.insert_queue_entries_after_current(
-            renderer_location,
-            &format!("Track: {}", track.title),
-            &[QueueMutationEntry {
-                track_id: track.id.clone(),
-                album_id: Some(track.album_id.clone()),
-                source_kind: "track".to_string(),
-                source_ref: Some(track.id.clone()),
-            }],
-        )
+        self.database
+            .insert_queue_entries_after_current(
+                renderer_location,
+                &format!("Track: {}", track.title),
+                &[QueueMutationEntry {
+                    track_id: track.id.clone(),
+                    album_id: Some(track.album_id.clone()),
+                    source_kind: "track".to_string(),
+                    source_ref: Some(track.id.clone()),
+                }],
+            )
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn play_next_album(
@@ -111,10 +119,13 @@ impl ServiceState {
             .collect::<Vec<_>>();
         self.database
             .insert_queue_entries_after_current(renderer_location, &album.title, &entries)
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn clear_queue(&self, renderer_location: &str) -> io::Result<()> {
-        self.database.clear_queue(renderer_location)
+        self.database
+            .clear_queue(renderer_location)
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn move_queue_entry_up(
@@ -124,6 +135,7 @@ impl ServiceState {
     ) -> io::Result<PlaybackQueue> {
         self.database
             .move_queue_entry(renderer_location, queue_entry_id, -1)
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn move_queue_entry_down(
@@ -133,6 +145,7 @@ impl ServiceState {
     ) -> io::Result<PlaybackQueue> {
         self.database
             .move_queue_entry(renderer_location, queue_entry_id, 1)
+            .inspect(|_| self.events.touch(renderer_location))
     }
 
     pub(crate) fn remove_pending_queue_entry(
@@ -142,5 +155,6 @@ impl ServiceState {
     ) -> io::Result<PlaybackQueue> {
         self.database
             .remove_queue_entry(renderer_location, queue_entry_id)
+            .inspect(|_| self.events.touch(renderer_location))
     }
 }

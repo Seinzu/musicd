@@ -1027,6 +1027,7 @@ mod tests {
             )),
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
+            events: crate::service::PlaybackEvents::new(),
         }
     }
 

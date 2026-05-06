@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 use std::net::TcpStream;
-use std::thread;
 use std::time::Duration;
 
 use crate::http::{
@@ -1615,20 +1614,24 @@ pub(crate) fn respond_sse_stream(
     write!(writer, "\r\n")?;
     writer.flush()?;
 
-    let mut last_payload = String::new();
-    let mut heartbeat_tick = 0usize;
+    let _subscriber = state.events.subscribe(renderer_location);
+    let mut last_version = state.events.version(renderer_location);
+    let mut last_payload = render_playback_event_json_for_renderer(state, renderer_location);
+    write_sse_event(writer, "playback", &last_payload)?;
 
     loop {
+        let new_version = state.events.wait_for_change(
+            renderer_location,
+            last_version,
+            Duration::from_secs(15),
+        );
         let payload = render_playback_event_json_for_renderer(state, renderer_location);
         if payload != last_payload {
             write_sse_event(writer, "playback", &payload)?;
             last_payload = payload;
-        } else if heartbeat_tick >= 14 {
+        } else if new_version == last_version {
             write_sse_comment(writer, "ping")?;
-            heartbeat_tick = 0;
         }
-
-        thread::sleep(Duration::from_secs(1));
-        heartbeat_tick += 1;
+        last_version = new_version;
     }
 }

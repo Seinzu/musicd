@@ -14,12 +14,14 @@ use crate::types::{
 use crate::util::now_unix_timestamp;
 
 mod artwork;
+pub(crate) mod events;
 mod groups;
 mod poll;
 mod queue;
 mod renderers;
 mod transport;
 
+pub(crate) use events::PlaybackEvents;
 pub(crate) use poll::{
     next_queue_entry_after, previous_queue_entry_before, queue_status_for_transport,
     spawn_queue_worker,
@@ -34,6 +36,7 @@ pub(crate) struct ServiceState {
     pub(crate) library: ArcSwap<Library>,
     pub(crate) renderer_backends: RendererBackends,
     pub(crate) metrics: OnceLock<Arc<metrics::Metrics>>,
+    pub(crate) events: PlaybackEvents,
 }
 
 impl ServiceState {
@@ -69,6 +72,7 @@ impl ServiceState {
             library: ArcSwap::from_pointee(persisted_library),
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
+            events: PlaybackEvents::new(),
         };
 
         match scan_library(&state.config.library_path, &state.config.config_path) {
