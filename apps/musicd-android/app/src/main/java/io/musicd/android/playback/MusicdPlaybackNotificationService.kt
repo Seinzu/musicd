@@ -995,7 +995,13 @@ class MusicdPlaybackNotificationService : Service() {
         }
 
         private fun hasDisplayablePlayback(event: PlaybackEventDto): Boolean =
-            event.nowPlaying.currentTrack != null || event.queue.entries.isNotEmpty()
+            event.nowPlaying.currentTrack != null ||
+                event.queue.entries.any { entry ->
+                    when (entry.entryStatus.trim().lowercase()) {
+                        "", "pending", "queued", "playing" -> true
+                        else -> false
+                    }
+                }
 
         private fun isCurrentlyPlaying(event: PlaybackEventDto?): Boolean =
             when (event?.nowPlaying?.session?.transportState) {
