@@ -1,6 +1,8 @@
+use std::fmt::Write;
+
 use crate::http::HttpRequest;
 use crate::service::ServiceState;
-use crate::util::{html_escape, url_encode};
+use crate::util::{EscapeHtml, html_escape, url_encode};
 
 use super::queue_panel::render_queue_panel;
 
@@ -16,81 +18,143 @@ pub(crate) fn render_home_page(state: &ServiceState, request: &HttpRequest) -> S
     let message = request.query.get("message").cloned().unwrap_or_default();
     let error = request.query.get("error").cloned().unwrap_or_default();
 
-    let mut album_rows = String::new();
+    // Pre-escape values that are constant across rows.
+    let renderer_location_escaped = html_escape(&renderer_location);
+    let renderer_location_url_encoded = url_encode(&renderer_location);
+
+    let mut album_rows = String::with_capacity(albums.len() * 1024);
+    let mut search_text = String::new();
     for album in albums.iter() {
-        let search_text = format!("{} {}", album.title, album.artist).to_ascii_lowercase();
-        let cover_html = album
-            .artwork_url
-            .as_ref()
-            .map(|artwork_url| {
-                format!(
-                    "<img class=\"cover-thumb\" src=\"{}\" alt=\"Artwork for {}\">",
-                    html_escape(artwork_url),
-                    html_escape(&album.title)
-                )
-            })
-            .unwrap_or_else(|| "<div class=\"cover-thumb placeholder\">No Art</div>".to_string());
+        search_text.clear();
+        search_text.reserve(album.title.len() + 1 + album.artist.len());
+        search_text.push_str(&album.title);
+        search_text.push(' ');
+        search_text.push_str(&album.artist);
+        search_text.make_ascii_lowercase();
+
         let album_url = format!(
             "/album/{}?renderer_location={}",
             url_encode(&album.id),
-            url_encode(&renderer_location)
+            renderer_location_url_encoded
         );
-        album_rows.push_str(&format!(
-            "<tr data-search=\"{}\"><td data-label=\"Cover\">{}</td><td data-label=\"Album\"><a class=\"album-link\" href=\"{}\">{}</a></td><td data-label=\"Artist\">{}</td><td data-label=\"Tracks\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><form class=\"inline-form\" action=\"/play-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Album</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/play-next-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Next</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/append-album\" method=\"get\"><input type=\"hidden\" name=\"album_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue Album</button></form> <span class=\"muted-sep\">|</span> <a href=\"{}\">View Album</a></td></tr>",
-            html_escape(&search_text),
-            cover_html,
-            html_escape(&album_url),
-            html_escape(&album.title),
-            html_escape(&album.artist),
-            album.track_count,
-            html_escape(&album.id),
-            html_escape(&renderer_location),
-            html_escape(&album.id),
-            html_escape(&renderer_location),
-            html_escape(&album.id),
-            html_escape(&renderer_location),
-            html_escape(&album_url),
-        ));
+
+        write!(
+            album_rows,
+            "<tr data-search=\"{}\"><td data-label=\"Cover\">",
+            EscapeHtml(&search_text)
+        )
+        .unwrap();
+        match album.artwork_url.as_ref() {
+            Some(artwork_url) => write!(
+                album_rows,
+                "<img class=\"cover-thumb\" src=\"{}\" alt=\"Artwork for {}\">",
+                EscapeHtml(artwork_url),
+                EscapeHtml(&album.title)
+            )
+            .unwrap(),
+            None => album_rows.push_str("<div class=\"cover-thumb placeholder\">No Art</div>"),
+        }
+        write!(
+            album_rows,
+            "</td><td data-label=\"Album\"><a class=\"album-link\" href=\"{album_url}\">{}</a></td>\
+             <td data-label=\"Artist\">{}</td><td data-label=\"Tracks\">{tracks_count}</td>\
+             <td data-label=\"Actions\" class=\"actions-cell\">\
+             <form class=\"inline-form\" action=\"/play-album\" method=\"get\">\
+             <input type=\"hidden\" name=\"album_id\" value=\"{album_id}\">\
+             <input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{renderer_location_escaped}\">\
+             <button type=\"submit\" class=\"secondary\">Play Album</button></form> \
+             <span class=\"muted-sep\">|</span> \
+             <form class=\"inline-form\" action=\"/queue/play-next-album\" method=\"get\">\
+             <input type=\"hidden\" name=\"album_id\" value=\"{album_id}\">\
+             <input type=\"hidden\" name=\"return_to\" value=\"/\">\
+             <input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{renderer_location_escaped}\">\
+             <button type=\"submit\" class=\"secondary\">Play Next</button></form> \
+             <span class=\"muted-sep\">|</span> \
+             <form class=\"inline-form\" action=\"/queue/append-album\" method=\"get\">\
+             <input type=\"hidden\" name=\"album_id\" value=\"{album_id}\">\
+             <input type=\"hidden\" name=\"return_to\" value=\"/\">\
+             <input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{renderer_location_escaped}\">\
+             <button type=\"submit\" class=\"secondary\">Queue Album</button></form> \
+             <span class=\"muted-sep\">|</span> \
+             <a href=\"{album_url}\">View Album</a></td></tr>",
+            EscapeHtml(&album.title),
+            EscapeHtml(&album.artist),
+            album_url = EscapeHtml(&album_url),
+            tracks_count = album.track_count,
+            album_id = EscapeHtml(&album.id),
+            renderer_location_escaped = renderer_location_escaped,
+        )
+        .unwrap();
     }
 
-    let mut rows = String::new();
+    let mut rows = String::with_capacity(tracks.len() * 1024);
     for track in tracks.iter() {
-        let search_text = format!(
-            "{} {} {} {}",
-            track.title, track.artist, track.album, track.relative_path
+        search_text.clear();
+        search_text.reserve(
+            track.title.len()
+                + track.artist.len()
+                + track.album.len()
+                + track.relative_path.len()
+                + 3,
+        );
+        search_text.push_str(&track.title);
+        search_text.push(' ');
+        search_text.push_str(&track.artist);
+        search_text.push(' ');
+        search_text.push_str(&track.album);
+        search_text.push(' ');
+        search_text.push_str(&track.relative_path);
+        search_text.make_ascii_lowercase();
+
+        write!(
+            rows,
+            "<tr data-search=\"{}\">\
+             <td data-label=\"Play\"><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{track_id}\"></td>\
+             <td data-label=\"Cover\">",
+            EscapeHtml(&search_text),
+            track_id = EscapeHtml(&track.id),
         )
-        .to_ascii_lowercase();
-        let cover_html = track
-            .artwork
-            .as_ref()
-            .map(|_| {
-                format!(
-                    "<img class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
-                    html_escape(&track.id),
-                    html_escape(&track.album)
-                )
-            })
-            .unwrap_or_else(|| "<div class=\"cover-thumb placeholder\">No Art</div>".to_string());
-        rows.push_str(&format!(
-            "<tr data-search=\"{}\"><td data-label=\"Play\"><input type=\"radio\" form=\"playback_form\" name=\"track_id\" value=\"{}\"></td><td data-label=\"Cover\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td><td data-label=\"Album\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><form class=\"inline-form\" action=\"/queue/play-next-track\" method=\"get\"><input type=\"hidden\" name=\"track_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Play Next</button></form> <span class=\"muted-sep\">|</span> <form class=\"inline-form\" action=\"/queue/append-track\" method=\"get\"><input type=\"hidden\" name=\"track_id\" value=\"{}\"><input type=\"hidden\" name=\"return_to\" value=\"/\"><input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{}\"><button type=\"submit\" class=\"secondary\">Queue</button></form> <span class=\"muted-sep\">|</span> <a href=\"/stream/track/{}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
-            html_escape(&search_text),
-            html_escape(&track.id),
-            cover_html,
-            html_escape(&track.title),
-            html_escape(&track.artist),
-            format!(
-                "<a class=\"album-link\" href=\"/album/{}?renderer_location={}\">{}</a>",
-                url_encode(&track.album_id),
-                url_encode(&renderer_location),
-                html_escape(&track.album)
-            ),
-            html_escape(&track.id),
-            html_escape(&renderer_location),
-            html_escape(&track.id),
-            html_escape(&renderer_location),
-            html_escape(&track.id),
-            html_escape(&track.id),
-        ));
+        .unwrap();
+        match track.artwork.as_ref() {
+            Some(_) => write!(
+                rows,
+                "<img class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
+                EscapeHtml(&track.id),
+                EscapeHtml(&track.album)
+            )
+            .unwrap(),
+            None => rows.push_str("<div class=\"cover-thumb placeholder\">No Art</div>"),
+        }
+        write!(
+            rows,
+            "</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td>\
+             <td data-label=\"Album\"><a class=\"album-link\" href=\"/album/{}?renderer_location={}\">{}</a></td>\
+             <td data-label=\"Actions\" class=\"actions-cell\">\
+             <form class=\"inline-form\" action=\"/queue/play-next-track\" method=\"get\">\
+             <input type=\"hidden\" name=\"track_id\" value=\"{track_id}\">\
+             <input type=\"hidden\" name=\"return_to\" value=\"/\">\
+             <input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{renderer_location_escaped}\">\
+             <button type=\"submit\" class=\"secondary\">Play Next</button></form> \
+             <span class=\"muted-sep\">|</span> \
+             <form class=\"inline-form\" action=\"/queue/append-track\" method=\"get\">\
+             <input type=\"hidden\" name=\"track_id\" value=\"{track_id}\">\
+             <input type=\"hidden\" name=\"return_to\" value=\"/\">\
+             <input class=\"renderer-location-proxy\" type=\"hidden\" name=\"renderer_location\" value=\"{renderer_location_escaped}\">\
+             <button type=\"submit\" class=\"secondary\">Queue</button></form> \
+             <span class=\"muted-sep\">|</span> \
+             <a href=\"/stream/track/{track_id}\" target=\"_blank\" rel=\"noreferrer\">Preview</a> \
+             <span class=\"muted-sep\">|</span> \
+             <a href=\"/track/{track_id}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a>\
+             </td></tr>",
+            EscapeHtml(&track.title),
+            EscapeHtml(&track.artist),
+            url_encode(&track.album_id),
+            renderer_location_url_encoded,
+            EscapeHtml(&track.album),
+            track_id = EscapeHtml(&track.id),
+            renderer_location_escaped = renderer_location_escaped,
+        )
+        .unwrap();
     }
 
     let empty_state = if tracks.is_empty() {

@@ -1,13 +1,42 @@
+use std::fmt;
 use std::path::{Component, Path};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// HTML-escaping `Display` wrapper. Use with `write!` to escape into an
+/// existing buffer in a single pass, with no intermediate `String`.
+pub(crate) struct EscapeHtml<'a>(pub(crate) &'a str);
+
+impl fmt::Display for EscapeHtml<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.0.as_bytes();
+        let mut last_flushed = 0;
+        for (i, &byte) in bytes.iter().enumerate() {
+            let escape = match byte {
+                b'&' => "&amp;",
+                b'<' => "&lt;",
+                b'>' => "&gt;",
+                b'"' => "&quot;",
+                b'\'' => "&#39;",
+                _ => continue,
+            };
+            if last_flushed < i {
+                f.write_str(&self.0[last_flushed..i])?;
+            }
+            f.write_str(escape)?;
+            last_flushed = i + 1;
+        }
+        if last_flushed < bytes.len() {
+            f.write_str(&self.0[last_flushed..])?;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    use std::fmt::Write;
+    let mut output = String::with_capacity(value.len());
+    write!(output, "{}", EscapeHtml(value)).expect("formatting into String never fails");
+    output
 }
 
 pub(crate) fn json_escape(value: &str) -> String {
