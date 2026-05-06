@@ -36,6 +36,10 @@ impl RendererBackend for UpnpRendererBackend {
             model_name: renderer.model_name,
             av_transport_control_url: Some(renderer.av_transport_control_url),
             capabilities: renderer.capabilities,
+            visibility: cached
+                .map(|renderer| renderer.visibility.clone())
+                .unwrap_or_else(|| "public".to_string()),
+            owner_client_id: cached.and_then(|renderer| renderer.owner_client_id.clone()),
             last_checked_unix: now_unix_timestamp(),
             last_reachable_unix: Some(now_unix_timestamp()),
             last_error: None,

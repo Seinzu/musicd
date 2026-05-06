@@ -7,6 +7,7 @@ import io.musicd.android.data.AlbumArtworkCandidatesResponseDto
 import io.musicd.android.data.ArtistDetailDto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 class MusicdRepository(
     context: Context,
@@ -17,6 +18,14 @@ class MusicdRepository(
     fun loadBaseUrl(): String = prefs.getString(KEY_BASE_URL, "").orEmpty()
 
     fun loadRendererLocation(): String = prefs.getString(KEY_RENDERER_LOCATION, "").orEmpty()
+
+    fun loadClientId(): String {
+        val existing = prefs.getString(KEY_CLIENT_ID, "").orEmpty()
+        if (existing.isNotBlank()) return existing
+        val generated = UUID.randomUUID().toString()
+        prefs.edit { putString(KEY_CLIENT_ID, generated) }
+        return generated
+    }
 
     fun saveBaseUrl(baseUrl: String) {
         prefs.edit { putString(KEY_BASE_URL, baseUrl) }
@@ -68,7 +77,7 @@ class MusicdRepository(
     }
 
     suspend fun getRenderers(baseUrl: String): List<RendererDto> = withContext(Dispatchers.IO) {
-        api.getRenderers(baseUrl.normalizeBaseUrl())
+        api.getRenderers(baseUrl.normalizeBaseUrl(), loadClientId())
     }
 
     suspend fun discoverRenderers(baseUrl: String): List<RendererDto> =
@@ -87,6 +96,7 @@ class MusicdRepository(
             name,
             memberLocations,
             sourceRendererLocation,
+            loadClientId(),
         )
     }
 
@@ -94,7 +104,7 @@ class MusicdRepository(
         baseUrl: String,
         rendererLocation: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.deleteRendererGroup(baseUrl.normalizeBaseUrl(), rendererLocation)
+        api.deleteRendererGroup(baseUrl.normalizeBaseUrl(), rendererLocation, loadClientId())
     }
 
     suspend fun updateRendererGroup(
@@ -108,6 +118,7 @@ class MusicdRepository(
             rendererLocation,
             name,
             memberLocations,
+            loadClientId(),
         )
     }
 
@@ -124,6 +135,7 @@ class MusicdRepository(
             name,
             manufacturer,
             modelName,
+            loadClientId(),
         )
     }
 
@@ -142,6 +154,7 @@ class MusicdRepository(
             currentTrackUri,
             positionSeconds,
             durationSeconds,
+            loadClientId(),
         )
     }
 
@@ -149,17 +162,17 @@ class MusicdRepository(
         baseUrl: String,
         rendererLocation: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.reportAndroidLocalCompleted(baseUrl.normalizeBaseUrl(), rendererLocation)
+        api.reportAndroidLocalCompleted(baseUrl.normalizeBaseUrl(), rendererLocation, loadClientId())
     }
 
     suspend fun getQueue(baseUrl: String, rendererLocation: String): QueueDto =
         withContext(Dispatchers.IO) {
-            api.getQueue(baseUrl.normalizeBaseUrl(), rendererLocation)
+            api.getQueue(baseUrl.normalizeBaseUrl(), rendererLocation, loadClientId())
         }
 
     suspend fun getNowPlaying(baseUrl: String, rendererLocation: String): NowPlayingDto =
         withContext(Dispatchers.IO) {
-            api.getNowPlaying(baseUrl.normalizeBaseUrl(), rendererLocation)
+            api.getNowPlaying(baseUrl.normalizeBaseUrl(), rendererLocation, loadClientId())
         }
 
     suspend fun transportPlay(baseUrl: String, rendererLocation: String): MutationResponseDto =
@@ -170,7 +183,7 @@ class MusicdRepository(
         rendererLocation: String,
         trackId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.playTrack(baseUrl.normalizeBaseUrl(), rendererLocation, trackId)
+        api.playTrack(baseUrl.normalizeBaseUrl(), rendererLocation, trackId, loadClientId())
     }
 
     suspend fun playAlbum(
@@ -178,7 +191,7 @@ class MusicdRepository(
         rendererLocation: String,
         albumId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.playAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId)
+        api.playAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId, loadClientId())
     }
 
     suspend fun selectAlbumArtwork(
@@ -194,7 +207,7 @@ class MusicdRepository(
         rendererLocation: String,
         trackId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.appendTrack(baseUrl.normalizeBaseUrl(), rendererLocation, trackId)
+        api.appendTrack(baseUrl.normalizeBaseUrl(), rendererLocation, trackId, loadClientId())
     }
 
     suspend fun playNextTrack(
@@ -202,7 +215,7 @@ class MusicdRepository(
         rendererLocation: String,
         trackId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.playNextTrack(baseUrl.normalizeBaseUrl(), rendererLocation, trackId)
+        api.playNextTrack(baseUrl.normalizeBaseUrl(), rendererLocation, trackId, loadClientId())
     }
 
     suspend fun appendAlbum(
@@ -210,7 +223,7 @@ class MusicdRepository(
         rendererLocation: String,
         albumId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.appendAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId)
+        api.appendAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId, loadClientId())
     }
 
     suspend fun playNextAlbum(
@@ -218,7 +231,7 @@ class MusicdRepository(
         rendererLocation: String,
         albumId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.playNextAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId)
+        api.playNextAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId, loadClientId())
     }
 
     suspend fun moveQueueEntry(
@@ -227,7 +240,7 @@ class MusicdRepository(
         entryId: Long,
         direction: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.moveQueueEntry(baseUrl.normalizeBaseUrl(), rendererLocation, entryId, direction)
+        api.moveQueueEntry(baseUrl.normalizeBaseUrl(), rendererLocation, entryId, direction, loadClientId())
     }
 
     suspend fun removeQueueEntry(
@@ -235,14 +248,14 @@ class MusicdRepository(
         rendererLocation: String,
         entryId: Long,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.removeQueueEntry(baseUrl.normalizeBaseUrl(), rendererLocation, entryId)
+        api.removeQueueEntry(baseUrl.normalizeBaseUrl(), rendererLocation, entryId, loadClientId())
     }
 
     suspend fun clearQueue(
         baseUrl: String,
         rendererLocation: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.clearQueue(baseUrl.normalizeBaseUrl(), rendererLocation)
+        api.clearQueue(baseUrl.normalizeBaseUrl(), rendererLocation, loadClientId())
     }
 
     suspend fun observePlaybackEvents(
@@ -250,7 +263,7 @@ class MusicdRepository(
         rendererLocation: String,
         onEvent: (PlaybackEventDto) -> Unit,
     ) = withContext(Dispatchers.IO) {
-        api.observePlaybackEvents(baseUrl.normalizeBaseUrl(), rendererLocation, onEvent)
+        api.observePlaybackEvents(baseUrl.normalizeBaseUrl(), rendererLocation, loadClientId(), onEvent)
     }
 
     suspend fun transportPause(baseUrl: String, rendererLocation: String): MutationResponseDto =
@@ -270,12 +283,13 @@ class MusicdRepository(
         path: String,
         rendererLocation: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
-        api.transport(baseUrl.normalizeBaseUrl(), path, rendererLocation)
+        api.transport(baseUrl.normalizeBaseUrl(), path, rendererLocation, loadClientId())
     }
 
     companion object {
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_RENDERER_LOCATION = "renderer_location"
+        private const val KEY_CLIENT_ID = "client_id"
     }
 }
 

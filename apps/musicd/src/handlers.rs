@@ -839,7 +839,12 @@ pub(crate) fn handle_api_renderer_group_create_request(
 
     let name = request_value(request, "name").unwrap_or("");
     let source_renderer_location = request_value(request, "source_renderer_location");
-    match state.create_renderer_group(name, &members, source_renderer_location) {
+    match state.create_renderer_group(
+        name,
+        &members,
+        source_renderer_location,
+        request_client_id(request),
+    ) {
         Ok(group) => {
             let group_location = crate::renderer::renderer_group_queue_key(&group.id);
             let body = format!(
@@ -856,6 +861,9 @@ pub(crate) fn handle_api_renderer_group_create_request(
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            api_error(writer, "403 Forbidden", &error.to_string())
         }
         Err(error) => api_error(
             writer,
@@ -886,6 +894,9 @@ pub(crate) fn handle_api_renderer_group_delete_request(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             api_error(writer, "404 Not Found", &error.to_string())
         }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            api_error(writer, "403 Forbidden", &error.to_string())
+        }
         Err(error) => api_error(
             writer,
             "500 Internal Server Error",
@@ -909,7 +920,12 @@ pub(crate) fn handle_api_renderer_group_update_request(
         .unwrap_or_default();
     let name = request_value(request, "name").unwrap_or("");
 
-    match state.update_renderer_group_by_queue_key(&renderer_location, name, &members) {
+    match state.update_renderer_group_by_queue_key(
+        &renderer_location,
+        name,
+        &members,
+        request_client_id(request),
+    ) {
         Ok(group) => {
             let body = format!(
                 r#"{{"ok":true,"message":"Renderer group '{}' updated.","renderer_location":"{}","group":{},"queue":{}}}"#,
@@ -925,6 +941,9 @@ pub(crate) fn handle_api_renderer_group_update_request(
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            api_error(writer, "403 Forbidden", &error.to_string())
         }
         Err(error) => api_error(
             writer,
@@ -956,6 +975,9 @@ pub(crate) fn handle_api_play_request(
         Ok(value) => value,
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     let Some(track) = state.find_track(&track_id) else {
         return api_error(writer, "404 Not Found", "track not found");
     };
@@ -994,6 +1016,9 @@ pub(crate) fn handle_api_play_album_request(
         Ok(value) => value,
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     let Some(album) = state.find_album(&album_id) else {
         return api_error(writer, "404 Not Found", "album not found");
     };
@@ -1067,6 +1092,9 @@ pub(crate) fn handle_api_events_request(
             "renderer_location is required for event streaming",
         );
     }
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
 
     respond_sse_stream(writer, state, &renderer_location)
 }
@@ -1097,9 +1125,22 @@ pub(crate) fn handle_api_register_android_local_renderer_request(
     };
     let manufacturer = request_value(request, "manufacturer");
     let model_name = request_value(request, "model_name");
+    let client_id = request_client_id(request);
+    let visibility = request_value(request, "visibility").unwrap_or(if client_id.is_some() {
+        "private"
+    } else {
+        "public"
+    });
+    if visibility.eq_ignore_ascii_case("private") && client_id.is_none() {
+        return api_error(
+            writer,
+            "400 Bad Request",
+            "client_id is required for private renderers",
+        );
+    }
     let capabilities = android_local_renderer_capabilities();
 
-    match state.remember_renderer_details(
+    match state.remember_renderer_details_with_visibility(
         &renderer_location,
         &name,
         manufacturer.as_deref(),
@@ -1107,6 +1148,8 @@ pub(crate) fn handle_api_register_android_local_renderer_request(
         None,
         Some(&capabilities),
         None,
+        visibility,
+        client_id,
     ) {
         Ok(()) => api_renderer_state_response(
             writer,
@@ -1136,6 +1179,9 @@ pub(crate) fn handle_api_android_local_session_request(
         RendererKind::AndroidLocal
     ) {
         return api_error(writer, "400 Bad Request", "renderer is not android_local");
+    }
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
     }
 
     let transport_state = match required_request_value(request, "transport_state") {
@@ -1187,6 +1233,9 @@ pub(crate) fn handle_api_android_local_completed_request(
         RendererKind::AndroidLocal
     ) {
         return api_error(writer, "400 Bad Request", "renderer is not android_local");
+    }
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
     }
 
     match state
@@ -1287,6 +1336,9 @@ pub(crate) fn handle_api_transport_action(
         Ok(value) => value,
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     match apply(state, &renderer_location) {
         Ok(message) => api_renderer_state_response(writer, state, &renderer_location, &message),
         Err(error) => api_error(
@@ -1392,6 +1444,9 @@ pub(crate) fn handle_api_queue_track_action(
         Ok(value) => value,
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     let Some(track) = state.find_track(&track_id) else {
         return api_error(writer, "404 Not Found", "track not found");
     };
@@ -1422,6 +1477,9 @@ pub(crate) fn handle_api_queue_album_action(
         Ok(value) => value,
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     let Some(album) = state.find_album(&album_id) else {
         return api_error(writer, "404 Not Found", "album not found");
     };
@@ -1451,6 +1509,9 @@ pub(crate) fn handle_api_queue_move_request(
             Some(value) => value,
             None => return api_error(writer, "400 Bad Request", "missing or invalid entry_id"),
         };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     let direction = match required_request_value(request, "direction") {
         Ok(value) => value,
         Err(error) => return api_error(writer, "400 Bad Request", error),
@@ -1499,6 +1560,9 @@ pub(crate) fn handle_api_queue_remove_request(
             Some(value) => value,
             None => return api_error(writer, "400 Bad Request", "missing or invalid entry_id"),
         };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     match state.remove_pending_queue_entry(&renderer_location, entry_id) {
         Ok(queue) => api_queue_response(
             writer,
@@ -1526,6 +1590,9 @@ pub(crate) fn handle_api_queue_clear_request(
         Ok(value) => value,
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
     match state.clear_queue(&renderer_location) {
         Ok(()) => api_renderer_state_response(writer, state, &renderer_location, "Queue cleared."),
         Err(error) => api_error(
@@ -1551,6 +1618,35 @@ pub(crate) fn required_request_value(
             "direction" => "missing direction",
             _ => "missing required field",
         })
+}
+
+pub(crate) fn request_client_id(request: &HttpRequest) -> Option<&str> {
+    request_value(request, "client_id")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn authorize_direct_renderer_access(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+    renderer_location: &str,
+) -> io::Result<bool> {
+    match state.check_direct_renderer_access(renderer_location, request_client_id(request)) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            api_error(writer, "403 Forbidden", &error.to_string())?;
+            Ok(false)
+        }
+        Err(error) => {
+            api_error(
+                writer,
+                "500 Internal Server Error",
+                &format!("renderer access check failed: {error}"),
+            )?;
+            Ok(false)
+        }
+    }
 }
 
 pub(crate) fn api_queue_response(

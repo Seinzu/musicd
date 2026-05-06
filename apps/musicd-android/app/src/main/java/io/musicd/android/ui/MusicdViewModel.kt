@@ -561,7 +561,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         val baseUrl = state.baseUrl
         if (baseUrl.isBlank() || targetLocation.isBlank() || memberLocation.isBlank()) return
         val physicalRendererLocations = state.renderers
-            .filter { it.kind != "group" }
+            .filter { it.kind != "group" && it.directAccess }
             .map { it.location }
             .toSet()
         if (memberLocation !in physicalRendererLocations) return
@@ -1165,11 +1165,12 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         savedSelection: String,
         renderers: List<RendererDto>,
     ): String? {
+        val selectableRenderers = renderers.filter { it.kind == "group" || it.directAccess }
         return when {
-            currentSelection.isNotBlank() && renderers.any { it.location == currentSelection } -> currentSelection
-            savedSelection.isNotBlank() && renderers.any { it.location == savedSelection } -> savedSelection
-            renderers.any { it.selected } -> renderers.first { it.selected }.location
-            else -> renderers.firstOrNull()?.location
+            currentSelection.isNotBlank() && selectableRenderers.any { it.location == currentSelection } -> currentSelection
+            savedSelection.isNotBlank() && selectableRenderers.any { it.location == savedSelection } -> savedSelection
+            selectableRenderers.any { it.selected } -> selectableRenderers.first { it.selected }.location
+            else -> selectableRenderers.firstOrNull()?.location
         }?.also(repository::saveRendererLocation)
     }
 

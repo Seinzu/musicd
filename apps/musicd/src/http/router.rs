@@ -2,25 +2,25 @@ use std::io;
 use std::sync::Arc;
 
 use crate::handlers::{
-    handle_album_artwork_request, handle_api_album_artwork_select_request,
-    handle_api_android_local_completed_request, handle_api_android_local_session_request,
-    handle_api_events_request, handle_api_play_album_request, handle_api_play_request,
-    handle_api_queue_append_album_request, handle_api_queue_append_track_request,
-    handle_api_queue_clear_request, handle_api_queue_move_request,
-    handle_api_queue_play_next_album_request, handle_api_queue_play_next_track_request,
-    handle_api_queue_remove_request, handle_api_register_android_local_renderer_request,
-    handle_api_renderer_discover_request, handle_api_renderer_group_create_request,
-    handle_api_renderer_group_delete_request, handle_api_renderer_group_update_request,
-    handle_api_transport_next_request, handle_api_transport_pause_request,
-    handle_api_transport_play_request, handle_api_transport_previous_request,
-    handle_api_transport_stop_request, handle_play_album_request, handle_play_request,
-    handle_queue_append_album_request, handle_queue_append_track_request,
-    handle_queue_clear_request, handle_queue_move_down_request, handle_queue_move_up_request,
-    handle_queue_play_next_album_request, handle_queue_play_next_track_request,
-    handle_queue_remove_entry_request, handle_rescan_request, handle_track_artwork_request,
-    handle_track_stream_request, handle_transport_next_request, handle_transport_pause_request,
-    handle_transport_play_request, handle_transport_previous_request,
-    handle_transport_stop_request,
+    authorize_direct_renderer_access, handle_album_artwork_request,
+    handle_api_album_artwork_select_request, handle_api_android_local_completed_request,
+    handle_api_android_local_session_request, handle_api_events_request,
+    handle_api_play_album_request, handle_api_play_request, handle_api_queue_append_album_request,
+    handle_api_queue_append_track_request, handle_api_queue_clear_request,
+    handle_api_queue_move_request, handle_api_queue_play_next_album_request,
+    handle_api_queue_play_next_track_request, handle_api_queue_remove_request,
+    handle_api_register_android_local_renderer_request, handle_api_renderer_discover_request,
+    handle_api_renderer_group_create_request, handle_api_renderer_group_delete_request,
+    handle_api_renderer_group_update_request, handle_api_transport_next_request,
+    handle_api_transport_pause_request, handle_api_transport_play_request,
+    handle_api_transport_previous_request, handle_api_transport_stop_request,
+    handle_play_album_request, handle_play_request, handle_queue_append_album_request,
+    handle_queue_append_track_request, handle_queue_clear_request, handle_queue_move_down_request,
+    handle_queue_move_up_request, handle_queue_play_next_album_request,
+    handle_queue_play_next_track_request, handle_queue_remove_entry_request, handle_rescan_request,
+    handle_track_artwork_request, handle_track_stream_request, handle_transport_next_request,
+    handle_transport_pause_request, handle_transport_play_request,
+    handle_transport_previous_request, handle_transport_stop_request,
 };
 use crate::service::ServiceState;
 use crate::views::json::{
@@ -35,7 +35,7 @@ use crate::views::{
 };
 
 use super::ResponseWriter;
-use super::request::HttpRequest;
+use super::request::{HttpRequest, request_value};
 use super::response::{respond_method_not_allowed, respond_not_found, respond_text};
 
 pub(crate) fn handle_service_request(
@@ -92,7 +92,7 @@ pub(crate) fn handle_service_request(
             )
         }
         ("GET", "/api/renderers") | ("HEAD", "/api/renderers") => {
-            let body = render_renderers_json(&state);
+            let body = render_renderers_json(&state, request);
             respond_text(
                 writer,
                 "200 OK",
@@ -102,7 +102,7 @@ pub(crate) fn handle_service_request(
             )
         }
         ("GET", "/api/playback-targets") | ("HEAD", "/api/playback-targets") => {
-            let body = render_playback_targets_json(&state);
+            let body = render_playback_targets_json(&state, request);
             respond_text(
                 writer,
                 "200 OK",
@@ -132,6 +132,13 @@ pub(crate) fn handle_service_request(
             )
         }
         ("GET", "/api/session") | ("HEAD", "/api/session") => {
+            let renderer_location =
+                state.preferred_renderer_location(request_value(request, "renderer_location"));
+            if !renderer_location.is_empty()
+                && !authorize_direct_renderer_access(writer, request, &state, &renderer_location)?
+            {
+                return Ok(());
+            }
             let body = render_session_json(&state, request);
             respond_text(
                 writer,
@@ -142,6 +149,13 @@ pub(crate) fn handle_service_request(
             )
         }
         ("GET", "/api/now-playing") | ("HEAD", "/api/now-playing") => {
+            let renderer_location =
+                state.preferred_renderer_location(request_value(request, "renderer_location"));
+            if !renderer_location.is_empty()
+                && !authorize_direct_renderer_access(writer, request, &state, &renderer_location)?
+            {
+                return Ok(());
+            }
             let body = render_now_playing_json(&state, request);
             respond_text(
                 writer,
@@ -152,6 +166,13 @@ pub(crate) fn handle_service_request(
             )
         }
         ("GET", "/api/queue") | ("HEAD", "/api/queue") => {
+            let renderer_location =
+                state.preferred_renderer_location(request_value(request, "renderer_location"));
+            if !renderer_location.is_empty()
+                && !authorize_direct_renderer_access(writer, request, &state, &renderer_location)?
+            {
+                return Ok(());
+            }
             let body = render_queue_json(&state, request);
             respond_text(
                 writer,

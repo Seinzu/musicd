@@ -24,6 +24,8 @@ data class RendererDto(
     @SerialName("last_seen_unix") val lastSeenUnix: Long = 0L,
     val selected: Boolean = false,
     val kind: String = "upnp",
+    @SerialName("direct_access") val directAccess: Boolean = true,
+    val visibility: String = "public",
     val health: RendererHealthDto? = null,
     val error: String? = null,
     val group: RendererGroupDto? = null,
@@ -268,8 +270,8 @@ class MusicdApi(
     suspend fun getTracks(baseUrl: String): List<TrackSummaryDto> =
         get("$baseUrl/api/tracks")
 
-    suspend fun getRenderers(baseUrl: String): List<RendererDto> =
-        get("$baseUrl/api/renderers")
+    suspend fun getRenderers(baseUrl: String, clientId: String): List<RendererDto> =
+        get("$baseUrl/api/renderers?client_id=${clientId.encodeForUrl()}")
 
     suspend fun discoverRenderers(baseUrl: String): List<RendererDto> =
         get("$baseUrl/api/renderers/discover")
@@ -279,9 +281,11 @@ class MusicdApi(
         name: String,
         memberLocations: List<String>,
         sourceRendererLocation: String?,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/renderer-groups",
         buildMap {
+            put("client_id", clientId)
             put("name", name)
             put("members", memberLocations.joinToString(","))
             sourceRendererLocation
@@ -293,9 +297,10 @@ class MusicdApi(
     suspend fun deleteRendererGroup(
         baseUrl: String,
         rendererLocation: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/renderer-groups/delete",
-        mapOf("renderer_location" to rendererLocation),
+        mapOf("renderer_location" to rendererLocation, "client_id" to clientId),
     )
 
     suspend fun updateRendererGroup(
@@ -303,10 +308,12 @@ class MusicdApi(
         rendererLocation: String,
         name: String,
         memberLocations: List<String>,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/renderer-groups/update",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "name" to name,
             "members" to memberLocations.joinToString(","),
         ),
@@ -318,11 +325,14 @@ class MusicdApi(
         name: String,
         manufacturer: String?,
         modelName: String?,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/renderers/register-android-local",
         buildMap {
+            put("client_id", clientId)
             put("renderer_location", rendererLocation)
             put("name", name)
+            put("visibility", "private")
             manufacturer?.takeIf { it.isNotBlank() }?.let { put("manufacturer", it) }
             modelName?.takeIf { it.isNotBlank() }?.let { put("model_name", it) }
         },
@@ -335,9 +345,11 @@ class MusicdApi(
         currentTrackUri: String?,
         positionSeconds: Long?,
         durationSeconds: Long?,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/renderers/android-local/session",
         buildMap {
+            put("client_id", clientId)
             put("renderer_location", rendererLocation)
             put("transport_state", transportState)
             currentTrackUri?.takeIf { it.isNotBlank() }?.let { put("current_track_uri", it) }
@@ -349,31 +361,34 @@ class MusicdApi(
     suspend fun reportAndroidLocalCompleted(
         baseUrl: String,
         rendererLocation: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/renderers/android-local/completed",
-        mapOf("renderer_location" to rendererLocation),
+        mapOf("renderer_location" to rendererLocation, "client_id" to clientId),
     )
 
-    suspend fun getQueue(baseUrl: String, rendererLocation: String): QueueDto =
-        get("$baseUrl/api/queue?renderer_location=${rendererLocation.encodeForUrl()}")
+    suspend fun getQueue(baseUrl: String, rendererLocation: String, clientId: String): QueueDto =
+        get("$baseUrl/api/queue?renderer_location=${rendererLocation.encodeForUrl()}&client_id=${clientId.encodeForUrl()}")
 
-    suspend fun getNowPlaying(baseUrl: String, rendererLocation: String): NowPlayingDto =
-        get("$baseUrl/api/now-playing?renderer_location=${rendererLocation.encodeForUrl()}")
+    suspend fun getNowPlaying(baseUrl: String, rendererLocation: String, clientId: String): NowPlayingDto =
+        get("$baseUrl/api/now-playing?renderer_location=${rendererLocation.encodeForUrl()}&client_id=${clientId.encodeForUrl()}")
 
-    suspend fun transport(baseUrl: String, path: String, rendererLocation: String): MutationResponseDto =
+    suspend fun transport(baseUrl: String, path: String, rendererLocation: String, clientId: String): MutationResponseDto =
         post(
             "$baseUrl$path",
-            mapOf("renderer_location" to rendererLocation),
+            mapOf("renderer_location" to rendererLocation, "client_id" to clientId),
         )
 
     suspend fun playTrack(
         baseUrl: String,
         rendererLocation: String,
         trackId: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/play",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "track_id" to trackId,
         ),
     )
@@ -382,10 +397,12 @@ class MusicdApi(
         baseUrl: String,
         rendererLocation: String,
         albumId: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/play-album",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "album_id" to albumId,
         ),
     )
@@ -406,10 +423,12 @@ class MusicdApi(
         baseUrl: String,
         rendererLocation: String,
         trackId: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/queue/append-track",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "track_id" to trackId,
         ),
     )
@@ -418,10 +437,12 @@ class MusicdApi(
         baseUrl: String,
         rendererLocation: String,
         trackId: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/queue/play-next-track",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "track_id" to trackId,
         ),
     )
@@ -430,10 +451,12 @@ class MusicdApi(
         baseUrl: String,
         rendererLocation: String,
         albumId: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/queue/append-album",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "album_id" to albumId,
         ),
     )
@@ -442,10 +465,12 @@ class MusicdApi(
         baseUrl: String,
         rendererLocation: String,
         albumId: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/queue/play-next-album",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "album_id" to albumId,
         ),
     )
@@ -455,10 +480,12 @@ class MusicdApi(
         rendererLocation: String,
         entryId: Long,
         direction: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/queue/move",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "entry_id" to entryId.toString(),
             "direction" to direction,
         ),
@@ -468,10 +495,12 @@ class MusicdApi(
         baseUrl: String,
         rendererLocation: String,
         entryId: Long,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/queue/remove",
         mapOf(
             "renderer_location" to rendererLocation,
+            "client_id" to clientId,
             "entry_id" to entryId.toString(),
         ),
     )
@@ -479,18 +508,20 @@ class MusicdApi(
     suspend fun clearQueue(
         baseUrl: String,
         rendererLocation: String,
+        clientId: String,
     ): MutationResponseDto = post(
         "$baseUrl/api/queue/clear",
-        mapOf("renderer_location" to rendererLocation),
+        mapOf("renderer_location" to rendererLocation, "client_id" to clientId),
     )
 
     fun observePlaybackEvents(
         baseUrl: String,
         rendererLocation: String,
+        clientId: String,
         onEvent: (PlaybackEventDto) -> Unit,
     ) {
         val request = Request.Builder()
-            .url("$baseUrl/api/events?renderer_location=${rendererLocation.encodeForUrl()}")
+            .url("$baseUrl/api/events?renderer_location=${rendererLocation.encodeForUrl()}&client_id=${clientId.encodeForUrl()}")
             .addHeader("Accept", "text/event-stream")
             .get()
             .build()

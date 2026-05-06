@@ -400,6 +400,7 @@ mod tests {
                     "http://living-room.local/description.xml".to_string(),
                 ],
                 Some("http://kitchen.local/description.xml"),
+                None,
             )
             .expect("group should be created");
         assert_eq!(group.name, "Downstairs");
@@ -450,6 +451,7 @@ mod tests {
                     "http://living-room.local/description.xml".to_string(),
                 ],
                 Some("http://kitchen.local/description.xml"),
+                None,
             )
             .expect("group should be created without a source queue");
 
@@ -477,6 +479,7 @@ mod tests {
                     "http://living-room.local/description.xml",
                 ]),
                 None,
+                None,
             )
             .expect_err("duplicate members should be rejected");
         assert_eq!(duplicate_error.kind(), std::io::ErrorKind::InvalidInput);
@@ -490,12 +493,76 @@ mod tests {
                 "Nested",
                 &renderer_locations(&["group:nested", "http://living-room.local/description.xml"]),
                 None,
+                None,
             )
             .expect_err("nested groups should be rejected");
         assert_eq!(nested_error.kind(), std::io::ErrorKind::InvalidInput);
         assert_eq!(
             nested_error.to_string(),
             "renderer groups cannot contain other groups"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_additions_require_private_renderer_owner() {
+        let state = sample_state(Vec::new());
+        state
+            .database
+            .upsert_renderer(&RendererRecord {
+                location: "android-local://owner-phone".to_string(),
+                name: "Owner phone".to_string(),
+                manufacturer: Some("Android".to_string()),
+                model_name: None,
+                av_transport_control_url: None,
+                capabilities: RendererCapabilities::default(),
+                visibility: "private".to_string(),
+                owner_client_id: Some("owner-client".to_string()),
+                last_checked_unix: 10,
+                last_reachable_unix: Some(10),
+                last_error: None,
+                last_seen_unix: 10,
+            })
+            .expect("private renderer should persist");
+
+        let denied = state
+            .create_renderer_group(
+                "Shared",
+                &renderer_locations(&[
+                    "android-local://owner-phone",
+                    "http://kitchen.local/description.xml",
+                ]),
+                None,
+                Some("other-client"),
+            )
+            .expect_err("other clients cannot add private renderers");
+        assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let group = state
+            .create_renderer_group(
+                "Shared",
+                &renderer_locations(&[
+                    "android-local://owner-phone",
+                    "http://kitchen.local/description.xml",
+                ]),
+                None,
+                Some("owner-client"),
+            )
+            .expect("owner can add private renderer");
+        assert_eq!(group.members.len(), 2);
+
+        assert!(
+            state
+                .check_direct_renderer_access("android-local://owner-phone", Some("owner-client"))
+                .is_ok()
+        );
+        assert_eq!(
+            state
+                .check_direct_renderer_access("android-local://owner-phone", Some("other-client"))
+                .expect_err("other clients cannot control private renderer")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path);
@@ -529,6 +596,7 @@ mod tests {
                     "http://living-room.local/description.xml",
                     "android-local://phone",
                 ]),
+                None,
             )
             .expect("group should update");
         assert_eq!(updated.name, "Evening");
@@ -564,6 +632,7 @@ mod tests {
                 &group_location,
                 "Too Small",
                 &renderer_locations(&["android-local://phone"]),
+                None,
             )
             .expect_err("single-member groups should be rejected");
         assert_eq!(too_small_error.kind(), std::io::ErrorKind::InvalidInput);
@@ -759,6 +828,7 @@ mod tests {
                     "android-local://phone-a".to_string(),
                     "android-local://phone-b".to_string(),
                 ],
+                None,
                 None,
             )
             .expect("group should be created");
@@ -1326,6 +1396,8 @@ mod tests {
                     ]),
                     has_playlist_extension_service: Some(true),
                 },
+                visibility: "public".to_string(),
+                owner_client_id: None,
                 last_checked_unix: 100,
                 last_reachable_unix: Some(95),
                 last_error: Some("timed out".to_string()),
@@ -1366,6 +1438,8 @@ mod tests {
                 av_transport_actions: Some(vec!["Pause".to_string()]),
                 has_playlist_extension_service: Some(true),
             },
+            visibility: "public".to_string(),
+            owner_client_id: None,
             last_checked_unix: 100,
             last_reachable_unix: Some(100),
             last_error: None,
@@ -1391,6 +1465,8 @@ mod tests {
             model_name: Some("Philips hue bridge 2015".to_string()),
             av_transport_control_url: None,
             capabilities: RendererCapabilities::default(),
+            visibility: "public".to_string(),
+            owner_client_id: None,
             last_checked_unix: 10,
             last_reachable_unix: Some(10),
             last_error: None,
@@ -1465,7 +1541,7 @@ mod tests {
         members: &[&str],
     ) -> RendererGroup {
         state
-            .create_renderer_group(name, &renderer_locations(members), None)
+            .create_renderer_group(name, &renderer_locations(members), None, None)
             .expect("sample renderer group should be created")
     }
 

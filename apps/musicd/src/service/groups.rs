@@ -51,12 +51,15 @@ impl ServiceState {
         name: &str,
         members: &[String],
         source_renderer_location: Option<&str>,
+        client_id: Option<&str>,
     ) -> io::Result<RendererGroup> {
         reject_nested_group_members(members)?;
+        self.check_private_renderer_additions_owned(members, &[], client_id)?;
         let source_queue = if let Some(source_renderer_location) = source_renderer_location
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
+            self.check_direct_renderer_access(source_renderer_location, client_id)?;
             self.database.load_queue(source_renderer_location)?
         } else {
             None
@@ -89,9 +92,16 @@ impl ServiceState {
         renderer_location: &str,
         name: &str,
         members: &[String],
+        client_id: Option<&str>,
     ) -> io::Result<RendererGroup> {
         reject_nested_group_members(members)?;
         let group = self.load_renderer_group_for_queue(renderer_location)?;
+        let existing_members = group
+            .members
+            .iter()
+            .map(|member| member.renderer_location.clone())
+            .collect::<Vec<_>>();
+        self.check_private_renderer_additions_owned(members, &existing_members, client_id)?;
         self.database
             .update_renderer_group(&group.id, name, members)
     }

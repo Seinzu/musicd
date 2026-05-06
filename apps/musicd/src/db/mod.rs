@@ -94,6 +94,8 @@ impl Database {
                     av_transport_control_url TEXT,
                     av_transport_actions_json TEXT,
                     has_playlist_extension_service INTEGER,
+                    visibility TEXT NOT NULL DEFAULT 'public',
+                    owner_client_id TEXT,
                     last_checked_unix INTEGER NOT NULL DEFAULT 0,
                     last_reachable_unix INTEGER,
                     last_error TEXT,
@@ -215,6 +217,13 @@ impl Database {
             "has_playlist_extension_service",
             "INTEGER",
         )?;
+        ensure_column(
+            &connection,
+            "renderers",
+            "visibility",
+            "TEXT NOT NULL DEFAULT 'public'",
+        )?;
+        ensure_column(&connection, "renderers", "owner_client_id", "TEXT")?;
         ensure_column(
             &connection,
             "renderers",

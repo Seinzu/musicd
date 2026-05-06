@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use musicd_upnp::{discover_renderers, inspect_renderer};
@@ -252,9 +252,15 @@ pub(crate) fn render_album_artwork_candidates_json(
     }
 }
 
-pub(crate) fn render_renderers_json(state: &ServiceState) -> String {
+pub(crate) fn render_renderers_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let client_id = request_value(request, "client_id");
     let renderers = state.enriched_renderer_snapshot();
     let groups = state.renderer_group_snapshot();
+    let group_member_locations = groups
+        .iter()
+        .flat_map(|group| group.members.iter())
+        .map(|member| member.renderer_location.clone())
+        .collect::<HashSet<_>>();
     let selected = state
         .database
         .last_selected_renderer_location()
@@ -262,10 +268,16 @@ pub(crate) fn render_renderers_json(state: &ServiceState) -> String {
         .flatten();
     let mut entries = renderers
         .into_iter()
-        .map(|renderer| {
-            renderer_record_json(
+        .filter_map(|renderer| {
+            let direct_access = state.renderer_is_visible_to_client(&renderer, client_id);
+            (direct_access || group_member_locations.contains(&renderer.location))
+                .then_some((renderer, direct_access))
+        })
+        .map(|(renderer, direct_access)| {
+            renderer_record_json_with_access(
                 &renderer,
-                selected.as_deref() == Some(renderer.location.as_str()),
+                direct_access && selected.as_deref() == Some(renderer.location.as_str()),
+                direct_access,
             )
         })
         .collect::<Vec<_>>();
@@ -287,7 +299,8 @@ pub(crate) fn render_renderer_groups_json(state: &ServiceState) -> String {
     format!("[{entries}]")
 }
 
-pub(crate) fn render_playback_targets_json(state: &ServiceState) -> String {
+pub(crate) fn render_playback_targets_json(state: &ServiceState, request: &HttpRequest) -> String {
+    let client_id = request_value(request, "client_id");
     let selected = state
         .database
         .last_selected_renderer_location()
@@ -296,6 +309,7 @@ pub(crate) fn render_playback_targets_json(state: &ServiceState) -> String {
     let mut targets = state
         .enriched_renderer_snapshot()
         .into_iter()
+        .filter(|renderer| state.renderer_is_visible_to_client(renderer, client_id))
         .map(|renderer| {
             format!(
                 r#"{{"kind":"renderer","id":"{}","location":"{}","name":"{}","selected":{},"queue_summary":{}}}"#,
@@ -529,6 +543,8 @@ pub(crate) fn render_discovery_json(state: &ServiceState) -> String {
                         model_name: details.model_name,
                         av_transport_control_url: Some(details.av_transport_control_url),
                         capabilities: details.capabilities,
+                        visibility: "public".to_string(),
+                        owner_client_id: None,
                         last_checked_unix: now_unix_timestamp(),
                         last_reachable_unix: Some(now_unix_timestamp()),
                         last_error: None,
@@ -615,13 +631,21 @@ pub(crate) fn track_summary_json(
 }
 
 pub(crate) fn renderer_record_json(renderer: &RendererRecord, selected: bool) -> String {
+    renderer_record_json_with_access(renderer, selected, true)
+}
+
+pub(crate) fn renderer_record_json_with_access(
+    renderer: &RendererRecord,
+    selected: bool,
+    direct_access: bool,
+) -> String {
     let av_transport_actions_json = renderer
         .capabilities
         .av_transport_actions
         .as_ref()
         .map(|actions| string_list_json(actions));
     format!(
-        r#"{{"location":"{}","name":"{}","manufacturer":{},"model_name":{},"av_transport_control_url":{},"capabilities":{{"av_transport_actions":{},"supports_set_next_av_transport_uri":{},"supports_pause":{},"supports_stop":{},"supports_next":{},"supports_previous":{},"supports_seek":{},"has_playlist_extension_service":{}}},"health":{{"last_checked_unix":{},"last_reachable_unix":{},"last_error":{},"reachable":{}}},"last_seen_unix":{},"selected":{},"kind":"{}"}}"#,
+        r#"{{"location":"{}","name":"{}","manufacturer":{},"model_name":{},"av_transport_control_url":{},"capabilities":{{"av_transport_actions":{},"supports_set_next_av_transport_uri":{},"supports_pause":{},"supports_stop":{},"supports_next":{},"supports_previous":{},"supports_seek":{},"has_playlist_extension_service":{}}},"health":{{"last_checked_unix":{},"last_reachable_unix":{},"last_error":{},"reachable":{}}},"last_seen_unix":{},"selected":{},"kind":"{}","visibility":"{}","direct_access":{}}}"#,
         json_escape(&renderer.location),
         json_escape(&renderer.name),
         option_string_json(renderer.manufacturer.as_deref()),
@@ -642,6 +666,8 @@ pub(crate) fn renderer_record_json(renderer: &RendererRecord, selected: bool) ->
         renderer.last_seen_unix,
         bool_json(selected),
         renderer_kind_name(renderer_kind_for_location(&renderer.location)),
+        json_escape(&renderer.visibility),
+        bool_json(direct_access),
     )
 }
 
@@ -662,7 +688,7 @@ pub(crate) fn renderer_group_json(group: &RendererGroup) -> String {
 pub(crate) fn renderer_group_as_renderer_json(group: &RendererGroup, selected: bool) -> String {
     let location = renderer_group_queue_key(&group.id);
     format!(
-        r#"{{"location":"{}","name":"{}","manufacturer":"musicd","model_name":"Renderer Group","av_transport_control_url":null,"capabilities":{{"av_transport_actions":[],"supports_set_next_av_transport_uri":false,"supports_pause":false,"supports_stop":false,"supports_next":false,"supports_previous":false,"supports_seek":false,"has_playlist_extension_service":false}},"health":{{"last_checked_unix":{},"last_reachable_unix":{},"last_error":null,"reachable":true}},"last_seen_unix":{},"selected":{},"kind":"group","group":{}}}"#,
+        r#"{{"location":"{}","name":"{}","manufacturer":"musicd","model_name":"Renderer Group","av_transport_control_url":null,"capabilities":{{"av_transport_actions":[],"supports_set_next_av_transport_uri":false,"supports_pause":false,"supports_stop":false,"supports_next":false,"supports_previous":false,"supports_seek":false,"has_playlist_extension_service":false}},"health":{{"last_checked_unix":{},"last_reachable_unix":{},"last_error":null,"reachable":true}},"last_seen_unix":{},"selected":{},"kind":"group","visibility":"public","direct_access":true,"group":{}}}"#,
         json_escape(&location),
         json_escape(&group.name),
         group.updated_unix,

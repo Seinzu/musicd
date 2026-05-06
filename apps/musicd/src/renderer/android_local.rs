@@ -27,6 +27,8 @@ impl RendererBackend for AndroidLocalRendererBackend {
             model_name: None,
             av_transport_control_url: None,
             capabilities: android_local_renderer_capabilities(),
+            visibility: "public".to_string(),
+            owner_client_id: None,
             last_checked_unix: now_unix_timestamp(),
             last_reachable_unix: Some(now_unix_timestamp()),
             last_error: None,

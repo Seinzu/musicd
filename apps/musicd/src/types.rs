@@ -152,6 +152,8 @@ pub(crate) struct RendererRecord {
     pub(crate) model_name: Option<String>,
     pub(crate) av_transport_control_url: Option<String>,
     pub(crate) capabilities: RendererCapabilities,
+    pub(crate) visibility: String,
+    pub(crate) owner_client_id: Option<String>,
     pub(crate) last_checked_unix: i64,
     pub(crate) last_reachable_unix: Option<i64>,
     pub(crate) last_error: Option<String>,

@@ -124,6 +124,8 @@ impl ServiceState {
                 model_name: None,
                 av_transport_control_url: None,
                 capabilities: android_local_renderer_capabilities(),
+                visibility: "public".to_string(),
+                owner_client_id: None,
                 last_checked_unix: now_unix_timestamp(),
                 last_reachable_unix: Some(now_unix_timestamp()),
                 last_error: None,
@@ -144,6 +146,8 @@ impl ServiceState {
             model_name: None,
             av_transport_control_url: None,
             capabilities: RendererCapabilities::default(),
+            visibility: "public".to_string(),
+            owner_client_id: None,
             last_checked_unix: 0,
             last_reachable_unix: None,
             last_error: None,
@@ -162,6 +166,31 @@ impl ServiceState {
         av_transport_control_url: Option<&str>,
         capabilities: Option<&RendererCapabilities>,
         last_error: Option<&str>,
+    ) -> io::Result<()> {
+        self.remember_renderer_details_with_visibility(
+            location,
+            name,
+            manufacturer,
+            model_name,
+            av_transport_control_url,
+            capabilities,
+            last_error,
+            "public",
+            None,
+        )
+    }
+
+    pub(crate) fn remember_renderer_details_with_visibility(
+        &self,
+        location: &str,
+        name: &str,
+        manufacturer: Option<&str>,
+        model_name: Option<&str>,
+        av_transport_control_url: Option<&str>,
+        capabilities: Option<&RendererCapabilities>,
+        last_error: Option<&str>,
+        visibility: &str,
+        owner_client_id: Option<&str>,
     ) -> io::Result<()> {
         let existing = self.database.load_renderer(location)?;
         let now = now_unix_timestamp();
@@ -187,6 +216,11 @@ impl ServiceState {
                         .map(|renderer| renderer.capabilities.clone())
                 })
                 .unwrap_or_default(),
+            visibility: normalized_renderer_visibility(visibility).to_string(),
+            owner_client_id: owner_client_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
             last_checked_unix: now,
             last_reachable_unix,
             last_error: last_error.map(ToString::to_string),
@@ -229,6 +263,8 @@ impl ServiceState {
                     model_name: None,
                     av_transport_control_url: None,
                     capabilities: RendererCapabilities::default(),
+                    visibility: "public".to_string(),
+                    owner_client_id: None,
                     last_checked_unix: 0,
                     last_reachable_unix: None,
                     last_error: None,
@@ -237,5 +273,72 @@ impl ServiceState {
         renderer.last_checked_unix = now_unix_timestamp();
         renderer.last_error = Some(error.to_string());
         self.database.upsert_renderer(&renderer)
+    }
+
+    pub(crate) fn renderer_is_visible_to_client(
+        &self,
+        renderer: &RendererRecord,
+        client_id: Option<&str>,
+    ) -> bool {
+        renderer.visibility != "private"
+            || renderer
+                .owner_client_id
+                .as_deref()
+                .zip(client_id.map(str::trim).filter(|value| !value.is_empty()))
+                .is_some_and(|(owner, client)| owner == client)
+    }
+
+    pub(crate) fn check_direct_renderer_access(
+        &self,
+        renderer_location: &str,
+        client_id: Option<&str>,
+    ) -> io::Result<()> {
+        if renderer_group_id_from_location(renderer_location).is_some() {
+            return Ok(());
+        }
+        let Some(renderer) = self.database.load_renderer(renderer_location)? else {
+            return Ok(());
+        };
+        if self.renderer_is_visible_to_client(&renderer, client_id) {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "private renderer belongs to another client",
+        ))
+    }
+
+    pub(crate) fn check_private_renderer_additions_owned(
+        &self,
+        members: &[String],
+        existing_members: &[String],
+        client_id: Option<&str>,
+    ) -> io::Result<()> {
+        for member in members {
+            let member = member.trim();
+            if member.is_empty() || existing_members.iter().any(|existing| existing == member) {
+                continue;
+            }
+            let Some(renderer) = self.database.load_renderer(member)? else {
+                continue;
+            };
+            if renderer.visibility == "private"
+                && !self.renderer_is_visible_to_client(&renderer, client_id)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "private renderer can only be added to a group by its owning client",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn normalized_renderer_visibility(visibility: &str) -> &'static str {
+    if visibility.trim().eq_ignore_ascii_case("private") {
+        "private"
+    } else {
+        "public"
     }
 }

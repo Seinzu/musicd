@@ -1475,7 +1475,7 @@ private fun RendererPickerSheet(
     val accentColor = Color(0xFFF5AF43)
     val accentContainer = Color(0xFF4B3B2B)
     val sheetBackground = Color(0xFF1F1F25)
-    val physicalRenderers = renderers.filter { it.kind != "group" }
+    val physicalRenderers = renderers.filter { it.kind != "group" && it.directAccess }
     val groupRenderers = renderers.filter { it.kind == "group" }
     var pendingDeleteGroup by remember { mutableStateOf<RendererDto?>(null) }
     val targetSummary = listOfNotNull(

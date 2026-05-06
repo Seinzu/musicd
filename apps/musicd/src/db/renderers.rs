@@ -16,6 +16,7 @@ impl Database {
             .prepare(
                 "SELECT location, name, manufacturer, model_name, av_transport_control_url,
                         av_transport_actions_json, has_playlist_extension_service,
+                        visibility, owner_client_id,
                         last_checked_unix, last_reachable_unix, last_error, last_seen_unix
                  FROM renderers
                  ORDER BY last_seen_unix DESC, name ASC",
@@ -33,10 +34,12 @@ impl Database {
                         av_transport_actions: parse_renderer_actions_json(row.get(5)?),
                         has_playlist_extension_service: row.get(6)?,
                     },
-                    last_checked_unix: row.get(7)?,
-                    last_reachable_unix: row.get(8)?,
-                    last_error: row.get(9)?,
-                    last_seen_unix: row.get(10)?,
+                    visibility: row.get(7)?,
+                    owner_client_id: row.get(8)?,
+                    last_checked_unix: row.get(9)?,
+                    last_reachable_unix: row.get(10)?,
+                    last_error: row.get(11)?,
+                    last_seen_unix: row.get(12)?,
                 })
             })
             .map_err(db_error)?;
@@ -63,6 +66,7 @@ impl Database {
             .query_row(
                 "SELECT location, name, manufacturer, model_name, av_transport_control_url,
                         av_transport_actions_json, has_playlist_extension_service,
+                        visibility, owner_client_id,
                         last_checked_unix, last_reachable_unix, last_error, last_seen_unix
                  FROM renderers
                  WHERE location = ?",
@@ -78,10 +82,12 @@ impl Database {
                             av_transport_actions: parse_renderer_actions_json(row.get(5)?),
                             has_playlist_extension_service: row.get(6)?,
                         },
-                        last_checked_unix: row.get(7)?,
-                        last_reachable_unix: row.get(8)?,
-                        last_error: row.get(9)?,
-                        last_seen_unix: row.get(10)?,
+                        visibility: row.get(7)?,
+                        owner_client_id: row.get(8)?,
+                        last_checked_unix: row.get(9)?,
+                        last_reachable_unix: row.get(10)?,
+                        last_error: row.get(11)?,
+                        last_seen_unix: row.get(12)?,
                     })
                 },
             )
@@ -97,9 +103,10 @@ impl Database {
             .execute(
                 "INSERT INTO renderers
                  (location, name, manufacturer, model_name, av_transport_control_url,
-                  av_transport_actions_json, has_playlist_extension_service, last_checked_unix,
-                  last_reachable_unix, last_error, last_seen_unix)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  av_transport_actions_json, has_playlist_extension_service, visibility,
+                  owner_client_id, last_checked_unix, last_reachable_unix, last_error,
+                  last_seen_unix)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(location) DO UPDATE SET
                     name = excluded.name,
                     manufacturer = COALESCE(excluded.manufacturer, renderers.manufacturer),
@@ -107,6 +114,8 @@ impl Database {
                     av_transport_control_url = COALESCE(excluded.av_transport_control_url, renderers.av_transport_control_url),
                     av_transport_actions_json = COALESCE(excluded.av_transport_actions_json, renderers.av_transport_actions_json),
                     has_playlist_extension_service = COALESCE(excluded.has_playlist_extension_service, renderers.has_playlist_extension_service),
+                    visibility = excluded.visibility,
+                    owner_client_id = excluded.owner_client_id,
                     last_checked_unix = excluded.last_checked_unix,
                     last_reachable_unix = COALESCE(excluded.last_reachable_unix, renderers.last_reachable_unix),
                     last_error = excluded.last_error,
@@ -119,6 +128,8 @@ impl Database {
                     renderer.av_transport_control_url,
                     av_transport_actions_json,
                     renderer.capabilities.has_playlist_extension_service,
+                    renderer.visibility,
+                    renderer.owner_client_id,
                     renderer.last_checked_unix,
                     renderer.last_reachable_unix,
                     renderer.last_error,
