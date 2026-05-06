@@ -714,6 +714,105 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun quickAddRendererToTarget(targetLocation: String, memberLocation: String) {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        if (baseUrl.isBlank() || targetLocation.isBlank() || memberLocation.isBlank()) return
+        val physicalRendererLocations = state.renderers
+            .filter { it.kind != "group" }
+            .map { it.location }
+            .toSet()
+        if (memberLocation !in physicalRendererLocations) return
+        val target = state.renderers.firstOrNull { it.location == targetLocation } ?: return
+        val mutation = if (target.kind == "group") {
+            val group = target.group ?: return
+            val memberLocations = (group.members.map { it.rendererLocation } + memberLocation)
+                .filter { it in physicalRendererLocations }
+                .distinct()
+            if (memberLocations.size == group.members.size) return
+            RendererGroupQuickAddMutation.UpdateGroup(
+                groupLocation = target.location,
+                groupName = group.name,
+                memberLocations = memberLocations,
+            )
+        } else {
+            if (target.location !in physicalRendererLocations || target.location == memberLocation) return
+            RendererGroupQuickAddMutation.CreateAdHocGroup(
+                sourceRendererLocation = target.location,
+                memberLocations = listOf(target.location, memberLocation),
+            )
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isCreatingRendererGroup = true,
+                    rendererGroupErrorMessage = null,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching {
+                val response = when (mutation) {
+                    is RendererGroupQuickAddMutation.CreateAdHocGroup -> {
+                        repository.createRendererGroup(
+                            baseUrl = baseUrl,
+                            name = "",
+                            memberLocations = mutation.memberLocations,
+                            sourceRendererLocation = mutation.sourceRendererLocation,
+                        )
+                    }
+                    is RendererGroupQuickAddMutation.UpdateGroup -> {
+                        repository.updateRendererGroup(
+                            baseUrl = baseUrl,
+                            rendererLocation = mutation.groupLocation,
+                            name = mutation.groupName,
+                            memberLocations = mutation.memberLocations,
+                        )
+                    }
+                }
+                val renderers = repository.getRenderers(baseUrl)
+                response to renderers
+            }.onSuccess { (response, renderers) ->
+                val selectedRendererLocation = when (mutation) {
+                    is RendererGroupQuickAddMutation.CreateAdHocGroup -> {
+                        response.rendererLocation
+                            ?.takeIf { location -> renderers.any { it.location == location } }
+                            ?: uiState.value.selectedRendererLocation
+                    }
+                    is RendererGroupQuickAddMutation.UpdateGroup -> uiState.value.selectedRendererLocation
+                }
+                if (
+                    mutation is RendererGroupQuickAddMutation.CreateAdHocGroup &&
+                    selectedRendererLocation != uiState.value.selectedRendererLocation
+                ) {
+                    repository.saveRendererLocation(selectedRendererLocation)
+                }
+                _uiState.update {
+                    it.copy(
+                        renderers = renderers,
+                        selectedRendererLocation = selectedRendererLocation,
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = null,
+                        showRendererPicker = mutation is RendererGroupQuickAddMutation.UpdateGroup &&
+                            it.showRendererPicker,
+                        infoMessage = response.message ?: "Renderer added.",
+                    )
+                }
+                syncPlaybackNotificationService()
+                refreshPlaybackSurfaces()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isCreatingRendererGroup = false,
+                        rendererGroupErrorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
     fun updateRendererGroup() {
         val state = uiState.value
         val baseUrl = state.baseUrl
@@ -1371,6 +1470,19 @@ private fun rendererGroupBaseMemberLocations(
     } else {
         listOf(selectedRenderer.location)
     }
+}
+
+private sealed interface RendererGroupQuickAddMutation {
+    data class CreateAdHocGroup(
+        val sourceRendererLocation: String,
+        val memberLocations: List<String>,
+    ) : RendererGroupQuickAddMutation
+
+    data class UpdateGroup(
+        val groupLocation: String,
+        val groupName: String,
+        val memberLocations: List<String>,
+    ) : RendererGroupQuickAddMutation
 }
 
 private fun isUnavailableAlbumError(

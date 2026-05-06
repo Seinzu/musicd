@@ -169,6 +169,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onUpdateRendererGroup = viewModel::updateRendererGroup,
         onDeleteRendererGroup = viewModel::deleteRendererGroup,
         onRemoveRendererGroupMember = viewModel::removeRendererGroupMember,
+        onQuickAddRendererToTarget = viewModel::quickAddRendererToTarget,
         onPlay = viewModel::transportPlay,
         onPause = viewModel::transportPause,
         onStop = viewModel::transportStop,
@@ -226,6 +227,7 @@ private fun MusicdRoot(
     onUpdateRendererGroup: () -> Unit,
     onDeleteRendererGroup: (String) -> Unit,
     onRemoveRendererGroupMember: (String, String) -> Unit,
+    onQuickAddRendererToTarget: (String, String) -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onStop: () -> Unit,
@@ -308,6 +310,7 @@ private fun MusicdRoot(
                 onUpdateGroup = onUpdateRendererGroup,
                 onDeleteGroup = onDeleteRendererGroup,
                 onRemoveGroupMember = onRemoveRendererGroupMember,
+                onQuickAddRenderer = onQuickAddRendererToTarget,
             )
         }
     }
@@ -1503,6 +1506,7 @@ private fun RendererPickerSheet(
     onUpdateGroup: () -> Unit,
     onDeleteGroup: (String) -> Unit,
     onRemoveGroupMember: (String, String) -> Unit,
+    onQuickAddRenderer: (String, String) -> Unit,
 ) {
     val accentColor = Color(0xFFF5AF43)
     val accentContainer = Color(0xFF4B3B2B)
@@ -1605,6 +1609,7 @@ private fun RendererPickerSheet(
                 onRemoveMember = { memberLocation ->
                     onRemoveGroupMember(renderer.location, memberLocation)
                 },
+                onQuickAddRenderer = onQuickAddRenderer,
             )
         }
         if (physicalRenderers.isNotEmpty()) {
@@ -1625,6 +1630,9 @@ private fun RendererPickerSheet(
                 onSelectRenderer = onSelectRenderer,
                 onEditGroup = onEditGroup,
                 onDeleteGroup = { pendingDeleteGroup = renderer },
+                quickAddCandidates = physicalRenderers.filter { it.location != renderer.location },
+                isBusy = isCreatingGroup,
+                onQuickAddRenderer = onQuickAddRenderer,
             )
         }
         if (physicalRenderers.size >= 2) {
@@ -1872,6 +1880,7 @@ private fun RendererGroupPanel(
     onEditGroup: (String) -> Unit,
     onDeleteGroup: (String) -> Unit,
     onRemoveMember: (String) -> Unit,
+    onQuickAddRenderer: (String, String) -> Unit,
 ) {
     val group = renderer.group
     val members = group?.members.orEmpty()
@@ -1894,6 +1903,8 @@ private fun RendererGroupPanel(
         .map { it.rendererLocation }
         .firstOrNull { physicalByLocation[it]?.kind != "android_local" }
         ?: members.firstOrNull()?.rendererLocation
+    val quickAddCandidates = renderers
+        .filter { it.kind != "group" && it.location !in members.map { member -> member.rendererLocation } }
 
     Card(
         modifier = Modifier
@@ -1992,11 +2003,24 @@ private fun RendererGroupPanel(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Members",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Members",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    QuickAddRendererMenu(
+                        targetRenderer = renderer,
+                        candidates = quickAddCandidates,
+                        isBusy = isBusy,
+                        selectedAccent = selectedAccent,
+                        onQuickAddRenderer = onQuickAddRenderer,
+                    )
+                }
                 members.forEach { member ->
                     val memberRenderer = physicalByLocation[member.rendererLocation]
                     RendererGroupMemberRow(
@@ -2111,12 +2135,15 @@ private fun RendererPickerRow(
     renderer: RendererDto,
     isSelected: Boolean,
     groupNames: List<String>,
+    quickAddCandidates: List<RendererDto>,
+    isBusy: Boolean,
     sheetBackground: Color,
     selectedContainer: Color,
     selectedAccent: Color,
     onSelectRenderer: (String) -> Unit,
     onEditGroup: (String) -> Unit,
     onDeleteGroup: (String) -> Unit,
+    onQuickAddRenderer: (String, String) -> Unit,
 ) {
     val membershipLabel = rendererMembershipLabel(groupNames)
     Card(
@@ -2207,14 +2234,19 @@ private fun RendererPickerRow(
                     )
                 }
             } else {
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        "Tap to switch",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    "Tap to switch",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+            QuickAddRendererMenu(
+                targetRenderer = renderer,
+                candidates = quickAddCandidates,
+                isBusy = isBusy,
+                selectedAccent = selectedAccent,
+                onQuickAddRenderer = onQuickAddRenderer,
+            )
             if (renderer.kind == "group") {
                 Column(horizontalAlignment = Alignment.End) {
                     TextButton(onClick = { onEditGroup(renderer.location) }) {
@@ -2224,6 +2256,68 @@ private fun RendererPickerRow(
                         Text("Delete")
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickAddRendererMenu(
+    targetRenderer: RendererDto,
+    candidates: List<RendererDto>,
+    isBusy: Boolean,
+    selectedAccent: Color,
+    onQuickAddRenderer: (String, String) -> Unit,
+) {
+    if (candidates.isEmpty()) {
+        return
+    }
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(
+            onClick = { expanded = true },
+            enabled = !isBusy,
+        ) {
+            Icon(
+                Icons.Rounded.Add,
+                contentDescription = "Add renderer",
+                tint = selectedAccent,
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            candidates.forEach { candidate ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(
+                                rendererDisplayName(candidate),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                rendererDescriptor(candidate),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    },
+                    leadingIcon = {
+                        Icon(
+                            rendererIcon(candidate),
+                            contentDescription = null,
+                            tint = rendererHealthColor(candidate),
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onQuickAddRenderer(targetRenderer.location, candidate.location)
+                    },
+                )
             }
         }
     }
