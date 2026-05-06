@@ -59,8 +59,8 @@ impl ServiceState {
         let album = self
             .find_album(album_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "album not found"))?;
-        let client = musicbrainz_client()?;
-        search_musicbrainz_album_artwork(&client, &album.artist, &album.title)
+        let client = musicbrainz_client();
+        search_musicbrainz_album_artwork(client, &album.artist, &album.title)
     }
 
     pub(crate) fn apply_album_artwork_candidate(
@@ -71,10 +71,10 @@ impl ServiceState {
         let album = self
             .find_album(album_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "album not found"))?;
-        let client = musicbrainz_client()?;
-        let candidate = fetch_musicbrainz_cover_art_for_release(&client, release_id)?
+        let client = musicbrainz_client();
+        let candidate = fetch_musicbrainz_cover_art_for_release(client, release_id)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no front artwork found"))?;
-        let downloaded = download_artwork_candidate(&client, &candidate.image_url)?;
+        let downloaded = download_artwork_candidate(client, &candidate.image_url)?;
         let cache_key = stable_track_id(&format!("mb-release:{}:{}", album.id, release_id));
         let extension = image_extension_for_mime(&downloaded.mime_type).ok_or_else(|| {
             io::Error::new(

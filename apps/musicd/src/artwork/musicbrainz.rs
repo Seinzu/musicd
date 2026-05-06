@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 use std::io;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 
 use crate::types::{
     AlbumArtworkSearchCandidate, CoverArtArchiveResponse, MusicBrainzArtistCredit,
@@ -13,12 +14,20 @@ use crate::types::{
 use super::DownloadedArtwork;
 use super::mime::{infer_image_mime_from_bytes, infer_image_mime_from_url};
 
-pub(crate) fn musicbrainz_client() -> io::Result<Client> {
-    Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(io::Error::other)
+/// Shared `reqwest::blocking::Client` for MusicBrainz, Cover Art Archive, and
+/// remote artwork downloads. Built once on first use; subsequent calls reuse
+/// the connection pool (and tokio runtime that backs blocking reqwest).
+pub(crate) fn musicbrainz_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .user_agent(musicbrainz_user_agent())
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .timeout(Duration::from_secs(12))
+            .pool_idle_timeout(Some(Duration::from_secs(60)))
+            .build()
+            .expect("failed to build MusicBrainz reqwest client")
+    })
 }
 
 fn musicbrainz_user_agent() -> String {
@@ -41,7 +50,6 @@ pub(crate) fn search_musicbrainz_album_artwork(
     let response = client
         .get("https://musicbrainz.org/ws/2/release")
         .query(&[("query", query.as_str()), ("fmt", "json"), ("limit", "8")])
-        .header(USER_AGENT, musicbrainz_user_agent())
         .header(ACCEPT, "application/json")
         .send()
         .and_then(|response| response.error_for_status())
@@ -90,7 +98,6 @@ pub(crate) fn fetch_musicbrainz_cover_art_for_release(
 ) -> io::Result<Option<AlbumArtworkSearchCandidate>> {
     let response = client
         .get(format!("https://coverartarchive.org/release/{release_id}/"))
-        .header(USER_AGENT, musicbrainz_user_agent())
         .header(ACCEPT, "application/json")
         .send()
         .map_err(io::Error::other)?;
@@ -138,7 +145,6 @@ pub(crate) fn download_artwork_candidate(
 ) -> io::Result<DownloadedArtwork> {
     let response = client
         .get(image_url)
-        .header(USER_AGENT, musicbrainz_user_agent())
         .header(ACCEPT, "image/*")
         .send()
         .and_then(|response| response.error_for_status())
