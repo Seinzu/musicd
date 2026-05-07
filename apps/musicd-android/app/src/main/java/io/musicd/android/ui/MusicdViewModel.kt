@@ -451,7 +451,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun deleteRendererGroup(location: String) {
+    fun deleteRendererGroup(location: String, inheritRendererLocation: String? = null) {
         val state = uiState.value
         val baseUrl = state.baseUrl
         if (baseUrl.isBlank() || location.isBlank()) return
@@ -466,12 +466,14 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
             runCatching {
-                val response = repository.deleteRendererGroup(baseUrl, location)
+                val response = repository.deleteRendererGroup(baseUrl, location, inheritRendererLocation)
                 val renderers = repository.getRenderers(baseUrl)
                 response to renderers
             }.onSuccess { (response, renderers) ->
+                val preferred = inheritRendererLocation?.takeIf { it.isNotBlank() }
                 val nextSelection = chooseRendererLocation(
-                    currentSelection = uiState.value.selectedRendererLocation.takeUnless { it == location }.orEmpty(),
+                    currentSelection = preferred
+                        ?: uiState.value.selectedRendererLocation.takeUnless { it == location }.orEmpty(),
                     savedSelection = repository.loadRendererLocation().takeUnless { it == location }.orEmpty(),
                     renderers = renderers,
                 ).orEmpty()
@@ -511,7 +513,8 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             .filterNot { it == memberLocation }
         if (remainingMemberLocations.size == group.members.size) return
         if (remainingMemberLocations.size < 2) {
-            deleteRendererGroup(groupLocation)
+            val inheritor = remainingMemberLocations.firstOrNull()
+            deleteRendererGroup(groupLocation, inheritor)
             return
         }
 

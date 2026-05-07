@@ -298,9 +298,16 @@ class MusicdApi(
         baseUrl: String,
         rendererLocation: String,
         clientId: String,
+        inheritRendererLocation: String? = null,
     ): MutationResponseDto = post(
         "$baseUrl/api/renderer-groups/delete",
-        mapOf("renderer_location" to rendererLocation, "client_id" to clientId),
+        buildMap {
+            put("renderer_location", rendererLocation)
+            put("client_id", clientId)
+            inheritRendererLocation
+                ?.takeIf { it.isNotBlank() }
+                ?.let { put("inherit_renderer_location", it) }
+        },
     )
 
     suspend fun updateRendererGroup(
