@@ -346,6 +346,27 @@ pub(crate) fn render_server_json(state: &ServiceState) -> String {
     )
 }
 
+pub(crate) fn render_recommendation_seeds_json(state: &ServiceState) -> String {
+    serde_json::json!({
+        "seeds": state.recommendation_seeds(),
+    })
+    .to_string()
+}
+
+pub(crate) fn render_album_recommendations_json(
+    state: &ServiceState,
+    request: &HttpRequest,
+) -> String {
+    let seed_album_id = request_value(request, "album_id")
+        .or_else(|| request_value(request, "seed_album_id"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    serde_json::json!({
+        "recommendations": state.album_recommendations(seed_album_id),
+    })
+    .to_string()
+}
+
 pub(crate) fn render_metrics_text(state: &ServiceState) -> String {
     state.metrics().map(|m| m.encode()).unwrap_or_default()
 }

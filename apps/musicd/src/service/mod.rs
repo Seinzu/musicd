@@ -18,6 +18,7 @@ pub(crate) mod events;
 mod groups;
 mod poll;
 mod queue;
+mod recommendations;
 mod renderers;
 mod transport;
 

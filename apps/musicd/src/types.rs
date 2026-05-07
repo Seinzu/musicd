@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use musicd_upnp::RendererCapabilities;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LibraryTrack {
@@ -229,4 +229,78 @@ pub(crate) struct QueueMutationEntry {
     pub(crate) album_id: Option<String>,
     pub(crate) source_kind: String,
     pub(crate) source_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct RecommendationSeed {
+    pub(crate) album_id: String,
+    pub(crate) title: String,
+    pub(crate) artist: String,
+    pub(crate) track_count: usize,
+    pub(crate) first_track_id: String,
+    pub(crate) artwork_url: Option<String>,
+    pub(crate) musicbrainz_release_id: String,
+    pub(crate) musicbrainz_release_group_id: Option<String>,
+    pub(crate) source: String,
+    pub(crate) release_date: Option<String>,
+    pub(crate) genres: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub(crate) struct AlbumRecommendation {
+    pub(crate) recommendation_key: String,
+    pub(crate) source: String,
+    pub(crate) batch_id: Option<String>,
+    pub(crate) seed_album_id: String,
+    pub(crate) seed_musicbrainz_release_id: Option<String>,
+    pub(crate) suggested_artist: String,
+    pub(crate) suggested_title: String,
+    pub(crate) suggested_musicbrainz_release_id: Option<String>,
+    pub(crate) suggested_musicbrainz_release_group_id: Option<String>,
+    pub(crate) confidence: Option<f64>,
+    pub(crate) rationale: Option<String>,
+    pub(crate) external_url: Option<String>,
+    pub(crate) artwork_url: Option<String>,
+    pub(crate) status: String,
+    pub(crate) created_unix: i64,
+    pub(crate) updated_unix: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RecommendationImportRequest {
+    #[serde(default)]
+    pub(crate) source: Option<String>,
+    #[serde(default)]
+    pub(crate) batch_id: Option<String>,
+    #[serde(default)]
+    pub(crate) recommendations: Vec<RecommendationImportItem>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RecommendationImportItem {
+    #[serde(default)]
+    pub(crate) recommendation_key: Option<String>,
+    #[serde(default)]
+    pub(crate) source: Option<String>,
+    #[serde(default)]
+    pub(crate) batch_id: Option<String>,
+    pub(crate) seed_album_id: String,
+    #[serde(default)]
+    pub(crate) seed_musicbrainz_release_id: Option<String>,
+    pub(crate) suggested_artist: String,
+    pub(crate) suggested_title: String,
+    #[serde(default)]
+    pub(crate) suggested_musicbrainz_release_id: Option<String>,
+    #[serde(default)]
+    pub(crate) suggested_musicbrainz_release_group_id: Option<String>,
+    #[serde(default)]
+    pub(crate) confidence: Option<f64>,
+    #[serde(default)]
+    pub(crate) rationale: Option<String>,
+    #[serde(default)]
+    pub(crate) external_url: Option<String>,
+    #[serde(default)]
+    pub(crate) artwork_url: Option<String>,
+    #[serde(default)]
+    pub(crate) status: Option<String>,
 }

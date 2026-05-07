@@ -12,7 +12,7 @@ use crate::renderer::{
     renderer_kind_for_location,
 };
 use crate::service::{ServiceState, queue_status_for_transport};
-use crate::types::{AlbumSummary, LibraryTrack, PlaybackQueue};
+use crate::types::{AlbumSummary, LibraryTrack, PlaybackQueue, RecommendationImportRequest};
 use crate::util::json_escape;
 use crate::views::json::{
     album_summary_json, render_discovery_json, render_playback_event_json_for_renderer,
@@ -1079,6 +1079,42 @@ pub(crate) fn handle_api_album_artwork_select_request(
     }
 }
 
+pub(crate) fn handle_api_recommendations_import_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let import_request = match parse_recommendation_import_request(request) {
+        Ok(request) => request,
+        Err(error) => return api_error(writer, "400 Bad Request", &error),
+    };
+    if import_request.recommendations.is_empty() {
+        return api_error(
+            writer,
+            "400 Bad Request",
+            "recommendations must contain at least one item",
+        );
+    }
+
+    match state.import_album_recommendations(&import_request) {
+        Ok(imported) => {
+            let body = format!(
+                r#"{{"ok":true,"message":"Imported {} recommendation(s).","imported":{}}}"#,
+                imported, imported,
+            );
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("recommendation import failed: {error}"),
+        ),
+    }
+}
+
 pub(crate) fn handle_api_events_request(
     writer: &mut ResponseWriter,
     request: &HttpRequest,
@@ -1098,6 +1134,17 @@ pub(crate) fn handle_api_events_request(
     }
 
     respond_sse_stream(writer, state, &renderer_location)
+}
+
+fn parse_recommendation_import_request(
+    request: &HttpRequest,
+) -> Result<RecommendationImportRequest, String> {
+    if let Some(payload) = request_value(request, "payload") {
+        return serde_json::from_str(payload)
+            .map_err(|error| format!("invalid recommendation payload JSON: {error}"));
+    }
+    serde_json::from_slice(&request.body)
+        .map_err(|error| format!("invalid recommendation import JSON: {error}"))
 }
 
 pub(crate) fn handle_api_register_android_local_renderer_request(

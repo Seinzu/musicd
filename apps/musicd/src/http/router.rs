@@ -10,7 +10,7 @@ use crate::handlers::{
     handle_api_queue_append_track_request, handle_api_queue_clear_request,
     handle_api_queue_move_request, handle_api_queue_play_next_album_request,
     handle_api_queue_play_next_track_request, handle_api_queue_remove_request,
-    handle_api_register_android_local_renderer_request,
+    handle_api_recommendations_import_request, handle_api_register_android_local_renderer_request,
     handle_api_register_cli_local_renderer_request, handle_api_renderer_discover_request,
     handle_api_renderer_group_create_request, handle_api_renderer_group_delete_request,
     handle_api_renderer_group_update_request, handle_api_transport_next_request,
@@ -26,9 +26,10 @@ use crate::handlers::{
 };
 use crate::service::ServiceState;
 use crate::views::json::{
-    render_album_artwork_candidates_json, render_album_detail_json, render_albums_json,
-    render_artist_detail_json, render_artists_json, render_discovery_json, render_metrics_text,
-    render_now_playing_json, render_playback_targets_json, render_queue_json,
+    render_album_artwork_candidates_json, render_album_detail_json,
+    render_album_recommendations_json, render_albums_json, render_artist_detail_json,
+    render_artists_json, render_discovery_json, render_metrics_text, render_now_playing_json,
+    render_playback_targets_json, render_queue_json, render_recommendation_seeds_json,
     render_renderer_groups_json, render_renderers_json, render_server_json, render_session_json,
     render_track_detail_json, render_tracks_json,
 };
@@ -85,6 +86,26 @@ pub(crate) fn handle_service_request(
         }
         ("GET", "/api/albums") | ("HEAD", "/api/albums") => {
             let body = render_albums_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/api/recommendation-seeds") | ("HEAD", "/api/recommendation-seeds") => {
+            let body = render_recommendation_seeds_json(&state);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/api/recommendations") | ("HEAD", "/api/recommendations") => {
+            let body = render_album_recommendations_json(&state, request);
             respond_text(
                 writer,
                 "200 OK",
@@ -229,6 +250,9 @@ pub(crate) fn handle_service_request(
         ("POST", "/api/play-album") => handle_api_play_album_request(writer, request, &state),
         ("POST", "/api/albums/artwork/select") => {
             handle_api_album_artwork_select_request(writer, request, &state)
+        }
+        ("POST", "/api/recommendations/import") => {
+            handle_api_recommendations_import_request(writer, request, &state)
         }
         ("POST", "/api/transport/play") => {
             handle_api_transport_play_request(writer, request, &state)

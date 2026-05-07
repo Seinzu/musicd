@@ -11,6 +11,7 @@ mod groups;
 mod library;
 mod playback;
 mod queue;
+mod recommendations;
 mod renderers;
 
 pub(crate) type SqlitePool = Pool<SqliteConnectionManager>;
@@ -174,6 +175,25 @@ impl Database {
                     applied_unix INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS album_recommendations (
+                    recommendation_key TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    batch_id TEXT,
+                    seed_album_id TEXT NOT NULL,
+                    seed_musicbrainz_release_id TEXT,
+                    suggested_artist TEXT NOT NULL,
+                    suggested_title TEXT NOT NULL,
+                    suggested_musicbrainz_release_id TEXT,
+                    suggested_musicbrainz_release_group_id TEXT,
+                    confidence REAL,
+                    rationale TEXT,
+                    external_url TEXT,
+                    artwork_url TEXT,
+                    status TEXT NOT NULL DEFAULT 'suggested',
+                    created_unix INTEGER NOT NULL,
+                    updated_unix INTEGER NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_track_play_history_track_id
                 ON track_play_history(track_id, played_unix DESC);
 
@@ -182,6 +202,9 @@ impl Database {
 
                 CREATE INDEX IF NOT EXISTS idx_renderer_group_members_group
                 ON renderer_group_members(group_id, position ASC);
+
+                CREATE INDEX IF NOT EXISTS idx_album_recommendations_seed_album
+                ON album_recommendations(seed_album_id, status, updated_unix DESC);
                 "#,
             )
             .map_err(db_error)?;

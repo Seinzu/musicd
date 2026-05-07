@@ -39,7 +39,7 @@ mod tests {
     };
     use crate::types::{
         LibraryTrack, PlaybackQueue, PlaybackSession, QueueEntry, QueueMutationEntry,
-        RendererGroup, RendererRecord, TrackArtwork,
+        RecommendationImportItem, RendererGroup, RendererRecord, TrackArtwork,
     };
     use crate::util::{
         cleanup_track_label, infer_artist_and_album, infer_disc_and_track_numbers,
@@ -574,6 +574,48 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn imports_album_recommendations_idempotently() {
+        let config_path = temp_config_path("album-recommendations");
+        let database = Database::open(&config_path).expect("database should open");
+        let items = vec![RecommendationImportItem {
+            recommendation_key: None,
+            source: None,
+            batch_id: None,
+            seed_album_id: "seed-album".to_string(),
+            seed_musicbrainz_release_id: Some("seed-release".to_string()),
+            suggested_artist: "Talk Talk".to_string(),
+            suggested_title: "Spirit of Eden".to_string(),
+            suggested_musicbrainz_release_id: Some("suggested-release".to_string()),
+            suggested_musicbrainz_release_group_id: Some("suggested-group".to_string()),
+            confidence: Some(0.92),
+            rationale: Some("Shared spacious late-night pacing.".to_string()),
+            external_url: Some("https://musicbrainz.org/release-group/suggested-group".to_string()),
+            artwork_url: None,
+            status: None,
+        }];
+
+        let imported = database
+            .upsert_album_recommendations("llm-test", Some("batch-1"), &items)
+            .expect("recommendation import should succeed");
+        assert_eq!(imported, 1);
+        database
+            .upsert_album_recommendations("llm-test", Some("batch-1"), &items)
+            .expect("recommendation import should be idempotent");
+
+        let recommendations = database
+            .list_album_recommendations(Some("seed-album"))
+            .expect("recommendations should load");
+        assert_eq!(recommendations.len(), 1);
+        assert_eq!(recommendations[0].source, "llm-test");
+        assert_eq!(recommendations[0].batch_id.as_deref(), Some("batch-1"));
+        assert_eq!(recommendations[0].suggested_artist, "Talk Talk");
+        assert_eq!(recommendations[0].suggested_title, "Spirit of Eden");
+        assert_eq!(recommendations[0].status, "suggested");
+
+        let _ = std::fs::remove_dir_all(config_path);
     }
 
     #[test]
