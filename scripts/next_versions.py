@@ -13,10 +13,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CARGO_TOML = ROOT / "Cargo.toml"
+CLI_CARGO_TOML = ROOT / "apps/musicd-cli/Cargo.toml"
+LOCKFILE = ROOT / "Cargo.lock"
 ANDROID_BUILD = ROOT / "apps/musicd-android/app/build.gradle.kts"
 
 VERSION_RE = re.compile(r'^\s*version\s*=\s*"(?P<version>\d+\.\d+\.\d+)"\s*$')
+VERSION_ASSIGNMENT_RE = re.compile(
+    r'(?P<prefix>^(\s*)version\s*=\s*")(?P<version>\d+\.\d+\.\d+)(?P<suffix>"\s*$)'
+)
 VERSION_NAME_RE = re.compile(r'^\s*versionName\s*=\s*"(?P<version>\d+\.\d+\.\d+)"\s*$')
+VERSION_NAME_ASSIGNMENT_RE = re.compile(
+    r'(?P<prefix>^(\s*)versionName\s*=\s*")(?P<version>\d+\.\d+\.\d+)(?P<suffix>"\s*$)'
+)
+VERSION_CODE_ASSIGNMENT_RE = re.compile(
+    r"(?P<prefix>^(\s*)versionCode\s*=\s*)(?P<version_code>\d+)(?P<suffix>\s*$)"
+)
 COMMIT_RE = re.compile(
     r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?:\s+(?P<description>.+)$",
     re.IGNORECASE,
@@ -24,9 +35,17 @@ COMMIT_RE = re.compile(
 
 APP_SCOPES = {"app", "android", "mobile"}
 API_SCOPES = {"api", "backend", "musicd"}
+CLI_SCOPES = {"cli", "ctl", "musicd-cli", "musicdctl"}
+ALL_COMPONENTS = ("api", "cli", "app")
 SHARED_SCOPES = {"shared", "repo", "both", "all"}
 BUMP_ORDER = {"none": 0, "patch": 1, "minor": 2, "major": 3}
 PATCH_TYPES = {"fix", "perf", "refactor", "revert"}
+LOCKED_CARGO_PACKAGES = {
+    "musicd": "api",
+    "musicd-core": "api",
+    "musicd-upnp": "api",
+    "musicd-cli": "cli",
+}
 
 
 @dataclass
@@ -73,6 +92,22 @@ def semver_key(tag: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in match.groups())
 
 
+def parse_version(version: str) -> tuple[int, int, int]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def format_version(version: tuple[int, int, int]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def max_version(*versions: str) -> str:
+    return max(versions, key=parse_version)
+
+
+def tag_version(tag: str) -> str:
+    return format_version(semver_key(tag))
+
+
 def latest_tag(prefix: str) -> str | None:
     tags = list_tags(prefix)
     return tags[0] if tags else None
@@ -88,7 +123,7 @@ def collect_commits(since_tag: str | None) -> list[CommitInfo]:
     for entry in raw.split("\x1e"):
         if not entry.strip():
             continue
-        sha, subject, body = (entry.split("\x1f", 2) + ["", "", ""])[:3]
+        sha, subject, body = (entry.strip().split("\x1f", 2) + ["", "", ""])[:3]
         match = COMMIT_RE.match(subject.strip())
         type_name = None
         scopes: list[str] = []
@@ -125,8 +160,10 @@ def scopes_to_components(scopes: list[str]) -> set[str]:
             components.add("app")
         elif scope in API_SCOPES:
             components.add("api")
+        elif scope in CLI_SCOPES:
+            components.add("cli")
         elif scope in SHARED_SCOPES:
-            components.update({"app", "api"})
+            components.update(ALL_COMPONENTS)
     return components
 
 
@@ -177,6 +214,11 @@ def release_plan(name: str, current_version: str, tag_prefix: str) -> dict[str, 
 
     commits = collect_commits(since_tag=tag)
     bump = highest_bump(commits, name)
+    previous_version = tag_version(tag)
+    required_version = previous_version
+    if bump != "none":
+        required_version = bump_version(previous_version, bump)
+    next_version = max_version(current_version, required_version)
     matched = [
         {
             "sha": commit.sha[:8],
@@ -190,12 +232,15 @@ def release_plan(name: str, current_version: str, tag_prefix: str) -> dict[str, 
     note = "No scoped conventional commits since the last release tag."
     if matched:
         note = f"{len(matched)} scoped conventional commit(s) since {tag}."
+    if parse_version(current_version) < parse_version(required_version):
+        note = f"{note} Source version is behind the planned version."
     return {
         "component": name,
         "current_version": current_version,
         "last_tag": tag,
+        "last_version": previous_version,
         "recommended_bump": bump,
-        "next_version": bump_version(current_version, bump),
+        "next_version": next_version,
         "matched_commits": matched,
         "note": note,
         "tag_prefix": tag_prefix,
@@ -209,7 +254,7 @@ def render_markdown(result: dict[str, object]) -> str:
         "| Component | Current | Last tag | Bump | Next |",
         "| --- | --- | --- | --- | --- |",
     ]
-    for component in ("api", "app"):
+    for component in ALL_COMPONENTS:
         plan = result[component]
         lines.append(
             "| {component} | {current_version} | {last_tag} | {recommended_bump} | {next_version} |".format(
@@ -221,7 +266,7 @@ def render_markdown(result: dict[str, object]) -> str:
             )
         )
 
-    for component in ("api", "app"):
+    for component in ALL_COMPONENTS:
         plan = result[component]
         lines.extend(
             [
@@ -244,22 +289,24 @@ def render_markdown(result: dict[str, object]) -> str:
 
 def build_result() -> dict[str, object]:
     api_version = read_line_match(CARGO_TOML, VERSION_RE, "workspace version")
+    cli_version = read_line_match(CLI_CARGO_TOML, VERSION_RE, "CLI package version")
     app_version = read_line_match(ANDROID_BUILD, VERSION_NAME_RE, "Android versionName")
     return {
         "api": release_plan("api", api_version, "api-v"),
+        "cli": release_plan("cli", cli_version, "musicd-cli-v"),
         "app": release_plan("app", app_version, "app-v"),
     }
 
 
 def tag_plan(result: dict[str, object]) -> list[dict[str, str]]:
     tags: list[dict[str, str]] = []
-    for component in ("api", "app"):
+    for component in ALL_COMPONENTS:
         plan = result[component]
         last_tag = plan["last_tag"]
-        current_version = plan["current_version"]
         next_version = plan["next_version"]
         tag_prefix = plan["tag_prefix"]
         recommended_bump = plan["recommended_bump"]
+        last_version = plan.get("last_version")
 
         if last_tag is None:
             tags.append(
@@ -273,16 +320,19 @@ def tag_plan(result: dict[str, object]) -> list[dict[str, str]]:
             )
             continue
 
-        if recommended_bump == "none" or next_version == current_version:
+        if last_version is not None and parse_version(next_version) <= parse_version(str(last_version)):
             continue
 
+        reason = f"{recommended_bump} bump from {last_tag}."
+        if recommended_bump == "none":
+            reason = f"Source version is ahead of {last_tag}."
         tags.append(
             {
                 "component": component,
                 "tag": f"{tag_prefix}{next_version}",
                 "kind": "release",
                 "version": next_version,
-                "reason": f"{recommended_bump} bump from {last_tag}.",
+                "reason": reason,
             }
         )
     return tags
@@ -322,10 +372,124 @@ def create_tags(planned_tags: list[dict[str, str]]) -> None:
         )
 
 
+def replace_assignment(path: Path, pattern: re.Pattern[str], value: str, description: str) -> bool:
+    changed = False
+    lines: list[str] = []
+    matched = False
+    for line in path.read_text().splitlines():
+        match = pattern.match(line)
+        if match:
+            matched = True
+            new_line = f"{match.group('prefix')}{value}{match.group('suffix')}"
+            changed = changed or new_line != line
+            lines.append(new_line)
+        else:
+            lines.append(line)
+    if not matched:
+        raise RuntimeError(f"Could not find {description} in {path}")
+    if changed:
+        path.write_text("\n".join(lines) + "\n")
+    return changed
+
+
+def android_version_code(version: str) -> str:
+    major, minor, patch = parse_version(version)
+    return str(major * 10000 + minor * 100 + patch)
+
+
+def update_lockfile_versions(versions: dict[str, str]) -> bool:
+    if not LOCKFILE.exists():
+        return False
+
+    changed = False
+    current_package: str | None = None
+    lines: list[str] = []
+    for line in LOCKFILE.read_text().splitlines():
+        name_match = re.match(r'^name = "(?P<name>[^"]+)"$', line)
+        if line == "[[package]]":
+            current_package = None
+        elif name_match:
+            current_package = name_match.group("name")
+
+        target_component = LOCKED_CARGO_PACKAGES.get(current_package or "")
+        version_match = VERSION_ASSIGNMENT_RE.match(line)
+        if target_component and version_match:
+            new_version = versions[target_component]
+            new_line = f"{version_match.group('prefix')}{new_version}{version_match.group('suffix')}"
+            changed = changed or new_line != line
+            lines.append(new_line)
+        else:
+            lines.append(line)
+
+    if changed:
+        LOCKFILE.write_text("\n".join(lines) + "\n")
+    return changed
+
+
+def write_versions(result: dict[str, object]) -> list[Path]:
+    versions = {
+        component: str(result[component]["next_version"])
+        for component in ALL_COMPONENTS
+    }
+    changed: list[Path] = []
+    if replace_assignment(
+        CARGO_TOML, VERSION_ASSIGNMENT_RE, versions["api"], "workspace version"
+    ):
+        changed.append(CARGO_TOML)
+    if replace_assignment(
+        CLI_CARGO_TOML, VERSION_ASSIGNMENT_RE, versions["cli"], "CLI package version"
+    ):
+        changed.append(CLI_CARGO_TOML)
+    if replace_assignment(
+        ANDROID_BUILD, VERSION_NAME_ASSIGNMENT_RE, versions["app"], "Android versionName"
+    ):
+        changed.append(ANDROID_BUILD)
+    if replace_assignment(
+        ANDROID_BUILD,
+        VERSION_CODE_ASSIGNMENT_RE,
+        android_version_code(versions["app"]),
+        "Android versionCode",
+    ):
+        changed.append(ANDROID_BUILD)
+    if update_lockfile_versions(versions):
+        changed.append(LOCKFILE)
+    return list(dict.fromkeys(changed))
+
+
+def validate_sources_match_planned_tags(
+    planned_tags: list[dict[str, str]], result: dict[str, object]
+) -> None:
+    stale_components = []
+    for item in planned_tags:
+        component = item["component"]
+        if result[component]["current_version"] != item["version"]:
+            stale_components.append(
+                f"{component} source is {result[component]['current_version']} but planned tag is {item['tag']}"
+            )
+    if stale_components:
+        details = "\n".join(f"- {line}" for line in stale_components)
+        raise RuntimeError(
+            "Refusing to create tags until source versions match the planned tags. "
+            "Run with --write-versions, commit the changes, then create tags.\n"
+            f"{details}"
+        )
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Calculate next app/api versions from scoped conventional commits.")
+    parser = argparse.ArgumentParser(
+        description="Calculate next api/cli/app versions from scoped conventional commits."
+    )
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
-    parser.add_argument("--tag-plan", action="store_true", help="Print the app/api Git tags that should be created next.")
+    parser.add_argument(
+        "--tag-plan",
+        action="store_true",
+        help="Print the api/cli/app Git tags that should be created next.",
+    )
+    parser.add_argument(
+        "--write-versions",
+        action="store_true",
+        help="Update Cargo, Cargo.lock, and Android Gradle versions to the planned versions.",
+    )
     parser.add_argument("--create-tags", action="store_true", help="Create the planned Git tags on HEAD.")
     args = parser.parse_args()
 
@@ -338,10 +502,28 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    if args.write_versions and args.create_tags:
+        print(
+            "Refusing to write files and create tags in one run. "
+            "Run --write-versions, commit the changes, then run --create-tags.",
+            file=sys.stderr,
+        )
+        return 1
+
+    changed_files: list[Path] = []
+    if args.write_versions:
+        try:
+            changed_files = write_versions(result)
+            result = build_result()
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
     if args.tag_plan:
         planned_tags = tag_plan(result)
         if args.create_tags:
             try:
+                validate_sources_match_planned_tags(planned_tags, result)
                 create_tags(planned_tags)
             except (RuntimeError, subprocess.CalledProcessError) as exc:
                 print(str(exc), file=sys.stderr)
@@ -353,11 +535,27 @@ def main() -> int:
             print(render_markdown(result), end="")
             print()
             print(render_tag_plan_markdown(planned_tags), end="")
+        if args.write_versions:
+            print_changed_files(changed_files)
     elif args.format == "json":
         print(json.dumps(result, indent=2))
+        if args.write_versions:
+            print_changed_files(changed_files, stderr=True)
     else:
         print(render_markdown(result), end="")
+        if args.write_versions:
+            print_changed_files(changed_files)
     return 0
+
+
+def print_changed_files(changed_files: list[Path], stderr: bool = False) -> None:
+    stream = sys.stderr if stderr else sys.stdout
+    if changed_files:
+        print("\nUpdated version files:", file=stream)
+        for path in changed_files:
+            print(f"- {path.relative_to(ROOT)}", file=stream)
+    else:
+        print("\nVersion files already matched the plan.", file=stream)
 
 
 if __name__ == "__main__":

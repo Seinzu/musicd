@@ -2,7 +2,7 @@
 name = "musicd-cli"
 edition.workspace = true
 license.workspace = true
-version.workspace = true
+version = "2.4.0"
 repository = "https://github.com/seinzu/musicd"
 description = "A CLI for connecting to a musicd instance"
 homepage = "https://github.com/seinzu/musicd"
