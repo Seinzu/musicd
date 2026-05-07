@@ -14,6 +14,21 @@ That means the Android app should treat `musicd` as the source of truth for:
 
 An implementation plan for phone-as-renderer playback now lives in [docs/android-local-renderer-plan.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-local-renderer-plan.md).
 
+## Current status
+
+The Android app is now well past the “plan only” stage. The current implementation already includes:
+
+- native server onboarding and renderer selection
+- `Home`, `Library`, and `Queue`
+- artist and album browsing
+- grouped search across artists, albums, and tracks
+- queue editing and transport controls
+- SSE-backed live updates
+- media notification and lock-screen/media-session controls
+- optional `android_local` playback, with `musicd` still owning the queue
+
+This document still matters as a direction-setting artifact, but the sections below should be read as architecture guidance and next-step planning, not as a description of a greenfield app.
+
 ## Design direction from the PDF
 
 The design PDF points to a clear mobile product shape rather than a generic admin client.
@@ -49,6 +64,10 @@ The first Android release should support:
 - use transport controls: play, pause, stop, next, previous
 - see now playing information and artwork
 
+Status:
+
+- this MVP scope is effectively implemented
+
 ### Later
 
 Good follow-on features after the first release:
@@ -58,7 +77,7 @@ Good follow-on features after the first release:
 - better queue editing gestures
 - tablet and foldable two-pane layouts
 - offline cache for lightweight metadata and artwork
-- optional notifications / lock-screen controls for remote control only
+- signed release packaging and store/distribution polish
 
 ## Recommended Android stack
 
@@ -234,16 +253,11 @@ The current web app still leans on query-string driven HTML flows for many mutat
 
 ## Live updates
 
-The Android app should not poll the entire library view constantly. For MVP:
+The Android app now uses `SSE` for queue/session updates, which is the right long-lived model for the controller. The remaining discipline is:
 
-- poll queue/session state on a short interval only while the queue screen is visible
-- refresh album/library views on demand or after local actions
-
-A better follow-on step is adding a dedicated live endpoint from `musicd`, likely:
-
-- `SSE` for queue/session updates
-
-That would help both the web UI and the Android app.
+- avoid refetching the full library on every connection or renderer change
+- keep library views demand-driven
+- let live updates focus on now-playing, queue, and renderer/session state
 
 ## Connection model
 
@@ -273,6 +287,10 @@ Before serious Android coding:
 - add a single session/status endpoint
 - document the contract
 
+Status:
+
+- complete
+
 ### Phase 1: App skeleton
 
 - new Android project
@@ -282,6 +300,10 @@ Before serious Android coding:
 - renderer/session repository
 - bottom navigation shell
 
+Status:
+
+- complete
+
 ### Phase 2: Browse and play
 
 - Home
@@ -290,12 +312,20 @@ Before serious Android coding:
 - renderer picker
 - play / queue actions
 
+Status:
+
+- complete
+
 ### Phase 3: Queue-first control
 
 - queue screen
 - transport controls
 - queue editing
-- polling or SSE-backed updates
+- live queue and now-playing updates
+
+Status:
+
+- complete
 
 ### Phase 4: polish
 
@@ -303,6 +333,25 @@ Before serious Android coding:
 - adaptive tablet layouts
 - better empty/error states
 - cached images and metadata
+
+Status:
+
+- in progress
+- empty/error handling, mobile-first queue UX, and notification/media-session work are already in
+- adaptive large-screen work and local caching are still open
+
+### Phase 5: local playback and packaging
+
+- `android_local` renderer support
+- prebuffering and recovery polish for local playback
+- signed release packaging
+- release distribution workflow
+
+Status:
+
+- `android_local` playback is implemented
+- prebuffering and recovery are in progress
+- signed release packaging is still open
 
 ## Suggested repository shape
 
@@ -317,14 +366,10 @@ That keeps the Android client close to the backend while making the boundary exp
 
 ## Recommended next step
 
-The best next move is not immediately creating the Android app module.
+The Android foundation is now strong enough that the best next work is polish rather than scaffolding:
 
-It is:
+1. local metadata/artwork caching for resilience and faster startup
+2. tablet/foldable adaptation
+3. signed release packaging and distribution
 
-1. define the Android-facing API contract
-2. add the missing JSON mutation endpoints to `musicd`
-3. then scaffold the Android app against that contract
-
-That will save us from building the Android UI on top of browser-oriented redirect endpoints.
-
-The first contract draft now lives in [docs/android-api-contract.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-api-contract.md).
+The current app-facing backend contract lives in [docs/android-api-contract.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-api-contract.md).

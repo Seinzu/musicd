@@ -12,6 +12,19 @@ Let the Android app act as an additional renderer while keeping `musicd` as the 
 
 In this model, the phone is a playback target, not the queue owner.
 
+## Current implementation status
+
+The `android_local` path is no longer just a proposal. The current codebase already has:
+
+- `android_local` renderer registration and persistence
+- Android-local session and completion reporting endpoints
+- local playback with `Media3` / `ExoPlayer`
+- media notification and media-session integration
+- server-owned queue control with SSE-driven state sync
+- first-pass local prebuffering, audio focus handling, and reconnect/rejoin work
+
+The remaining value in this document is the ownership model, synchronization rules, and the still-open polish items.
+
 ## Why this shape
 
 This keeps local playback aligned with the existing product model:
@@ -86,7 +99,7 @@ Extend renderer modeling so a renderer can be:
 - `upnp`
 - `android_local`
 
-The current backend abstraction already points the right way, but it currently only resolves `upnp` and rejects `sonos`. `android_local` should be treated as a logical renderer class rather than a discoverable network device.
+The backend abstraction now supports both regular UPnP renderers and nested `MediaRenderer` devices such as Sonos-style descriptions. `android_local` should remain a logical renderer class rather than a discoverable network device.
 
 ### 2. Persist Android local renderer records
 
@@ -216,6 +229,10 @@ To avoid loops:
 - playback session updates are pushed back to `musicd`
 - queue remains server-owned
 
+Status:
+
+- complete
+
 ### Phase 2
 
 - seek support
@@ -230,6 +247,7 @@ Current status:
 - local playback now participates in Android audio focus
 - local playback pauses cleanly on noisy-output transitions like headphone unplug
 - local player can rejoin the backend session position more gracefully after reconnect
+- SSE reconnect noise has been reduced so transient stream resets are less disruptive
 
 ### Phase 3
 

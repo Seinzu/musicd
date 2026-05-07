@@ -1,11 +1,12 @@
 # NAS Music Streaming Platform
 
-This workspace is a starting point for a Roon-like local music application focused on:
+This workspace is a local-network music server and controller focused on:
 
 - indexing a music library from a NAS
 - serving playable stream URLs on the local network
-- controlling network renderers such as a Cambridge Audio CXN V2
-- growing into rich browsing, search, queue management, and multi-zone playback
+- controlling network renderers such as Cambridge Audio and Sonos UPnP devices
+- providing a native Android controller, including optional playback on the phone itself
+- growing into richer browsing, search, queue management, enrichment, and multi-zone playback
 
 ## Why this shape
 
@@ -28,36 +29,36 @@ That is much more realistic than trying to recreate all of Roon's RAAT-like beha
 - `docs/unraid.md`: Docker packaging and Unraid deployment notes
 - `docs/monitoring-quickstart.md`: Prometheus/Grafana setup for Unraid
 - `docs/versioning.md`: split app/api versioning and conventional commit rules
-- `apps/musicd`: starter service binary
-- `apps/musicd-android`: Android controller scaffold and API client shell
+- `apps/musicd`: Rust service binary and browser UI
+- `apps/musicd-cli`: small CLI companion tools
+- `apps/musicd-android`: native Android controller app
 - `crates/musicd-core`: domain models and shared config
 - `crates/musicd-upnp`: UPnP transport helpers for renderer integration
+- `deploy/unraid`: Unraid container templates for `musicd`, Prometheus, and Grafana
+- `deploy/monitoring`: Prometheus and Grafana starter configuration
 
-## What is already scaffolded
+## What is already implemented
 
-The Rust workspace currently provides:
+The current codebase already provides:
 
-- domain types for tracks, albums, renderers, and app config
-- a long-running library service that scans a mounted music share
-- SQLite-backed persistence for the scanned library and renderer history
-- first-pass local artwork extraction from embedded tags and common sidecar files
-- album grouping with stable IDs plus disc/track ordering
-- SSDP discovery for UPnP media renderers
-- device-description parsing and AVTransport endpoint inspection
-- UPnP SOAP calls for `SetAVTransportURI` and `Play`
-- HTTP track streaming with basic byte-range support
-- a browser UI plus JSON endpoints for browse, discovery, rescan, and playback
-- album pages and a first-pass `Play Album` flow that starts from the first ordered track
-- queue persistence in SQLite with renderer-specific queue state and session snapshots
-- UPnP transport polling with first-pass automatic queue advancement
-- CLI commands for service mode, discovery, inspection, URL playback, and file playback
-- a Docker image definition and env-driven entrypoint suitable for Unraid packaging
+- normalized SQLite persistence for tracks, albums, artists, renderers, queue state, playback sessions, and play history
+- library scanning from a mounted music share with embedded-tag parsing, disc/track ordering, and artwork extraction
+- album-level artwork persistence plus manual MusicBrainz/Cover Art Archive artwork selection
+- SSDP discovery and UPnP inspection for plain and nested `MediaRenderer` devices, including Sonos-style descriptions
+- persisted renderer capabilities and health, including optional AVTransport action support and last-known reachability
+- UPnP playback control for `SetAVTransportURI`, `SetNextAVTransportURI`, `Play`, `Pause`, `Stop`, `Next`, `Previous`, and `Seek`
+- HTTP audio streaming with byte-range support and renderer metadata that can include album art
+- a browser UI for browsing, queueing, renderer selection, playback control, metadata inspection, and rescans
+- a native Android app with `Home`, `Library`, and `Queue`, search, artist and album browsing, queue editing, renderer picking, and live now-playing updates
+- Android notification and media-session integration, plus `android_local` playback so the phone can act as a renderer
+- SSE-backed live queue and now-playing updates for the web and Android clients
+- Docker packaging, Unraid templates, container healthchecks, and Prometheus/Grafana starter monitoring
 
 ## Suggested next steps
 
 1. expand MusicBrainz and Cover Art Archive enrichment beyond manual artwork selection into stored release links and broader metadata matching
-2. add a real live-update channel such as `SSE` for queue/session changes instead of relying only on polling
-3. keep polishing the Android controller with local cache, media-session integration, and release packaging
+2. keep polishing the Android controller with local cache, adaptive layouts, and signed release packaging
+3. deepen observability and deploy ergonomics with richer metrics, CA-readiness, and release artifacts for templates/config bundles
 
 ## Service mode
 
@@ -80,19 +81,48 @@ Then open `http://<host>:<port>/` in a browser. The page lets you:
 - continue through a queued album automatically when track-end detection is confident
 - preview a track directly from the service
 - inspect inferred metadata, embedded tags, and the artwork source for a track
+- monitor current renderer/session state live without manual refreshes
 
 The service also exposes:
 
 - `GET /health`
 - `GET /metrics`
+- `GET /api/server`
+- `GET /api/renderers`
+- `GET /api/now-playing?renderer_location=<location>`
+- `GET /api/artists`
 - `GET /api/albums`
 - `GET /api/queue?renderer_location=<location>`
 - `GET /api/events?renderer_location=<location>`
 - `GET /api/tracks`
 - `GET /api/tracks/<track_id>`
 - `GET /artwork/track/<track_id>`
+- `GET /artwork/album/<album_id>`
 - `GET /api/renderers/discover`
 - `GET /stream/track/<track_id>`
+
+There are also mutation endpoints for queue editing, transport actions, Android local renderer registration/session reporting, and manual album-art selection. The current app-facing contract is documented in [docs/android-api-contract.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-api-contract.md).
+
+## Android app
+
+The Android app now goes well beyond a scaffold. It currently includes:
+
+- native server onboarding and renderer selection
+- `Home`, `Library`, and `Queue`
+- artist and album browsing with search facets
+- queue editing and transport controls
+- SSE-backed live updates
+- rich playback notifications and media controls
+- optional `android_local` playback so the phone itself can be selected as a renderer
+
+Build a debug APK locally:
+
+```bash
+cd apps/musicd-android
+./gradlew :app:assembleDebug
+```
+
+CI also builds a debug APK through [.github/workflows/android-debug-apk.yml](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/.github/workflows/android-debug-apk.yml).
 
 ## Utility commands
 
@@ -137,9 +167,14 @@ If you publish the image through GitHub Actions, the workflow emits both moving 
 
 ## Versioning
 
-The repository is now on a first-pass split release model:
+The repository uses split versioning:
 
-- `api`: `1.0.0`
-- `app`: `1.0.0`
+- `api`: the Rust backend and Docker image release line
+- `app`: the Android controller release line
 
-Scoped conventional commits like `feat(api): ...` and `fix(app): ...` now feed a version-planning workflow. See [docs/versioning.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/versioning.md) for the tag names, bump rules, and examples.
+The current source versions in-tree are:
+
+- `api`: `2.3.0`
+- `app`: `1.1.1`
+
+Scoped conventional commits like `feat(api): ...` and `fix(app): ...` feed the version-planning workflow. See [docs/versioning.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/versioning.md) for the tag rules, bump logic, and helper commands.

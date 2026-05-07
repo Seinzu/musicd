@@ -27,7 +27,7 @@ Recommended mappings:
 
 Notes:
 
-- `musicd` does not persist much yet, but `/config` gives us a clean place for future database and cache files
+- `musicd` persists its working state under `/config`, so this mount is part of the normal runtime model now rather than just future-proofing
 - `musicd` now stores its SQLite database and remembered renderer state under `/config/musicd.db`
 - extracted artwork is cached under `/config/artwork`
 - the music share should usually be read-only for the container
@@ -295,10 +295,10 @@ If you later want to publish this as a Community Applications app, prepare:
 
 ## Suggested next packaging improvement
 
-Right now the container is suitable for a simple long-running local music service.
+The current container and Unraid template are suitable for real day-to-day use now.
 
-The next good step is to deepen that service so it:
+The next deploy-focused improvements are more about distribution polish than core functionality:
 
-- reads actual metadata tags
-- adds queueing and playback state
-- exposes a richer control API
+- a CA-ready template pass with final metadata and hosted icons
+- release bundles that package the Unraid templates plus monitoring config together
+- optional companion docs for signed Android release builds if the app becomes part of the normal deployment story

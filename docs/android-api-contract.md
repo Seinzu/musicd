@@ -1,6 +1,6 @@
 # Android API Contract
 
-This document describes the app-facing HTTP surface that `musicd` exposes for the planned Android controller.
+This document describes the current app-facing HTTP surface that `musicd` exposes for the Android controller.
 
 It is intentionally narrower and more action-oriented than the browser UI routes. The browser can keep using redirect-based endpoints; the Android app should use the routes below.
 
@@ -458,7 +458,12 @@ Returns track artwork bytes when available.
 
 ### `GET /artwork/album/<album_id>`
 
-Returns album-level override artwork bytes when a manual MusicBrainz-backed selection has been saved.
+Returns album artwork bytes for the album.
+
+This may come from:
+
+- normalized local album artwork persisted during scanning
+- a higher-priority manual MusicBrainz/Cover Art Archive override if one has been selected
 
 ### `GET /stream/track/<track_id>`
 
@@ -466,10 +471,9 @@ Returns the streamable audio resource for a track.
 
 ## Current gaps
 
-This contract is good enough to start Android implementation, but a few follow-on improvements are still desirable:
+This contract is actively used by the Android app today, but a few follow-on improvements are still desirable:
 
 - request/response DTO cleanup for stronger consistency
 - JSON request bodies instead of form-encoded mutation bodies
-- a proper `GET /api/now-playing` alias if we want a more focused home-screen endpoint
-- server-sent events for live queue/session updates
+- documentation for newer non-Android-specific endpoints such as export/import if they become app-relevant
 - authentication if remote access becomes a goal
