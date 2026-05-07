@@ -81,6 +81,10 @@ impl RendererBackend for AndroidLocalRendererBackend {
         Ok(())
     }
 
+    fn seek(&self, _renderer: &RendererRecord, _position_seconds: u64) -> io::Result<()> {
+        Ok(())
+    }
+
     fn transport_snapshot(&self, _renderer: &RendererRecord) -> io::Result<TransportSnapshot> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

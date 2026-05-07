@@ -375,6 +375,12 @@ pub fn previous(control_url: &str) -> io::Result<()> {
     expect_successful_soap("Previous", response)
 }
 
+pub fn seek(control_url: &str, position_seconds: u64) -> io::Result<()> {
+    let body = build_seek_envelope(0, position_seconds);
+    let response = av_transport_action(control_url, "Seek", body.as_bytes())?;
+    expect_successful_soap("Seek", response)
+}
+
 pub fn get_transport_info(control_url: &str) -> io::Result<TransportInfo> {
     let body = build_get_transport_info_envelope(0);
     let response = http_request(
@@ -497,6 +503,20 @@ pub fn build_previous_envelope(instance_id: u32) -> String {
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Previous xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:Previous></s:Body></s:Envelope>"#
     )
+}
+
+pub fn build_seek_envelope(instance_id: u32, position_seconds: u64) -> String {
+    let target = format_upnp_time(position_seconds);
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:Seek xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID><Unit>REL_TIME</Unit><Target>{target}</Target></u:Seek></s:Body></s:Envelope>"#
+    )
+}
+
+fn format_upnp_time(total_seconds: u64) -> String {
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{hours}:{minutes:02}:{seconds:02}")
 }
 
 // These two envelopes are sent on every queue-worker poll tick. The InstanceID
@@ -1136,9 +1156,10 @@ mod tests {
     use super::{
         build_get_position_info_envelope, build_get_transport_info_envelope, build_next_envelope,
         build_pause_envelope, build_play_envelope, build_previous_envelope,
-        build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
-        build_stop_envelope, is_transition_not_available_fault, parse_device_description,
-        parse_http_url, parse_position_info_response, parse_service_actions, parse_ssdp_response,
+        build_seek_envelope, build_set_av_transport_uri_envelope,
+        build_set_next_av_transport_uri_envelope, build_stop_envelope, format_upnp_time,
+        is_transition_not_available_fault, parse_device_description, parse_http_url,
+        parse_position_info_response, parse_service_actions, parse_ssdp_response,
         parse_transport_info_response, resolve_url, select_renderer_device_section,
     };
     use std::collections::HashMap;
@@ -1175,6 +1196,22 @@ mod tests {
         assert!(build_stop_envelope(0).contains("Stop"));
         assert!(build_next_envelope(0).contains("Next"));
         assert!(build_previous_envelope(0).contains("Previous"));
+    }
+
+    #[test]
+    fn seek_envelope_uses_rel_time_target() {
+        let body = build_seek_envelope(0, 71);
+        assert!(body.contains("<u:Seek"));
+        assert!(body.contains("<Unit>REL_TIME</Unit>"));
+        assert!(body.contains("<Target>0:01:11</Target>"));
+    }
+
+    #[test]
+    fn format_upnp_time_pads_minutes_and_seconds() {
+        assert_eq!(format_upnp_time(0), "0:00:00");
+        assert_eq!(format_upnp_time(9), "0:00:09");
+        assert_eq!(format_upnp_time(3661), "1:01:01");
+        assert_eq!(format_upnp_time(3600 * 12 + 34 * 60 + 56), "12:34:56");
     }
 
     #[test]

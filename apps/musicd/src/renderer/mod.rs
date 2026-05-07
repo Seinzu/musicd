@@ -52,6 +52,8 @@ pub(crate) trait RendererBackend: Send + Sync {
 
     fn previous(&self, renderer: &RendererRecord) -> io::Result<()>;
 
+    fn seek(&self, renderer: &RendererRecord, position_seconds: u64) -> io::Result<()>;
+
     fn transport_snapshot(&self, renderer: &RendererRecord) -> io::Result<TransportSnapshot>;
 }
 

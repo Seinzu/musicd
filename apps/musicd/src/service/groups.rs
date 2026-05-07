@@ -1,4 +1,5 @@
 use std::io;
+use std::time::Duration;
 
 use musicd_upnp::{StreamResource, TransportSnapshot};
 
@@ -6,7 +7,9 @@ use crate::renderer::{
     RendererKind, renderer_group_id_from_location, renderer_group_queue_key,
     renderer_kind_for_location,
 };
-use crate::types::{PlaybackQueue, QueueMutationEntry, RendererGroup, RendererRecord};
+use crate::types::{
+    PlaybackQueue, PlaybackSession, QueueMutationEntry, RendererGroup, RendererRecord,
+};
 
 use super::ServiceState;
 use super::poll::{
@@ -55,27 +58,30 @@ impl ServiceState {
     ) -> io::Result<RendererGroup> {
         reject_nested_group_members(members)?;
         self.check_private_renderer_additions_owned(members, &[], client_id)?;
-        let source_queue = if let Some(source_renderer_location) = source_renderer_location
+        let trimmed_source = source_renderer_location
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            self.check_direct_renderer_access(source_renderer_location, client_id)?;
-            self.database.load_queue(source_renderer_location)?
-        } else {
-            None
+            .filter(|value| !value.is_empty());
+        let (source_queue, source_session) = match trimmed_source {
+            Some(source) => {
+                self.check_direct_renderer_access(source, client_id)?;
+                let queue = self.database.load_queue(source)?;
+                let session = self.playback_session(source);
+                (queue, session)
+            }
+            None => (None, None),
         };
 
         let group = self.database.create_renderer_group(name, members)?;
         let group_queue_key = renderer_group_queue_key(&group.id);
-        if let Some(source_queue) = source_queue {
+        if let Some(source_queue) = source_queue.as_ref() {
             let entries = source_queue
                 .entries
-                .into_iter()
+                .iter()
                 .map(|entry| QueueMutationEntry {
-                    track_id: entry.track_id,
-                    album_id: entry.album_id,
-                    source_kind: entry.source_kind,
-                    source_ref: entry.source_ref,
+                    track_id: entry.track_id.clone(),
+                    album_id: entry.album_id.clone(),
+                    source_kind: entry.source_kind.clone(),
+                    source_ref: entry.source_ref.clone(),
                 })
                 .collect::<Vec<_>>();
             self.database
@@ -84,6 +90,24 @@ impl ServiceState {
             self.database
                 .replace_queue(&group_queue_key, &group.name, &[])?;
         }
+
+        if let (Some(source), Some(source_queue), Some(source_session)) =
+            (trimmed_source, source_queue, source_session)
+        {
+            if let Err(error) = self.transfer_source_playback_to_group(
+                source,
+                &source_queue,
+                &source_session,
+                &group,
+                &group_queue_key,
+            ) {
+                eprintln!(
+                    "[musicd][group-create-sync] group={} source={} error={}",
+                    group.id, source, error
+                );
+            }
+        }
+
         Ok(group)
     }
 
@@ -95,15 +119,45 @@ impl ServiceState {
         client_id: Option<&str>,
     ) -> io::Result<RendererGroup> {
         reject_nested_group_members(members)?;
-        let group = self.load_renderer_group_for_queue(renderer_location)?;
-        let existing_members = group
+        let group_before = self.load_renderer_group_for_queue(renderer_location)?;
+        let existing_members = group_before
             .members
             .iter()
             .map(|member| member.renderer_location.clone())
             .collect::<Vec<_>>();
         self.check_private_renderer_additions_owned(members, &existing_members, client_id)?;
-        self.database
-            .update_renderer_group(&group.id, name, members)
+        let updated_group =
+            self.database
+                .update_renderer_group(&group_before.id, name, members)?;
+
+        let newly_added: Vec<String> = updated_group
+            .members
+            .iter()
+            .filter(|member| {
+                !existing_members
+                    .iter()
+                    .any(|previous| previous == &member.renderer_location)
+            })
+            .map(|member| member.renderer_location.clone())
+            .collect();
+
+        eprintln!(
+            "[musicd][group-update] group={} new_members={:?} existing={:?}",
+            updated_group.id, newly_added, existing_members
+        );
+
+        if !newly_added.is_empty() {
+            if let Err(error) =
+                self.sync_new_group_members(renderer_location, &updated_group, &newly_added)
+            {
+                eprintln!(
+                    "[musicd][group-add-sync] group={} error={}",
+                    updated_group.id, error
+                );
+            }
+        }
+
+        Ok(updated_group)
     }
 
     pub(crate) fn load_renderer_group_for_queue(
@@ -118,8 +172,24 @@ impl ServiceState {
     pub(crate) fn delete_renderer_group_by_queue_key(
         &self,
         renderer_location: &str,
+        inheritor_renderer_location: Option<&str>,
     ) -> io::Result<RendererGroup> {
         let group = self.load_renderer_group_for_queue(renderer_location)?;
+
+        if let Some(inheritor) = inheritor_renderer_location
+            .map(str::trim)
+            .filter(|loc| !loc.is_empty())
+        {
+            if let Err(error) =
+                self.transfer_group_playback_to_member(renderer_location, &group, inheritor)
+            {
+                eprintln!(
+                    "[musicd][group-delete-sync] group={} inheritor={} error={}",
+                    group.id, inheritor, error
+                );
+            }
+        }
+
         if self.database.delete_renderer_group(&group.id)? {
             Ok(group)
         } else {
@@ -396,6 +466,217 @@ impl ServiceState {
         Ok(())
     }
 
+    fn transfer_source_playback_to_group(
+        &self,
+        source_location: &str,
+        source_queue: &PlaybackQueue,
+        source_session: &PlaybackSession,
+        group: &RendererGroup,
+        group_queue_key: &str,
+    ) -> io::Result<()> {
+        if !matches!(
+            source_session.transport_state.as_str(),
+            "PLAYING" | "TRANSITIONING"
+        ) {
+            eprintln!(
+                "[musicd][group-create-sync] group={} source={} skip reason=source_state={}",
+                group.id, source_location, source_session.transport_state
+            );
+            return Ok(());
+        }
+
+        let Some(source_current_id) = source_queue.current_entry_id else {
+            return Ok(());
+        };
+        let Some(source_current) = source_queue
+            .entries
+            .iter()
+            .find(|entry| entry.id == source_current_id)
+        else {
+            return Ok(());
+        };
+
+        let Some(group_queue) = self.queue_snapshot(group_queue_key) else {
+            return Ok(());
+        };
+        let Some(group_current) = group_queue
+            .entries
+            .iter()
+            .find(|entry| entry.position == source_current.position)
+        else {
+            return Ok(());
+        };
+
+        let Some(track) = self.find_track(&group_current.track_id) else {
+            return Ok(());
+        };
+        let resource = self.stream_resource_for_track(&track);
+        let target_position = source_session.position_seconds;
+
+        eprintln!(
+            "[musicd][group-create-sync] group={} source={} entry={} track={} target_position={:?} stream_url={}",
+            group.id, source_location, group_current.id, track.title, target_position, resource.stream_url
+        );
+
+        for member in &group.members {
+            if member.renderer_location == source_location {
+                continue;
+            }
+            eprintln!(
+                "[musicd][group-create-sync] group={} member={} target_position={:?} starting catch_up",
+                group.id, member.renderer_location, target_position
+            );
+            if let Err(error) = self.catch_up_group_member(
+                &member.renderer_location,
+                &resource,
+                target_position,
+            ) {
+                eprintln!(
+                    "[musicd][group-create-sync] group={} member={} error={}",
+                    group.id, member.renderer_location, error
+                );
+            }
+        }
+
+        self.database.mark_queue_play_started(
+            group_queue_key,
+            group_current.id,
+            &track.id,
+            &resource.stream_url,
+            track.duration_seconds,
+        )?;
+
+        // mark_queue_play_started always seeds position=0. Overwrite with the source's
+        // actual position so clients reading the session (notably android-local, which
+        // drives its own playback off this field) start at the right place.
+        if let Err(error) = self.database.record_transport_snapshot(
+            group_queue_key,
+            "PLAYING",
+            Some(&resource.stream_url),
+            target_position,
+            track.duration_seconds,
+        ) {
+            eprintln!(
+                "[musicd][group-create-sync] group={} source={} position_sync_failed error={}",
+                group.id, source_location, error
+            );
+        }
+
+        if let Err(error) = self.database.clear_queue(source_location) {
+            eprintln!(
+                "[musicd][group-create-sync] group={} source={} clear_source_failed error={}",
+                group.id, source_location, error
+            );
+        }
+
+        self.events.touch(group_queue_key);
+        self.events.touch(source_location);
+        Ok(())
+    }
+
+    fn transfer_group_playback_to_member(
+        &self,
+        group_location: &str,
+        group: &RendererGroup,
+        inheritor: &str,
+    ) -> io::Result<()> {
+        if !group
+            .members
+            .iter()
+            .any(|member| member.renderer_location == inheritor)
+        {
+            eprintln!(
+                "[musicd][group-delete-sync] group={} inheritor={} skip reason=not_a_member",
+                group.id, inheritor
+            );
+            return Ok(());
+        }
+
+        let Some(group_queue) = self.queue_snapshot(group_location) else {
+            return Ok(());
+        };
+        if group_queue.entries.is_empty() {
+            return Ok(());
+        }
+
+        let group_session = self.playback_session(group_location);
+
+        let entries = group_queue
+            .entries
+            .iter()
+            .map(|entry| QueueMutationEntry {
+                track_id: entry.track_id.clone(),
+                album_id: entry.album_id.clone(),
+                source_kind: entry.source_kind.clone(),
+                source_ref: entry.source_ref.clone(),
+            })
+            .collect::<Vec<_>>();
+        self.database
+            .replace_queue(inheritor, &group_queue.name, &entries)?;
+
+        eprintln!(
+            "[musicd][group-delete-sync] group={} inheritor={} entries={} status={:?}",
+            group.id,
+            inheritor,
+            entries.len(),
+            group_session
+                .as_ref()
+                .map(|session| session.transport_state.as_str())
+        );
+
+        if let (Some(group_current_id), Some(group_session)) =
+            (group_queue.current_entry_id, group_session.as_ref())
+        {
+            if matches!(
+                group_session.transport_state.as_str(),
+                "PLAYING" | "TRANSITIONING" | "PAUSED_PLAYBACK"
+            ) {
+                let group_current_position = group_queue
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == group_current_id)
+                    .map(|entry| entry.position);
+                let inheritor_queue = self.queue_snapshot(inheritor);
+                let inheritor_current = group_current_position.and_then(|position| {
+                    inheritor_queue
+                        .as_ref()?
+                        .entries
+                        .iter()
+                        .find(|entry| entry.position == position)
+                        .cloned()
+                });
+
+                if let Some(inheritor_current) = inheritor_current {
+                    if let Some(track) = self.find_track(&inheritor_current.track_id) {
+                        let resource = self.stream_resource_for_track(&track);
+                        self.database.mark_queue_play_started(
+                            inheritor,
+                            inheritor_current.id,
+                            &track.id,
+                            &resource.stream_url,
+                            track.duration_seconds,
+                        )?;
+                        if let Err(error) = self.database.record_transport_snapshot(
+                            inheritor,
+                            &group_session.transport_state,
+                            Some(&resource.stream_url),
+                            group_session.position_seconds,
+                            track.duration_seconds,
+                        ) {
+                            eprintln!(
+                                "[musicd][group-delete-sync] group={} inheritor={} position_sync_failed error={}",
+                                group.id, inheritor, error
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        self.events.touch(inheritor);
+        Ok(())
+    }
+
     fn play_stream_on_group_member(
         &self,
         renderer_location: &str,
@@ -411,6 +692,124 @@ impl ServiceState {
         }
         let _ = self.mark_renderer_reachable(&renderer);
         Ok(renderer)
+    }
+
+    fn sync_new_group_members(
+        &self,
+        group_location: &str,
+        group: &RendererGroup,
+        new_member_locations: &[String],
+    ) -> io::Result<()> {
+        let Some(queue) = self.queue_snapshot(group_location) else {
+            return Ok(());
+        };
+        let Some(current_entry_id) = queue.current_entry_id else {
+            return Ok(());
+        };
+        let Some(current_entry) = queue
+            .entries
+            .iter()
+            .find(|entry| entry.id == current_entry_id)
+        else {
+            return Ok(());
+        };
+        let Some(track) = self.find_track(&current_entry.track_id) else {
+            return Ok(());
+        };
+
+        let snapshot = self.group_leader_transport_snapshot(group).ok();
+        let leader_state = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.transport_info.transport_state.as_str())
+            .unwrap_or("");
+        if !matches!(leader_state, "PLAYING" | "TRANSITIONING") {
+            eprintln!(
+                "[musicd][group-add-sync] group={} skip reason=leader_state={}",
+                group.id, leader_state
+            );
+            return Ok(());
+        }
+
+        let resource = self.stream_resource_for_track(&track);
+        let target_position = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.position_info.rel_time_seconds);
+
+        for renderer_location in new_member_locations {
+            eprintln!(
+                "[musicd][group-add-sync] group={} member={} target_position={:?} stream_url={}",
+                group.id, renderer_location, target_position, resource.stream_url
+            );
+            if let Err(error) =
+                self.catch_up_group_member(renderer_location, &resource, target_position)
+            {
+                eprintln!(
+                    "[musicd][group-add-sync] group={} member={} error={}",
+                    group.id, renderer_location, error
+                );
+            }
+        }
+
+        self.events.touch(group_location);
+        Ok(())
+    }
+
+    fn catch_up_group_member(
+        &self,
+        renderer_location: &str,
+        resource: &StreamResource,
+        target_position_seconds: Option<u64>,
+    ) -> io::Result<()> {
+        let renderer = self.play_stream_on_group_member(renderer_location, resource)?;
+        eprintln!("[musicd][group-add-sync] renderer={renderer_location} stage=play_stream_ok");
+
+        let Some(seconds) = target_position_seconds.filter(|seconds| *seconds > 0) else {
+            return Ok(());
+        };
+        if renderer.capabilities.supports_seek() == Some(false) {
+            eprintln!(
+                "[musicd][group-add-seek] renderer={renderer_location} stage=skipped reason=unsupported"
+            );
+            return Ok(());
+        }
+
+        // Local renderers don't report transport state — skip the wait, the seek call
+        // is a no-op on the server (the client manages its own position).
+        let kind = renderer_kind_for_location(renderer_location);
+        let needs_wait = !matches!(kind, RendererKind::AndroidLocal | RendererKind::CliLocal);
+        if needs_wait {
+            // The renderer is typically in TRANSITIONING right after Play returns.
+            // Issuing Seek mid-transition can revert some devices back to STOPPED,
+            // so wait briefly for a stable transport state before seeking.
+            let waited = self.wait_for_transport_state(
+                renderer_location,
+                &["PLAYING", "PAUSED_PLAYBACK"],
+                8,
+                Duration::from_millis(150),
+            );
+            match waited {
+                Ok(snapshot) => eprintln!(
+                    "[musicd][group-add-seek] renderer={} stage=wait_ok state={} target={}",
+                    renderer_location, snapshot.transport_info.transport_state, seconds
+                ),
+                Err(error) => eprintln!(
+                    "[musicd][group-add-seek] renderer={renderer_location} stage=wait_failed error={error}"
+                ),
+            }
+        }
+
+        match self
+            .renderer_backend(renderer_location)?
+            .seek(&renderer, seconds)
+        {
+            Ok(()) => eprintln!(
+                "[musicd][group-add-seek] renderer={renderer_location} stage=seek_ok target={seconds}"
+            ),
+            Err(error) => eprintln!(
+                "[musicd][group-add-seek] renderer={renderer_location} stage=seek_failed target={seconds} error={error}"
+            ),
+        }
+        Ok(())
     }
 
     fn group_leader_transport_snapshot(

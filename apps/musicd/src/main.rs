@@ -449,6 +449,222 @@ mod tests {
     }
 
     #[test]
+    fn renderer_group_create_transfers_active_source_playback() {
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let state = sample_state(vec![track_1.clone(), track_2.clone()]);
+        let source_location = "android-local://phone-a";
+
+        let source_queue = state
+            .database
+            .replace_queue(
+                source_location,
+                "Source Queue",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("source queue should be created");
+        let advanced = state
+            .database
+            .advance_queue_after_completion(source_location)
+            .expect("advance should succeed")
+            .expect("next entry should exist");
+        let source_current_id = advanced;
+        state
+            .database
+            .mark_queue_play_started(
+                source_location,
+                source_current_id,
+                &track_2.id,
+                "http://musicd.local/stream/track/track-2",
+                track_2.duration_seconds,
+            )
+            .expect("source playback should start");
+        state
+            .database
+            .record_transport_snapshot(
+                source_location,
+                "PLAYING",
+                Some("http://musicd.local/stream/track/track-2"),
+                Some(42),
+                track_2.duration_seconds,
+            )
+            .expect("source position snapshot should record");
+
+        let group = state
+            .create_renderer_group(
+                "Phones",
+                &[source_location.to_string(), "android-local://phone-b".to_string()],
+                Some(source_location),
+                None,
+            )
+            .expect("group should be created");
+        let group_queue_key = renderer_group_queue_key(&group.id);
+
+        let group_queue = state
+            .database
+            .load_queue(&group_queue_key)
+            .expect("group queue should load")
+            .expect("group queue should exist");
+        assert_eq!(group_queue.entries.len(), source_queue.entries.len());
+        let expected_position = source_queue
+            .entries
+            .iter()
+            .find(|entry| entry.id == source_current_id)
+            .map(|entry| entry.position)
+            .expect("source current entry should exist");
+        let group_current = group_queue
+            .current_entry_id
+            .and_then(|id| group_queue.entries.iter().find(|entry| entry.id == id))
+            .expect("group queue should have a current entry");
+        assert_eq!(group_current.position, expected_position);
+        assert_eq!(group_current.track_id, track_2.id);
+        assert_eq!(group_queue.status, "playing");
+
+        let group_session = state
+            .database
+            .load_playback_session(&group_queue_key)
+            .expect("group session should load")
+            .expect("group session should exist");
+        assert_eq!(group_session.transport_state, "PLAYING");
+        assert_eq!(group_session.queue_entry_id, Some(group_current.id));
+        assert_eq!(group_session.position_seconds, Some(42));
+
+        assert!(
+            state
+                .database
+                .load_queue(source_location)
+                .expect("source queue lookup should succeed")
+                .is_none(),
+            "source queue should be cleared after transfer"
+        );
+        assert!(
+            state
+                .database
+                .load_playback_session(source_location)
+                .expect("source session lookup should succeed")
+                .is_none(),
+            "source session should be cleared after transfer"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_delete_transfers_queue_to_inheritor() {
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let state = sample_state(vec![track_1.clone(), track_2.clone()]);
+        let source_location = "android-local://phone-a";
+        state
+            .database
+            .replace_queue(
+                source_location,
+                "Source Queue",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("source queue should be created");
+        let advanced = state
+            .database
+            .advance_queue_after_completion(source_location)
+            .expect("advance should succeed")
+            .expect("next entry should exist");
+        state
+            .database
+            .mark_queue_play_started(
+                source_location,
+                advanced,
+                &track_2.id,
+                "http://musicd.local/stream/track/track-2",
+                track_2.duration_seconds,
+            )
+            .expect("source playback should start");
+        state
+            .database
+            .record_transport_snapshot(
+                source_location,
+                "PLAYING",
+                Some("http://musicd.local/stream/track/track-2"),
+                Some(99),
+                track_2.duration_seconds,
+            )
+            .expect("source position snapshot should record");
+
+        let group = state
+            .create_renderer_group(
+                "Phones",
+                &[
+                    source_location.to_string(),
+                    "android-local://phone-b".to_string(),
+                ],
+                Some(source_location),
+                None,
+            )
+            .expect("group should be created");
+        let group_queue_key = renderer_group_queue_key(&group.id);
+
+        // Pre-condition: source's individual queue is now empty (transferred to group on create).
+        assert!(
+            state
+                .database
+                .load_queue(source_location)
+                .expect("source queue lookup should succeed")
+                .is_none()
+        );
+
+        let deleted = state
+            .delete_renderer_group_by_queue_key(&group_queue_key, Some(source_location))
+            .expect("group delete should succeed");
+        assert_eq!(deleted.id, group.id);
+
+        let restored_queue = state
+            .database
+            .load_queue(source_location)
+            .expect("inheritor queue lookup should succeed")
+            .expect("inheritor queue should be re-created");
+        assert_eq!(restored_queue.entries.len(), 2);
+        assert_eq!(restored_queue.status, "playing");
+        let restored_current = restored_queue
+            .current_entry_id
+            .and_then(|id| restored_queue.entries.iter().find(|entry| entry.id == id))
+            .expect("inheritor queue should have a current entry");
+        assert_eq!(restored_current.track_id, track_2.id);
+
+        let restored_session = state
+            .database
+            .load_playback_session(source_location)
+            .expect("inheritor session lookup should succeed")
+            .expect("inheritor session should exist");
+        assert_eq!(restored_session.transport_state, "PLAYING");
+        assert_eq!(restored_session.position_seconds, Some(99));
+        assert_eq!(restored_session.queue_entry_id, Some(restored_current.id));
+
+        assert!(
+            state
+                .database
+                .load_queue(&group_queue_key)
+                .expect("group queue lookup should succeed")
+                .is_none(),
+            "group queue should be deleted"
+        );
+        assert!(
+            state
+                .database
+                .load_renderer_group(&group.id)
+                .expect("group lookup should succeed")
+                .is_none(),
+            "group record should be deleted"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
     fn renderer_group_create_allows_missing_source_queue() {
         let state = sample_state(Vec::new());
         let group = state
@@ -690,6 +906,56 @@ mod tests {
             too_small_error.to_string(),
             "renderer groups require at least two members"
         );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_add_member_during_playback_succeeds() {
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let state = sample_state(vec![track.clone()]);
+        let group = create_sample_renderer_group(
+            &state,
+            "Phones",
+            &["android-local://phone-a", "android-local://phone-b"],
+        );
+        let group_location = renderer_group_queue_key(&group.id);
+        state
+            .database
+            .replace_queue(&group_location, "Phones", &[queue_entry_for_track(&track)])
+            .expect("group queue should be created");
+        state
+            .start_current_queue_entry(&group_location)
+            .expect("group playback should start");
+
+        let updated = state
+            .update_renderer_group_by_queue_key(
+                &group_location,
+                "Phones",
+                &renderer_locations(&[
+                    "android-local://phone-a",
+                    "android-local://phone-b",
+                    "android-local://phone-c",
+                ]),
+                None,
+            )
+            .expect("group update should succeed during active playback");
+        assert_group_members(
+            &updated,
+            &[
+                "android-local://phone-a",
+                "android-local://phone-b",
+                "android-local://phone-c",
+            ],
+        );
+
+        let session = state
+            .database
+            .load_playback_session(&group_location)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "PLAYING");
+        assert_eq!(session.queue_entry_id.is_some(), true);
 
         let _ = std::fs::remove_dir_all(state.config.config_path);
     }
