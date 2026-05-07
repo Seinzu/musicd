@@ -11,6 +11,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Tab
 
 use crate::api::{AlbumSummary, ApiClient, Queue, Renderer, ServerInfo, Session, TrackSummary};
 use crate::config::{self, CliConfig};
+use crate::local_audio::LocalAudioPlayer;
 
 const TICK: Duration = Duration::from_millis(750);
 const STATUS_TTL: Duration = Duration::from_secs(4);
@@ -72,6 +73,7 @@ pub struct App {
     status: Option<(StatusKind, String, Instant)>,
     should_quit: bool,
     last_queue_poll: Instant,
+    local_audio: LocalAudioPlayer,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +104,7 @@ impl App {
             status: None,
             should_quit: false,
             last_queue_poll: Instant::now() - TICK,
+            local_audio: LocalAudioPlayer::default(),
         }
     }
 
@@ -181,10 +184,27 @@ impl App {
 
     fn poll_queue(&mut self) {
         let Some(renderer) = self.selected_renderer.clone() else {
+            self.local_audio.sync(&self.api, None, &self.queue);
             return;
         };
         match self.api.queue(&renderer.location) {
-            Ok(q) => self.queue = q,
+            Ok(q) => {
+                if self.local_audio.sync(&self.api, Some(&renderer), &q) {
+                    match self.api.queue(&renderer.location) {
+                        Ok(fresh_queue) => {
+                            self.local_audio
+                                .sync(&self.api, Some(&renderer), &fresh_queue);
+                            self.queue = fresh_queue;
+                        }
+                        Err(err) => {
+                            self.queue = q;
+                            self.set_error(format!("queue refresh: {err:#}"));
+                        }
+                    }
+                } else {
+                    self.queue = q;
+                }
+            }
             Err(err) => self.set_error(format!("queue: {err:#}")),
         }
     }
@@ -742,7 +762,11 @@ impl App {
             Some((StatusKind::Error, msg, _)) => {
                 Span::styled(msg.clone(), Style::default().fg(Color::Red))
             }
-            None => Span::raw(""),
+            None => self
+                .local_audio
+                .status()
+                .map(|status| Span::styled(status.to_string(), Style::default().fg(Color::Cyan)))
+                .unwrap_or_else(|| Span::raw("")),
         };
         let status_p =
             Paragraph::new(Line::from(status)).alignment(ratatui::layout::Alignment::Right);

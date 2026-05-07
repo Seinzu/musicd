@@ -70,7 +70,11 @@ pub struct QueueEntry {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Session {
     #[serde(default)]
+    pub queue_entry_id: Option<i64>,
+    #[serde(default)]
     pub transport_state: String,
+    #[serde(default)]
+    pub current_track_uri: Option<String>,
     #[serde(default)]
     pub position_seconds: Option<u64>,
     #[serde(default)]
@@ -150,6 +154,35 @@ impl ApiClient {
 
     pub fn cli_local_renderer_location(&self) -> String {
         format!("cli-local://{}", self.client_id)
+    }
+
+    pub fn report_cli_local_session(
+        &self,
+        renderer_location: &str,
+        transport_state: &str,
+        current_track_uri: Option<&str>,
+        duration_seconds: Option<u64>,
+    ) -> Result<()> {
+        let mut form = vec![
+            ("renderer_location", renderer_location),
+            ("transport_state", transport_state),
+        ];
+        if let Some(uri) = current_track_uri {
+            form.push(("current_track_uri", uri));
+        }
+        let duration;
+        if let Some(value) = duration_seconds {
+            duration = value.to_string();
+            form.push(("duration_seconds", duration.as_str()));
+        }
+        self.post_form("/api/renderers/cli-local/session", &form)
+    }
+
+    pub fn report_cli_local_completed(&self, renderer_location: &str) -> Result<()> {
+        self.post_form(
+            "/api/renderers/cli-local/completed",
+            &[("renderer_location", renderer_location)],
+        )
     }
 
     pub fn queue(&self, renderer_location: &str) -> Result<Queue> {

@@ -1,6 +1,7 @@
 mod api;
 mod app;
 mod config;
+mod local_audio;
 
 use std::io::{self, Stdout};
 use std::panic;
