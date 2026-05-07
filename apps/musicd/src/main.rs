@@ -523,6 +523,17 @@ mod tests {
         assert_eq!(group_current.track_id, track_2.id);
         assert_eq!(group_queue.status, "playing");
 
+        let track_1_in_group = group_queue
+            .entries
+            .iter()
+            .find(|entry| entry.track_id == track_1.id)
+            .expect("track-1 should still be in the group queue");
+        assert_eq!(
+            track_1_in_group.entry_status, "completed",
+            "previously played tracks must keep their completed status across the transfer"
+        );
+        assert!(track_1_in_group.completed_unix.is_some());
+
         let group_session = state
             .database
             .load_playback_session(&group_queue_key)
@@ -634,6 +645,16 @@ mod tests {
             .and_then(|id| restored_queue.entries.iter().find(|entry| entry.id == id))
             .expect("inheritor queue should have a current entry");
         assert_eq!(restored_current.track_id, track_2.id);
+        let track_1_in_inheritor = restored_queue
+            .entries
+            .iter()
+            .find(|entry| entry.track_id == track_1.id)
+            .expect("track-1 should still be in the inheritor queue");
+        assert_eq!(
+            track_1_in_inheritor.entry_status, "completed",
+            "previously played tracks must keep their completed status when transferred back"
+        );
+        assert!(track_1_in_inheritor.completed_unix.is_some());
 
         let restored_session = state
             .database

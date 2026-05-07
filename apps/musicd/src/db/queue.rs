@@ -554,6 +554,82 @@ impl Database {
             .ok_or_else(|| io::Error::other("queue disappeared after remove"))
     }
 
+    pub(crate) fn move_queue(
+        &self,
+        from_location: &str,
+        to_location: &str,
+        rename_to: Option<&str>,
+    ) -> io::Result<()> {
+        if from_location == to_location {
+            return Ok(());
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(db_error)?;
+        let now = now_unix_timestamp();
+
+        // Clear anything already at the destination so the rename UPDATEs don't collide
+        // with a unique constraint on renderer_location.
+        transaction
+            .execute(
+                "DELETE FROM queue_entries WHERE renderer_location = ?",
+                [to_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM playback_sessions WHERE renderer_location = ?",
+                [to_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
+                "DELETE FROM playback_queues WHERE renderer_location = ?",
+                [to_location],
+            )
+            .map_err(db_error)?;
+
+        // queue_entries.id is autoincrement; preserving it keeps current_entry_id /
+        // session.queue_entry_id valid after the move. Only the owning location changes.
+        transaction
+            .execute(
+                "UPDATE queue_entries SET renderer_location = ? WHERE renderer_location = ?",
+                params![to_location, from_location],
+            )
+            .map_err(db_error)?;
+
+        if let Some(name) = rename_to {
+            transaction
+                .execute(
+                    "UPDATE playback_queues
+                     SET renderer_location = ?, name = ?, updated_unix = ?, version = version + 1
+                     WHERE renderer_location = ?",
+                    params![to_location, name, now, from_location],
+                )
+                .map_err(db_error)?;
+        } else {
+            transaction
+                .execute(
+                    "UPDATE playback_queues
+                     SET renderer_location = ?, updated_unix = ?, version = version + 1
+                     WHERE renderer_location = ?",
+                    params![to_location, now, from_location],
+                )
+                .map_err(db_error)?;
+        }
+
+        transaction
+            .execute(
+                "UPDATE playback_sessions
+                 SET renderer_location = ?, last_observed_unix = ?
+                 WHERE renderer_location = ?",
+                params![to_location, now, from_location],
+            )
+            .map_err(db_error)?;
+
+        transaction.commit().map_err(db_error)?;
+        Ok(())
+    }
+
     pub(crate) fn clear_queue(&self, renderer_location: &str) -> io::Result<()> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(db_error)?;

@@ -7,9 +7,7 @@ use crate::renderer::{
     RendererKind, renderer_group_id_from_location, renderer_group_queue_key,
     renderer_kind_for_location,
 };
-use crate::types::{
-    PlaybackQueue, PlaybackSession, QueueMutationEntry, RendererGroup, RendererRecord,
-};
+use crate::types::{PlaybackQueue, PlaybackSession, RendererGroup, RendererRecord};
 
 use super::ServiceState;
 use super::poll::{
@@ -73,30 +71,28 @@ impl ServiceState {
 
         let group = self.database.create_renderer_group(name, members)?;
         let group_queue_key = renderer_group_queue_key(&group.id);
-        if let Some(source_queue) = source_queue.as_ref() {
-            let entries = source_queue
-                .entries
-                .iter()
-                .map(|entry| QueueMutationEntry {
-                    track_id: entry.track_id.clone(),
-                    album_id: entry.album_id.clone(),
-                    source_kind: entry.source_kind.clone(),
-                    source_ref: entry.source_ref.clone(),
-                })
-                .collect::<Vec<_>>();
-            self.database
-                .replace_queue(&group_queue_key, &source_queue.name, &entries)?;
-        } else {
-            self.database
-                .replace_queue(&group_queue_key, &group.name, &[])?;
+        match (trimmed_source, source_queue.as_ref()) {
+            (Some(source), Some(source_queue)) => {
+                // Move (rather than copy) so entry_status / completed_unix /
+                // session state survive — copying via replace_queue would
+                // resurface already-played tracks under "Up Next".
+                self.database.move_queue(
+                    source,
+                    &group_queue_key,
+                    Some(&source_queue.name),
+                )?;
+            }
+            _ => {
+                self.database
+                    .replace_queue(&group_queue_key, &group.name, &[])?;
+            }
         }
 
-        if let (Some(source), Some(source_queue), Some(source_session)) =
+        if let (Some(source), Some(_source_queue), Some(source_session)) =
             (trimmed_source, source_queue, source_session)
         {
-            if let Err(error) = self.transfer_source_playback_to_group(
+            if let Err(error) = self.sync_active_source_into_group(
                 source,
-                &source_queue,
                 &source_session,
                 &group,
                 &group_queue_key,
@@ -466,10 +462,9 @@ impl ServiceState {
         Ok(())
     }
 
-    fn transfer_source_playback_to_group(
+    fn sync_active_source_into_group(
         &self,
         source_location: &str,
-        source_queue: &PlaybackQueue,
         source_session: &PlaybackSession,
         group: &RendererGroup,
         group_queue_key: &str,
@@ -482,27 +477,23 @@ impl ServiceState {
                 "[musicd][group-create-sync] group={} source={} skip reason=source_state={}",
                 group.id, source_location, source_session.transport_state
             );
+            self.events.touch(group_queue_key);
+            self.events.touch(source_location);
             return Ok(());
         }
 
-        let Some(source_current_id) = source_queue.current_entry_id else {
-            return Ok(());
-        };
-        let Some(source_current) = source_queue
-            .entries
-            .iter()
-            .find(|entry| entry.id == source_current_id)
-        else {
-            return Ok(());
-        };
-
+        // The queue (and its session) was just moved to group_queue_key, so re-read
+        // from there to find the now-current entry.
         let Some(group_queue) = self.queue_snapshot(group_queue_key) else {
+            return Ok(());
+        };
+        let Some(group_current_id) = group_queue.current_entry_id else {
             return Ok(());
         };
         let Some(group_current) = group_queue
             .entries
             .iter()
-            .find(|entry| entry.position == source_current.position)
+            .find(|entry| entry.id == group_current_id)
         else {
             return Ok(());
         };
@@ -538,37 +529,6 @@ impl ServiceState {
             }
         }
 
-        self.database.mark_queue_play_started(
-            group_queue_key,
-            group_current.id,
-            &track.id,
-            &resource.stream_url,
-            track.duration_seconds,
-        )?;
-
-        // mark_queue_play_started always seeds position=0. Overwrite with the source's
-        // actual position so clients reading the session (notably android-local, which
-        // drives its own playback off this field) start at the right place.
-        if let Err(error) = self.database.record_transport_snapshot(
-            group_queue_key,
-            "PLAYING",
-            Some(&resource.stream_url),
-            target_position,
-            track.duration_seconds,
-        ) {
-            eprintln!(
-                "[musicd][group-create-sync] group={} source={} position_sync_failed error={}",
-                group.id, source_location, error
-            );
-        }
-
-        if let Err(error) = self.database.clear_queue(source_location) {
-            eprintln!(
-                "[musicd][group-create-sync] group={} source={} clear_source_failed error={}",
-                group.id, source_location, error
-            );
-        }
-
         self.events.touch(group_queue_key);
         self.events.touch(source_location);
         Ok(())
@@ -601,77 +561,23 @@ impl ServiceState {
 
         let group_session = self.playback_session(group_location);
 
-        let entries = group_queue
-            .entries
-            .iter()
-            .map(|entry| QueueMutationEntry {
-                track_id: entry.track_id.clone(),
-                album_id: entry.album_id.clone(),
-                source_kind: entry.source_kind.clone(),
-                source_ref: entry.source_ref.clone(),
-            })
-            .collect::<Vec<_>>();
-        self.database
-            .replace_queue(inheritor, &group_queue.name, &entries)?;
+        // Move (rather than copy) so entry_status / completed_unix / session state
+        // survive the transfer. Uses the existing queue name unless we want to rename.
+        self.database.move_queue(
+            group_location,
+            inheritor,
+            Some(&group_queue.name),
+        )?;
 
         eprintln!(
             "[musicd][group-delete-sync] group={} inheritor={} entries={} status={:?}",
             group.id,
             inheritor,
-            entries.len(),
+            group_queue.entries.len(),
             group_session
                 .as_ref()
                 .map(|session| session.transport_state.as_str())
         );
-
-        if let (Some(group_current_id), Some(group_session)) =
-            (group_queue.current_entry_id, group_session.as_ref())
-        {
-            if matches!(
-                group_session.transport_state.as_str(),
-                "PLAYING" | "TRANSITIONING" | "PAUSED_PLAYBACK"
-            ) {
-                let group_current_position = group_queue
-                    .entries
-                    .iter()
-                    .find(|entry| entry.id == group_current_id)
-                    .map(|entry| entry.position);
-                let inheritor_queue = self.queue_snapshot(inheritor);
-                let inheritor_current = group_current_position.and_then(|position| {
-                    inheritor_queue
-                        .as_ref()?
-                        .entries
-                        .iter()
-                        .find(|entry| entry.position == position)
-                        .cloned()
-                });
-
-                if let Some(inheritor_current) = inheritor_current {
-                    if let Some(track) = self.find_track(&inheritor_current.track_id) {
-                        let resource = self.stream_resource_for_track(&track);
-                        self.database.mark_queue_play_started(
-                            inheritor,
-                            inheritor_current.id,
-                            &track.id,
-                            &resource.stream_url,
-                            track.duration_seconds,
-                        )?;
-                        if let Err(error) = self.database.record_transport_snapshot(
-                            inheritor,
-                            &group_session.transport_state,
-                            Some(&resource.stream_url),
-                            group_session.position_seconds,
-                            track.duration_seconds,
-                        ) {
-                            eprintln!(
-                                "[musicd][group-delete-sync] group={} inheritor={} position_sync_failed error={}",
-                                group.id, inheritor, error
-                            );
-                        }
-                    }
-                }
-            }
-        }
 
         self.events.touch(inheritor);
         Ok(())
