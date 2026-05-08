@@ -1,4 +1,6 @@
 use std::io;
+#[cfg(test)]
+use std::sync::Arc;
 
 use musicd_upnp::{StreamResource, TransportSnapshot};
 
@@ -25,10 +27,32 @@ pub(crate) enum RendererKind {
     Group,
 }
 
-#[derive(Debug, Default)]
 pub(crate) struct RendererBackends {
     pub(crate) upnp: UpnpRendererBackend,
     pub(crate) android_local: AndroidLocalRendererBackend,
+    #[cfg(test)]
+    pub(crate) test: Option<Arc<dyn RendererBackend>>,
+}
+
+impl std::fmt::Debug for RendererBackends {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RendererBackends")
+            .field("upnp", &self.upnp)
+            .field("android_local", &self.android_local)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for RendererBackends {
+    fn default() -> Self {
+        Self {
+            upnp: UpnpRendererBackend,
+            android_local: AndroidLocalRendererBackend,
+            #[cfg(test)]
+            test: None,
+        }
+    }
 }
 
 pub(crate) trait RendererBackend: Send + Sync {
@@ -62,6 +86,11 @@ impl RendererBackends {
         &self,
         renderer_location: &str,
     ) -> io::Result<&dyn RendererBackend> {
+        #[cfg(test)]
+        if let Some(test) = &self.test {
+            return Ok(test.as_ref());
+        }
+
         match renderer_kind_for_location(renderer_location) {
             RendererKind::Upnp => Ok(&self.upnp),
             RendererKind::Sonos => Err(io::Error::new(

@@ -30,8 +30,8 @@ mod tests {
         parse_vorbis_comment_block,
     };
     use crate::renderer::{
-        RendererBackends, RendererKind, renderer_group_queue_key, renderer_is_viable,
-        renderer_kind_for_location, renderer_needs_refresh,
+        RendererBackend, RendererBackends, RendererKind, renderer_group_queue_key,
+        renderer_is_viable, renderer_kind_for_location, renderer_needs_refresh,
     };
     use crate::service::{
         ServiceState, next_queue_entry_after, previous_queue_entry_before,
@@ -46,9 +46,12 @@ mod tests {
         should_skip_entry,
     };
     use musicd_core::AppConfig;
-    use musicd_upnp::{PositionInfo, RendererCapabilities, TransportInfo, TransportSnapshot};
+    use musicd_upnp::{
+        PositionInfo, RendererCapabilities, StreamResource, TransportInfo, TransportSnapshot,
+    };
+    use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::OnceLock;
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -373,6 +376,146 @@ mod tests {
         assert_eq!(session.transport_state, "READY");
 
         let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
+    fn queue_poll_clears_final_completed_track_without_restarting_it() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![stopped_near_end_snapshot(&track, 179, 180)],
+        ));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        let stream_url = state.stream_resource_for_track(&track).stream_url;
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Single Track",
+                &[queue_entry_for_track(&track)],
+            )
+            .expect("queue replace should succeed");
+        let current_entry_id = queue
+            .current_entry_id
+            .expect("queue should have a current entry");
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                current_entry_id,
+                &track.id,
+                &stream_url,
+                track.duration_seconds,
+            )
+            .expect("queue play should start");
+
+        state
+            .poll_renderer_queue(renderer_location)
+            .expect("queue poll should handle final completion");
+
+        assert!(
+            state
+                .database
+                .load_queue(renderer_location)
+                .expect("queue lookup should succeed")
+                .is_none(),
+            "the final entry should clear the queue instead of remaining restartable"
+        );
+        assert!(
+            state
+                .database
+                .load_playback_session(renderer_location)
+                .expect("session lookup should succeed")
+                .is_none(),
+            "the final entry should clear stale now-playing metadata"
+        );
+        assert!(
+            backend.played_streams().is_empty(),
+            "polling a completed final track must not start the same stream again"
+        );
+        assert_eq!(state.database.count_track_plays(&track.id).unwrap_or(0), 1);
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn queue_poll_starts_next_entry_with_matching_track_metadata() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![stopped_near_end_snapshot(&track_1, 179, 180)],
+        ));
+        let state =
+            sample_state_with_backend(vec![track_1.clone(), track_2.clone()], backend.clone());
+        let first_stream_url = state.stream_resource_for_track(&track_1).stream_url;
+        let second_resource = state.stream_resource_for_track(&track_2);
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let first_entry_id = queue
+            .current_entry_id
+            .expect("queue should have a current entry");
+        let second_entry_id = queue.entries[1].id;
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                first_entry_id,
+                &track_1.id,
+                &first_stream_url,
+                track_1.duration_seconds,
+            )
+            .expect("queue play should start");
+
+        state
+            .poll_renderer_queue(renderer_location)
+            .expect("queue poll should advance");
+
+        let played = backend.played_streams();
+        assert_eq!(played.len(), 1, "exactly the next entry should be started");
+        assert_eq!(played[0].stream_url, second_resource.stream_url);
+        assert_eq!(played[0].title, second_resource.title);
+
+        let advanced_queue = state
+            .database
+            .load_queue(renderer_location)
+            .expect("queue lookup should succeed")
+            .expect("queue should remain for the next track");
+        let session = state
+            .database
+            .load_playback_session(renderer_location)
+            .expect("session lookup should succeed")
+            .expect("session should track the new entry");
+        assert_eq!(advanced_queue.current_entry_id, Some(second_entry_id));
+        assert_eq!(advanced_queue.status, "playing");
+        assert_eq!(advanced_queue.entries[0].entry_status, "completed");
+        assert_eq!(advanced_queue.entries[1].entry_status, "playing");
+        assert_eq!(session.queue_entry_id, Some(second_entry_id));
+        assert_eq!(
+            session.current_track_uri.as_deref(),
+            Some(played[0].stream_url.as_str())
+        );
+        assert_eq!(
+            state.database.count_track_plays(&track_1.id).unwrap_or(0),
+            1
+        );
+        assert_eq!(
+            state.database.count_track_plays(&track_2.id).unwrap_or(0),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
     }
 
     #[test]
@@ -1862,6 +2005,151 @@ mod tests {
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
             events: crate::service::PlaybackEvents::new(),
+        }
+    }
+
+    fn sample_state_with_backend(
+        tracks: Vec<LibraryTrack>,
+        backend: Arc<dyn RendererBackend>,
+    ) -> ServiceState {
+        let mut state = sample_state(tracks);
+        state.renderer_backends.test = Some(backend);
+        state
+    }
+
+    fn stopped_near_end_snapshot(
+        track: &LibraryTrack,
+        position_seconds: u64,
+        duration_seconds: u64,
+    ) -> TransportSnapshot {
+        TransportSnapshot {
+            transport_info: TransportInfo {
+                transport_state: "STOPPED".to_string(),
+                transport_status: Some("OK".to_string()),
+                current_speed: Some("1".to_string()),
+            },
+            position_info: PositionInfo {
+                track_uri: Some(format!(
+                    "http://192.168.1.10:7878/stream/track/{}",
+                    track.id
+                )),
+                rel_time_seconds: Some(position_seconds),
+                track_duration_seconds: Some(duration_seconds),
+            },
+        }
+    }
+
+    struct FakeRendererBackend {
+        renderer: RendererRecord,
+        snapshots: Mutex<VecDeque<TransportSnapshot>>,
+        played_streams: Mutex<Vec<StreamResource>>,
+        preloaded_streams: Mutex<Vec<StreamResource>>,
+    }
+
+    impl FakeRendererBackend {
+        fn new(renderer_location: &str, snapshots: Vec<TransportSnapshot>) -> Self {
+            Self {
+                renderer: RendererRecord {
+                    location: renderer_location.to_string(),
+                    name: "Fake Renderer".to_string(),
+                    manufacturer: Some("musicd test".to_string()),
+                    model_name: Some("Queue Harness".to_string()),
+                    av_transport_control_url: Some("http://renderer.local/avtransport".to_string()),
+                    capabilities: RendererCapabilities {
+                        av_transport_actions: Some(vec![
+                            "Play".to_string(),
+                            "Pause".to_string(),
+                            "Stop".to_string(),
+                        ]),
+                        has_playlist_extension_service: Some(false),
+                    },
+                    visibility: "public".to_string(),
+                    owner_client_id: None,
+                    last_checked_unix: 1,
+                    last_reachable_unix: Some(1),
+                    last_error: None,
+                    last_seen_unix: 1,
+                },
+                snapshots: Mutex::new(VecDeque::from(snapshots)),
+                played_streams: Mutex::new(Vec::new()),
+                preloaded_streams: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn played_streams(&self) -> Vec<StreamResource> {
+            self.played_streams
+                .lock()
+                .expect("played streams should not be poisoned")
+                .clone()
+        }
+    }
+
+    impl RendererBackend for FakeRendererBackend {
+        fn resolve_renderer(
+            &self,
+            cached: Option<&RendererRecord>,
+            _renderer_location: &str,
+        ) -> std::io::Result<RendererRecord> {
+            Ok(cached.cloned().unwrap_or_else(|| self.renderer.clone()))
+        }
+
+        fn play_stream(
+            &self,
+            _renderer: &RendererRecord,
+            resource: &StreamResource,
+        ) -> std::io::Result<()> {
+            self.played_streams
+                .lock()
+                .expect("played streams should not be poisoned")
+                .push(resource.clone());
+            Ok(())
+        }
+
+        fn preload_next(
+            &self,
+            _renderer: &RendererRecord,
+            resource: &StreamResource,
+        ) -> std::io::Result<()> {
+            self.preloaded_streams
+                .lock()
+                .expect("preloaded streams should not be poisoned")
+                .push(resource.clone());
+            Ok(())
+        }
+
+        fn play(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn pause(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn stop(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn next(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn previous(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn seek(&self, _renderer: &RendererRecord, _position_seconds: u64) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn transport_snapshot(
+            &self,
+            _renderer: &RendererRecord,
+        ) -> std::io::Result<TransportSnapshot> {
+            self.snapshots
+                .lock()
+                .expect("snapshots should not be poisoned")
+                .pop_front()
+                .ok_or_else(|| std::io::Error::other("fake renderer has no snapshot"))
         }
     }
 
