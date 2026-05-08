@@ -61,7 +61,7 @@ pub(crate) fn render_track_detail_json(state: &ServiceState, request: &HttpReque
     );
 
     format!(
-        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
+        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"metadata":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
         json_escape(&track.id),
         json_escape(&track.album_id),
         json_escape(&track.title),
@@ -75,6 +75,7 @@ pub(crate) fn render_track_detail_json(state: &ServiceState, request: &HttpReque
         json_escape(&track.mime_type),
         track.file_size,
         artwork_json,
+        track_metadata_json(&track),
         json_escape(&metadata.format_name),
         fields,
         notes,
@@ -148,26 +149,28 @@ pub(crate) fn render_album_detail_json(state: &ServiceState, request: &HttpReque
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","tracks":[{}]}}"#,
+        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{},"tracks":[{}]}}"#,
         json_escape(&album.id),
         json_escape(&album.title),
         json_escape(&album.artist),
         album.track_count,
         json_escape(&album.first_track_id),
         json_escape(album.artwork_url.as_deref().unwrap_or_default()),
+        album_metadata_json(&album),
         tracks_json,
     )
 }
 
 pub(crate) fn album_summary_json(album: &AlbumSummary) -> String {
     format!(
-        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}"}}"#,
+        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{}}}"#,
         json_escape(&album.id),
         json_escape(&album.title),
         json_escape(&album.artist),
         album.track_count,
         json_escape(&album.first_track_id),
         json_escape(album.artwork_url.as_deref().unwrap_or_default()),
+        album_metadata_json(album),
     )
 }
 
@@ -675,7 +678,7 @@ pub(crate) fn track_summary_json(
         fallback_album_artwork_url.map(ToString::to_string)
     };
     format!(
-        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{},"mime_type":"{}"}}"#,
+        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{},"mime_type":"{}","metadata":{}}}"#,
         json_escape(&track.id),
         json_escape(&track.album_id),
         json_escape(&track.title),
@@ -686,6 +689,36 @@ pub(crate) fn track_summary_json(
         option_u64_json(track.duration_seconds),
         option_string_json(artwork_url.as_deref()),
         json_escape(&track.mime_type),
+        track_metadata_json(track),
+    )
+}
+
+fn track_metadata_json(track: &LibraryTrack) -> String {
+    format!(
+        r#"{{"musicbrainz_release_id":{},"musicbrainz_release_group_id":{},"musicbrainz_recording_id":{},"musicbrainz_release_track_id":{},"release_date":{},"original_release_date":{},"release_country":{},"release_type":{},"genres":{}}}"#,
+        option_string_json(track.metadata.musicbrainz_release_id.as_deref()),
+        option_string_json(track.metadata.musicbrainz_release_group_id.as_deref()),
+        option_string_json(track.metadata.musicbrainz_recording_id.as_deref()),
+        option_string_json(track.metadata.musicbrainz_release_track_id.as_deref()),
+        option_string_json(track.metadata.release_date.as_deref()),
+        option_string_json(track.metadata.original_release_date.as_deref()),
+        option_string_json(track.metadata.release_country.as_deref()),
+        option_string_json(track.metadata.release_type.as_deref()),
+        string_list_json(&track.metadata.genres),
+    )
+}
+
+fn album_metadata_json(album: &AlbumSummary) -> String {
+    format!(
+        r#"{{"musicbrainz_release_id":{},"musicbrainz_release_group_id":{},"release_date":{},"original_release_date":{},"release_country":{},"release_type":{},"genres":{},"source_track_id":{}}}"#,
+        option_string_json(album.metadata.musicbrainz_release_id.as_deref()),
+        option_string_json(album.metadata.musicbrainz_release_group_id.as_deref()),
+        option_string_json(album.metadata.release_date.as_deref()),
+        option_string_json(album.metadata.original_release_date.as_deref()),
+        option_string_json(album.metadata.release_country.as_deref()),
+        option_string_json(album.metadata.release_type.as_deref()),
+        string_list_json(&album.metadata.genres),
+        option_string_json(album.metadata.source_track_id.as_deref()),
     )
 }
 

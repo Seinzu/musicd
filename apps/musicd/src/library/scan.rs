@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
 use lofty::picture::PictureType;
 use lofty::read_from_path;
-use lofty::tag::Accessor;
+use lofty::tag::{Accessor, ItemKey, Tag};
 use rayon::prelude::*;
 
 use crate::artwork::{EmbeddedPicture, resolve_track_artwork};
 use crate::ids::{stable_album_id, stable_track_id};
-use crate::types::{LibraryTrack, ParsedTrackTags, TrackArtwork};
+use crate::types::{LibraryTrack, ParsedTrackTags, TrackArtwork, TrackMetadata};
 use crate::util::{
     component_to_string, infer_artist_and_album, infer_disc_and_track_numbers, infer_mime_type,
     inferred_title, is_supported_audio_file, should_skip_entry,
@@ -153,6 +153,7 @@ fn build_library_track(
         mime_type,
         file_size: file.file_size,
         artwork,
+        metadata: parsed_tags.metadata,
     })
 }
 
@@ -199,7 +200,43 @@ fn extract_tags(tagged_file: &TaggedFile) -> ParsedTrackTags {
             let seconds = tagged_file.properties().duration().as_secs();
             if seconds == 0 { None } else { Some(seconds) }
         },
+        metadata: extract_track_metadata(tag),
     }
+}
+
+fn extract_track_metadata(tag: &Tag) -> TrackMetadata {
+    TrackMetadata {
+        musicbrainz_release_id: tag_text(tag, ItemKey::MusicBrainzReleaseId),
+        musicbrainz_release_group_id: tag_text(tag, ItemKey::MusicBrainzReleaseGroupId),
+        musicbrainz_recording_id: tag_text(tag, ItemKey::MusicBrainzRecordingId),
+        musicbrainz_release_track_id: tag_text(tag, ItemKey::MusicBrainzTrackId),
+        release_date: tag_text(tag, ItemKey::ReleaseDate)
+            .or_else(|| tag_text(tag, ItemKey::RecordingDate)),
+        original_release_date: tag_text(tag, ItemKey::OriginalReleaseDate),
+        release_country: tag_text(tag, ItemKey::ReleaseCountry),
+        release_type: tag_text(tag, ItemKey::MusicBrainzReleaseType),
+        genres: tag_values(tag, ItemKey::Genre),
+    }
+}
+
+fn tag_text(tag: &Tag, key: ItemKey) -> Option<String> {
+    tag.get_string(key)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn tag_values(tag: &Tag, key: ItemKey) -> Vec<String> {
+    let mut values = Vec::new();
+    for value in tag.get_strings(key) {
+        for part in value.split([';', ',']) {
+            let part = part.trim();
+            if !part.is_empty() && !values.iter().any(|existing| existing == part) {
+                values.push(part.to_string());
+            }
+        }
+    }
+    values
 }
 
 fn extract_embedded_picture(tagged_file: &TaggedFile) -> Option<EmbeddedPicture> {

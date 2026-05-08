@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::ids::stable_artist_id;
-use crate::types::{AlbumArtworkOverride, AlbumSummary, ArtistSummary, LibraryTrack, TrackArtwork};
+use crate::types::{
+    AlbumArtworkOverride, AlbumMetadata, AlbumSummary, ArtistSummary, LibraryTrack, TrackArtwork,
+};
 
 use super::sort::{compare_albums, compare_artists, compare_track_album_order};
 
@@ -35,12 +37,46 @@ pub(crate) fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary
                 artwork: artwork.clone(),
                 artwork_url: artwork.map(|_| album_artwork_url),
                 first_track_id: first_track.id.clone(),
+                metadata: album_metadata_from_tracks(&album_tracks),
             })
         })
         .collect::<Vec<_>>();
 
     albums.sort_by(compare_albums);
     albums
+}
+
+fn album_metadata_from_tracks(tracks: &[LibraryTrack]) -> AlbumMetadata {
+    let source_track = tracks.iter().find(|track| {
+        track.metadata.musicbrainz_release_id.is_some()
+            || track.metadata.musicbrainz_release_group_id.is_some()
+            || track.metadata.release_date.is_some()
+            || track.metadata.original_release_date.is_some()
+            || track.metadata.release_country.is_some()
+            || track.metadata.release_type.is_some()
+            || !track.metadata.genres.is_empty()
+    });
+    let mut genres = Vec::new();
+    for track in tracks {
+        for genre in &track.metadata.genres {
+            if !genres.iter().any(|existing| existing == genre) {
+                genres.push(genre.clone());
+            }
+        }
+    }
+    AlbumMetadata {
+        musicbrainz_release_id: source_track
+            .and_then(|track| track.metadata.musicbrainz_release_id.clone()),
+        musicbrainz_release_group_id: source_track
+            .and_then(|track| track.metadata.musicbrainz_release_group_id.clone()),
+        release_date: source_track.and_then(|track| track.metadata.release_date.clone()),
+        original_release_date: source_track
+            .and_then(|track| track.metadata.original_release_date.clone()),
+        release_country: source_track.and_then(|track| track.metadata.release_country.clone()),
+        release_type: source_track.and_then(|track| track.metadata.release_type.clone()),
+        genres,
+        source_track_id: source_track.map(|track| track.id.clone()),
+    }
 }
 
 pub(crate) fn apply_album_artwork_overrides(

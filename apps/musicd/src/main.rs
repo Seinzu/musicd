@@ -1968,6 +1968,14 @@ mod tests {
             source: "Embedded artwork".to_string(),
             mime_type: "image/jpeg".to_string(),
         });
+        first.metadata.musicbrainz_release_id =
+            Some("6b6a3457-253e-4539-aee3-6279adf66c92".to_string());
+        first.metadata.musicbrainz_release_group_id =
+            Some("b1392450-e666-3926-a536-22c65f834433".to_string());
+        first.metadata.release_date = Some("2007-10-10".to_string());
+        first.metadata.release_country = Some("GB".to_string());
+        first.metadata.release_type = Some("album".to_string());
+        first.metadata.genres = vec!["Art Rock".to_string(), "Alternative".to_string()];
 
         let mut second = sample_track("track-2", Some(1), Some(2), "Bodysnatchers");
         second.artist = "Radiohead".to_string();
@@ -1988,6 +1996,23 @@ mod tests {
         database
             .save_library(&library)
             .expect("library should be persisted");
+
+        let tracks = database
+            .load_library(PathBuf::from("/music"))
+            .expect("library should reload")
+            .tracks;
+        let reloaded_first = tracks
+            .iter()
+            .find(|track| track.id == "track-1")
+            .expect("track should reload");
+        assert_eq!(
+            reloaded_first.metadata.musicbrainz_release_id.as_deref(),
+            Some("6b6a3457-253e-4539-aee3-6279adf66c92")
+        );
+        assert_eq!(
+            reloaded_first.metadata.genres,
+            vec!["Art Rock".to_string(), "Alternative".to_string()]
+        );
 
         let albums = database.load_albums().expect("albums should load");
         assert_eq!(albums.len(), 2);
@@ -2012,6 +2037,22 @@ mod tests {
                 .as_ref()
                 .map(|artwork| artwork.cache_key.as_str()),
             Some("cover.jpg")
+        );
+        assert_eq!(
+            in_rainbows.metadata.musicbrainz_release_id.as_deref(),
+            Some("6b6a3457-253e-4539-aee3-6279adf66c92")
+        );
+        assert_eq!(
+            in_rainbows.metadata.musicbrainz_release_group_id.as_deref(),
+            Some("b1392450-e666-3926-a536-22c65f834433")
+        );
+        assert_eq!(
+            in_rainbows.metadata.source_track_id.as_deref(),
+            Some("track-1")
+        );
+        assert_eq!(
+            in_rainbows.metadata.genres,
+            vec!["Art Rock".to_string(), "Alternative".to_string()]
         );
 
         let artists = database.load_artists().expect("artists should load");
@@ -2150,6 +2191,7 @@ mod tests {
             mime_type: "audio/flac".to_string(),
             file_size: 123,
             artwork: None,
+            metadata: Default::default(),
         }
     }
 

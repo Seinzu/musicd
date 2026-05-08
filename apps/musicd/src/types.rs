@@ -19,6 +19,7 @@ pub(crate) struct LibraryTrack {
     pub(crate) mime_type: String,
     pub(crate) file_size: u64,
     pub(crate) artwork: Option<TrackArtwork>,
+    pub(crate) metadata: TrackMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub(crate) struct AlbumSummary {
     pub(crate) artwork: Option<TrackArtwork>,
     pub(crate) artwork_url: Option<String>,
     pub(crate) first_track_id: String,
+    pub(crate) metadata: AlbumMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +52,31 @@ pub(crate) struct TrackArtwork {
     pub(crate) cache_key: String,
     pub(crate) source: String,
     pub(crate) mime_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TrackMetadata {
+    pub(crate) musicbrainz_release_id: Option<String>,
+    pub(crate) musicbrainz_release_group_id: Option<String>,
+    pub(crate) musicbrainz_recording_id: Option<String>,
+    pub(crate) musicbrainz_release_track_id: Option<String>,
+    pub(crate) release_date: Option<String>,
+    pub(crate) original_release_date: Option<String>,
+    pub(crate) release_country: Option<String>,
+    pub(crate) release_type: Option<String>,
+    pub(crate) genres: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct AlbumMetadata {
+    pub(crate) musicbrainz_release_id: Option<String>,
+    pub(crate) musicbrainz_release_group_id: Option<String>,
+    pub(crate) release_date: Option<String>,
+    pub(crate) original_release_date: Option<String>,
+    pub(crate) release_country: Option<String>,
+    pub(crate) release_type: Option<String>,
+    pub(crate) genres: Vec<String>,
+    pub(crate) source_track_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +169,7 @@ pub(crate) struct ParsedTrackTags {
     pub(crate) disc_number: Option<u32>,
     pub(crate) track_number: Option<u32>,
     pub(crate) duration_seconds: Option<u64>,
+    pub(crate) metadata: TrackMetadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

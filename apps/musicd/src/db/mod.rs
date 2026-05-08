@@ -62,7 +62,16 @@ impl Database {
                     file_size INTEGER NOT NULL,
                     artwork_cache_key TEXT,
                     artwork_source TEXT,
-                    artwork_mime_type TEXT
+                    artwork_mime_type TEXT,
+                    musicbrainz_release_id TEXT,
+                    musicbrainz_release_group_id TEXT,
+                    musicbrainz_recording_id TEXT,
+                    musicbrainz_release_track_id TEXT,
+                    release_date TEXT,
+                    original_release_date TEXT,
+                    release_country TEXT,
+                    release_type TEXT,
+                    genres_json TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS albums (
@@ -75,7 +84,15 @@ impl Database {
                     artwork_cache_key TEXT,
                     artwork_source TEXT,
                     artwork_mime_type TEXT,
-                    first_track_id TEXT NOT NULL
+                    first_track_id TEXT NOT NULL,
+                    musicbrainz_release_id TEXT,
+                    musicbrainz_release_group_id TEXT,
+                    release_date TEXT,
+                    original_release_date TEXT,
+                    release_country TEXT,
+                    release_type TEXT,
+                    genres_json TEXT,
+                    metadata_source_track_id TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS artists (
@@ -215,6 +232,25 @@ impl Database {
         ensure_column(&connection, "tracks", "artwork_cache_key", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_source", "TEXT")?;
         ensure_column(&connection, "tracks", "artwork_mime_type", "TEXT")?;
+        ensure_column(&connection, "tracks", "musicbrainz_release_id", "TEXT")?;
+        ensure_column(
+            &connection,
+            "tracks",
+            "musicbrainz_release_group_id",
+            "TEXT",
+        )?;
+        ensure_column(&connection, "tracks", "musicbrainz_recording_id", "TEXT")?;
+        ensure_column(
+            &connection,
+            "tracks",
+            "musicbrainz_release_track_id",
+            "TEXT",
+        )?;
+        ensure_column(&connection, "tracks", "release_date", "TEXT")?;
+        ensure_column(&connection, "tracks", "original_release_date", "TEXT")?;
+        ensure_column(&connection, "tracks", "release_country", "TEXT")?;
+        ensure_column(&connection, "tracks", "release_type", "TEXT")?;
+        ensure_column(&connection, "tracks", "genres_json", "TEXT")?;
         ensure_column(&connection, "albums", "artist_id", "TEXT")?;
         ensure_column(&connection, "albums", "title", "TEXT")?;
         ensure_column(&connection, "albums", "artist_name", "TEXT")?;
@@ -224,6 +260,19 @@ impl Database {
         ensure_column(&connection, "albums", "artwork_source", "TEXT")?;
         ensure_column(&connection, "albums", "artwork_mime_type", "TEXT")?;
         ensure_column(&connection, "albums", "first_track_id", "TEXT")?;
+        ensure_column(&connection, "albums", "musicbrainz_release_id", "TEXT")?;
+        ensure_column(
+            &connection,
+            "albums",
+            "musicbrainz_release_group_id",
+            "TEXT",
+        )?;
+        ensure_column(&connection, "albums", "release_date", "TEXT")?;
+        ensure_column(&connection, "albums", "original_release_date", "TEXT")?;
+        ensure_column(&connection, "albums", "release_country", "TEXT")?;
+        ensure_column(&connection, "albums", "release_type", "TEXT")?;
+        ensure_column(&connection, "albums", "genres_json", "TEXT")?;
+        ensure_column(&connection, "albums", "metadata_source_track_id", "TEXT")?;
         ensure_column(&connection, "artists", "album_count", "INTEGER")?;
         ensure_column(&connection, "artists", "track_count", "INTEGER")?;
         ensure_column(&connection, "artists", "artwork_track_id", "TEXT")?;

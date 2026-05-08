@@ -5,11 +5,25 @@ use rusqlite::{Connection, params};
 
 use crate::ids::stable_album_id;
 use crate::library::{Library, build_album_summaries, build_artist_summaries_from_albums};
-use crate::types::{AlbumArtworkOverride, LibraryTrack, TrackArtwork};
+use crate::types::{AlbumArtworkOverride, LibraryTrack, TrackArtwork, TrackMetadata};
 #[cfg(test)]
-use crate::types::{AlbumSummary, ArtistSummary};
+use crate::types::{AlbumMetadata, AlbumSummary, ArtistSummary};
 
 use super::{Database, db_error};
+
+fn genres_json(genres: &[String]) -> Option<String> {
+    if genres.is_empty() {
+        None
+    } else {
+        serde_json::to_string(genres).ok()
+    }
+}
+
+fn parse_genres_json(value: Option<String>) -> Vec<String> {
+    value
+        .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
+        .unwrap_or_default()
+}
 
 impl Database {
     pub(crate) fn load_library(&self, scan_root: PathBuf) -> io::Result<Library> {
@@ -18,7 +32,11 @@ impl Database {
             .prepare(
                 "SELECT id, album_id, title, artist, album, disc_number, track_number,
                         duration_seconds, relative_path, path, mime_type, file_size,
-                        artwork_cache_key, artwork_source, artwork_mime_type
+                        artwork_cache_key, artwork_source, artwork_mime_type,
+                        musicbrainz_release_id, musicbrainz_release_group_id,
+                        musicbrainz_recording_id, musicbrainz_release_track_id,
+                        release_date, original_release_date, release_country,
+                        release_type, genres_json
                  FROM tracks
                  ORDER BY artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
             )
@@ -54,6 +72,17 @@ impl Database {
                         }),
                         _ => None,
                     },
+                    metadata: TrackMetadata {
+                        musicbrainz_release_id: row.get(15)?,
+                        musicbrainz_release_group_id: row.get(16)?,
+                        musicbrainz_recording_id: row.get(17)?,
+                        musicbrainz_release_track_id: row.get(18)?,
+                        release_date: row.get(19)?,
+                        original_release_date: row.get(20)?,
+                        release_country: row.get(21)?,
+                        release_type: row.get(22)?,
+                        genres: parse_genres_json(row.get(23)?),
+                    },
                 })
             })
             .map_err(db_error)?;
@@ -88,8 +117,12 @@ impl Database {
                     "INSERT INTO tracks
                      (id, album_id, title, artist, album, disc_number, track_number,
                       duration_seconds, relative_path, path, mime_type, file_size,
-                      artwork_cache_key, artwork_source, artwork_mime_type)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      artwork_cache_key, artwork_source, artwork_mime_type,
+                      musicbrainz_release_id, musicbrainz_release_group_id,
+                      musicbrainz_recording_id, musicbrainz_release_track_id,
+                      release_date, original_release_date, release_country,
+                      release_type, genres_json)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
@@ -103,6 +136,7 @@ impl Database {
                     .artwork
                     .as_ref()
                     .map(|artwork| artwork.mime_type.clone());
+                let genres_json = genres_json(&track.metadata.genres);
                 statement
                     .execute(params![
                         track.id,
@@ -119,7 +153,16 @@ impl Database {
                         track.file_size,
                         artwork_cache_key,
                         artwork_source,
-                        artwork_mime_type
+                        artwork_mime_type,
+                        track.metadata.musicbrainz_release_id,
+                        track.metadata.musicbrainz_release_group_id,
+                        track.metadata.musicbrainz_recording_id,
+                        track.metadata.musicbrainz_release_track_id,
+                        track.metadata.release_date,
+                        track.metadata.original_release_date,
+                        track.metadata.release_country,
+                        track.metadata.release_type,
+                        genres_json
                     ])
                     .map_err(db_error)?;
             }
@@ -129,8 +172,11 @@ impl Database {
                 .prepare(
                     "INSERT INTO albums
                      (id, artist_id, title, artist_name, track_count, artwork_track_id,
-                      artwork_cache_key, artwork_source, artwork_mime_type, first_track_id)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      artwork_cache_key, artwork_source, artwork_mime_type, first_track_id,
+                      musicbrainz_release_id, musicbrainz_release_group_id,
+                      release_date, original_release_date, release_country, release_type,
+                      genres_json, metadata_source_track_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
@@ -144,6 +190,7 @@ impl Database {
                     .artwork
                     .as_ref()
                     .map(|artwork| artwork.mime_type.clone());
+                let genres_json = genres_json(&album.metadata.genres);
                 statement
                     .execute(params![
                         album.id,
@@ -156,6 +203,14 @@ impl Database {
                         artwork_source,
                         artwork_mime_type,
                         album.first_track_id,
+                        album.metadata.musicbrainz_release_id,
+                        album.metadata.musicbrainz_release_group_id,
+                        album.metadata.release_date,
+                        album.metadata.original_release_date,
+                        album.metadata.release_country,
+                        album.metadata.release_type,
+                        genres_json,
+                        album.metadata.source_track_id,
                     ])
                     .map_err(db_error)?;
             }
@@ -296,7 +351,11 @@ pub(super) fn load_tracks_from_connection(
         .prepare(
             "SELECT id, album_id, title, artist, album, disc_number, track_number,
                     duration_seconds, relative_path, path, mime_type, file_size,
-                    artwork_cache_key, artwork_source, artwork_mime_type
+                    artwork_cache_key, artwork_source, artwork_mime_type,
+                    musicbrainz_release_id, musicbrainz_release_group_id,
+                    musicbrainz_recording_id, musicbrainz_release_track_id,
+                    release_date, original_release_date, release_country,
+                    release_type, genres_json
              FROM tracks
              ORDER BY artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
         )
@@ -332,6 +391,17 @@ pub(super) fn load_tracks_from_connection(
                     }),
                     _ => None,
                 },
+                metadata: TrackMetadata {
+                    musicbrainz_release_id: row.get(15)?,
+                    musicbrainz_release_group_id: row.get(16)?,
+                    musicbrainz_recording_id: row.get(17)?,
+                    musicbrainz_release_track_id: row.get(18)?,
+                    release_date: row.get(19)?,
+                    original_release_date: row.get(20)?,
+                    release_country: row.get(21)?,
+                    release_type: row.get(22)?,
+                    genres: parse_genres_json(row.get(23)?),
+                },
             })
         })
         .map_err(db_error)?;
@@ -348,7 +418,10 @@ fn load_albums_from_connection(connection: &Connection) -> io::Result<Vec<AlbumS
     let mut statement = connection
         .prepare(
             "SELECT id, artist_id, title, artist_name, track_count, artwork_track_id,
-                    artwork_cache_key, artwork_source, artwork_mime_type, first_track_id
+                    artwork_cache_key, artwork_source, artwork_mime_type, first_track_id,
+                    musicbrainz_release_id, musicbrainz_release_group_id,
+                    release_date, original_release_date, release_country, release_type,
+                    genres_json, metadata_source_track_id
              FROM albums
              ORDER BY artist_name ASC, title ASC, id ASC",
         )
@@ -382,6 +455,16 @@ fn load_albums_from_connection(connection: &Connection) -> io::Result<Vec<AlbumS
                     None
                 },
                 first_track_id: row.get(9)?,
+                metadata: AlbumMetadata {
+                    musicbrainz_release_id: row.get(10)?,
+                    musicbrainz_release_group_id: row.get(11)?,
+                    release_date: row.get(12)?,
+                    original_release_date: row.get(13)?,
+                    release_country: row.get(14)?,
+                    release_type: row.get(15)?,
+                    genres: parse_genres_json(row.get(16)?),
+                    source_track_id: row.get(17)?,
+                },
             })
         })
         .map_err(db_error)?;
@@ -410,8 +493,11 @@ pub(super) fn rebuild_normalized_library_tables(connection: &Connection) -> io::
             .prepare(
                 "INSERT INTO albums
                  (id, artist_id, title, artist_name, track_count, artwork_track_id,
-                  artwork_cache_key, artwork_source, artwork_mime_type, first_track_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  artwork_cache_key, artwork_source, artwork_mime_type, first_track_id,
+                  musicbrainz_release_id, musicbrainz_release_group_id,
+                  release_date, original_release_date, release_country, release_type,
+                  genres_json, metadata_source_track_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .map_err(db_error)?;
         for album in &albums {
@@ -424,6 +510,7 @@ pub(super) fn rebuild_normalized_library_tables(connection: &Connection) -> io::
                 .artwork
                 .as_ref()
                 .map(|artwork| artwork.mime_type.clone());
+            let genres_json = genres_json(&album.metadata.genres);
             statement
                 .execute(params![
                     album.id,
@@ -436,6 +523,14 @@ pub(super) fn rebuild_normalized_library_tables(connection: &Connection) -> io::
                     artwork_source,
                     artwork_mime_type,
                     album.first_track_id,
+                    album.metadata.musicbrainz_release_id,
+                    album.metadata.musicbrainz_release_group_id,
+                    album.metadata.release_date,
+                    album.metadata.original_release_date,
+                    album.metadata.release_country,
+                    album.metadata.release_type,
+                    genres_json,
+                    album.metadata.source_track_id,
                 ])
                 .map_err(db_error)?;
         }
