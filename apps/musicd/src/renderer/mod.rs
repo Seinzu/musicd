@@ -66,6 +66,8 @@ pub(crate) trait RendererBackend: Send + Sync {
 
     fn preload_next(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()>;
 
+    fn clear_next(&self, renderer: &RendererRecord) -> io::Result<()>;
+
     fn play(&self, renderer: &RendererRecord) -> io::Result<()>;
 
     fn pause(&self, renderer: &RendererRecord) -> io::Result<()>;

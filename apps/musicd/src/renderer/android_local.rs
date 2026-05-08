@@ -61,6 +61,10 @@ impl RendererBackend for AndroidLocalRendererBackend {
         Ok(())
     }
 
+    fn clear_next(&self, _renderer: &RendererRecord) -> io::Result<()> {
+        Ok(())
+    }
+
     fn play(&self, _renderer: &RendererRecord) -> io::Result<()> {
         Ok(())
     }

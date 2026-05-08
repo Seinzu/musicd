@@ -312,6 +312,24 @@ pub fn set_next_av_transport_uri(control_url: &str, resource: &StreamResource) -
     expect_successful_soap("SetNextAVTransportURI", response)
 }
 
+pub fn clear_next_av_transport_uri(control_url: &str) -> io::Result<()> {
+    let body = build_clear_next_av_transport_uri_envelope(0);
+    let response = http_request(
+        "POST",
+        control_url,
+        &[
+            ("Content-Type", "text/xml; charset=\"utf-8\""),
+            (
+                "SOAPACTION",
+                "\"urn:schemas-upnp-org:service:AVTransport:1#SetNextAVTransportURI\"",
+            ),
+        ],
+        Some(body.as_bytes()),
+    )?;
+
+    expect_successful_soap("SetNextAVTransportURI", response)
+}
+
 pub fn play(control_url: &str) -> io::Result<()> {
     let body = build_play_envelope(0, 1);
     let response = av_transport_action(control_url, "Play", body.as_bytes())?;
@@ -472,6 +490,12 @@ pub fn build_set_next_av_transport_uri_envelope(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:SetNextAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID><NextURI>{}</NextURI><NextURIMetaData>{}</NextURIMetaData></u:SetNextAVTransportURI></s:Body></s:Envelope>"#,
         xml_escape(stream_url),
         xml_escape(&metadata),
+    )
+}
+
+pub fn build_clear_next_av_transport_uri_envelope(instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:SetNextAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID><NextURI></NextURI><NextURIMetaData></NextURIMetaData></u:SetNextAVTransportURI></s:Body></s:Envelope>"#,
     )
 }
 
@@ -1154,13 +1178,14 @@ impl fmt::Display for RendererDescription {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_get_position_info_envelope, build_get_transport_info_envelope, build_next_envelope,
-        build_pause_envelope, build_play_envelope, build_previous_envelope,
-        build_seek_envelope, build_set_av_transport_uri_envelope,
-        build_set_next_av_transport_uri_envelope, build_stop_envelope, format_upnp_time,
-        is_transition_not_available_fault, parse_device_description, parse_http_url,
-        parse_position_info_response, parse_service_actions, parse_ssdp_response,
-        parse_transport_info_response, resolve_url, select_renderer_device_section,
+        build_clear_next_av_transport_uri_envelope, build_get_position_info_envelope,
+        build_get_transport_info_envelope, build_next_envelope, build_pause_envelope,
+        build_play_envelope, build_previous_envelope, build_seek_envelope,
+        build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
+        build_stop_envelope, format_upnp_time, is_transition_not_available_fault,
+        parse_device_description, parse_http_url, parse_position_info_response,
+        parse_service_actions, parse_ssdp_response, parse_transport_info_response, resolve_url,
+        select_renderer_device_section,
     };
     use std::collections::HashMap;
 
@@ -1231,6 +1256,16 @@ mod tests {
         assert!(body.contains("audio/flac"));
         assert!(body.contains("albumArtURI"));
         assert!(body.contains("next one&amp;amp;two.jpg"));
+    }
+
+    #[test]
+    fn clear_next_transport_uri_sends_empty_next_slot() {
+        let body = build_clear_next_av_transport_uri_envelope(0);
+
+        assert!(body.contains("SetNextAVTransportURI"));
+        assert!(body.contains("<NextURI></NextURI>"));
+        assert!(body.contains("<NextURIMetaData></NextURIMetaData>"));
+        assert!(!body.contains("DIDL-Lite"));
     }
 
     #[test]

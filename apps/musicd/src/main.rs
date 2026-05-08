@@ -440,6 +440,54 @@ mod tests {
     }
 
     #[test]
+    fn queue_poll_treats_completed_transport_as_finished() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![completed_near_end_snapshot(&track, 180, 180)],
+        ));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        let stream_url = state.stream_resource_for_track(&track).stream_url;
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Single Track",
+                &[queue_entry_for_track(&track)],
+            )
+            .expect("queue replace should succeed");
+        let current_entry_id = queue
+            .current_entry_id
+            .expect("queue should have a current entry");
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                current_entry_id,
+                &track.id,
+                &stream_url,
+                track.duration_seconds,
+            )
+            .expect("queue play should start");
+
+        state
+            .poll_renderer_queue(renderer_location)
+            .expect("queue poll should handle completed transport state");
+
+        assert!(
+            state
+                .database
+                .load_queue(renderer_location)
+                .expect("queue lookup should succeed")
+                .is_none()
+        );
+        assert!(backend.played_streams().is_empty());
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn queue_poll_starts_next_entry_with_matching_track_metadata() {
         let renderer_location = "http://renderer.local/description.xml";
         let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
@@ -513,6 +561,83 @@ mod tests {
         assert_eq!(
             state.database.count_track_plays(&track_2.id).unwrap_or(0),
             1
+        );
+        assert_eq!(backend.cleared_next_count(), 1);
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn queue_poll_clears_stale_preloaded_next_when_renderer_auto_advances_to_final_track() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![playing_snapshot(&track_2, 1, 180)],
+        ));
+        let state =
+            sample_state_with_backend(vec![track_1.clone(), track_2.clone()], backend.clone());
+        let first_stream_url = state.stream_resource_for_track(&track_1).stream_url;
+        let second_stream_url = state.stream_resource_for_track(&track_2).stream_url;
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let first_entry_id = queue
+            .current_entry_id
+            .expect("queue should have a current entry");
+        let second_entry_id = queue.entries[1].id;
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                first_entry_id,
+                &track_1.id,
+                &first_stream_url,
+                track_1.duration_seconds,
+            )
+            .expect("queue play should start");
+        state
+            .database
+            .mark_next_queue_entry_preloaded(renderer_location, Some(second_entry_id))
+            .expect("next entry should be marked preloaded");
+
+        state
+            .poll_renderer_queue(renderer_location)
+            .expect("queue poll should adopt renderer-advanced final track");
+
+        let advanced_queue = state
+            .database
+            .load_queue(renderer_location)
+            .expect("queue lookup should succeed")
+            .expect("queue should remain while final track plays");
+        let session = state
+            .database
+            .load_playback_session(renderer_location)
+            .expect("session lookup should succeed")
+            .expect("session should track the adopted entry");
+        assert_eq!(advanced_queue.current_entry_id, Some(second_entry_id));
+        assert_eq!(advanced_queue.entries[0].entry_status, "completed");
+        assert_eq!(advanced_queue.entries[1].entry_status, "playing");
+        assert_eq!(session.queue_entry_id, Some(second_entry_id));
+        assert_eq!(session.next_queue_entry_id, None);
+        assert_eq!(
+            session.current_track_uri.as_deref(),
+            Some(second_stream_url.as_str())
+        );
+        assert!(backend.played_streams().is_empty());
+        assert_eq!(
+            backend.cleared_next_count(),
+            1,
+            "the renderer's native next URI should be cleared once the preloaded final track becomes current"
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
@@ -639,7 +764,10 @@ mod tests {
         let group = state
             .create_renderer_group(
                 "Phones",
-                &[source_location.to_string(), "android-local://phone-b".to_string()],
+                &[
+                    source_location.to_string(),
+                    "android-local://phone-b".to_string(),
+                ],
                 Some(source_location),
                 None,
             )
@@ -2022,9 +2150,34 @@ mod tests {
         position_seconds: u64,
         duration_seconds: u64,
     ) -> TransportSnapshot {
+        transport_snapshot("STOPPED", track, position_seconds, duration_seconds)
+    }
+
+    fn completed_near_end_snapshot(
+        track: &LibraryTrack,
+        position_seconds: u64,
+        duration_seconds: u64,
+    ) -> TransportSnapshot {
+        transport_snapshot("COMPLETED", track, position_seconds, duration_seconds)
+    }
+
+    fn playing_snapshot(
+        track: &LibraryTrack,
+        position_seconds: u64,
+        duration_seconds: u64,
+    ) -> TransportSnapshot {
+        transport_snapshot("PLAYING", track, position_seconds, duration_seconds)
+    }
+
+    fn transport_snapshot(
+        transport_state: &str,
+        track: &LibraryTrack,
+        position_seconds: u64,
+        duration_seconds: u64,
+    ) -> TransportSnapshot {
         TransportSnapshot {
             transport_info: TransportInfo {
-                transport_state: "STOPPED".to_string(),
+                transport_state: transport_state.to_string(),
                 transport_status: Some("OK".to_string()),
                 current_speed: Some("1".to_string()),
             },
@@ -2044,6 +2197,7 @@ mod tests {
         snapshots: Mutex<VecDeque<TransportSnapshot>>,
         played_streams: Mutex<Vec<StreamResource>>,
         preloaded_streams: Mutex<Vec<StreamResource>>,
+        cleared_next_count: Mutex<usize>,
     }
 
     impl FakeRendererBackend {
@@ -2060,6 +2214,7 @@ mod tests {
                             "Play".to_string(),
                             "Pause".to_string(),
                             "Stop".to_string(),
+                            "SetNextAVTransportURI".to_string(),
                         ]),
                         has_playlist_extension_service: Some(false),
                     },
@@ -2073,6 +2228,7 @@ mod tests {
                 snapshots: Mutex::new(VecDeque::from(snapshots)),
                 played_streams: Mutex::new(Vec::new()),
                 preloaded_streams: Mutex::new(Vec::new()),
+                cleared_next_count: Mutex::new(0),
             }
         }
 
@@ -2081,6 +2237,13 @@ mod tests {
                 .lock()
                 .expect("played streams should not be poisoned")
                 .clone()
+        }
+
+        fn cleared_next_count(&self) -> usize {
+            *self
+                .cleared_next_count
+                .lock()
+                .expect("cleared next count should not be poisoned")
         }
     }
 
@@ -2114,6 +2277,14 @@ mod tests {
                 .lock()
                 .expect("preloaded streams should not be poisoned")
                 .push(resource.clone());
+            Ok(())
+        }
+
+        fn clear_next(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            *self
+                .cleared_next_count
+                .lock()
+                .expect("cleared next count should not be poisoned") += 1;
             Ok(())
         }
 

@@ -363,6 +363,16 @@ impl ServiceState {
         current_entry_id: i64,
     ) -> io::Result<()> {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
+            if renderer.capabilities.supports_set_next_av_transport_uri() != Some(false) {
+                if let Err(error) = self
+                    .renderer_backend(renderer_location)?
+                    .clear_next(renderer)
+                {
+                    let _ = self.mark_renderer_unreachable(renderer_location, &error);
+                    return Err(error);
+                }
+                let _ = self.mark_renderer_reachable(renderer);
+            }
             self.database
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
             return Ok(());

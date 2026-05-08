@@ -327,9 +327,41 @@ impl ServiceState {
         current_entry_id: i64,
     ) -> io::Result<()> {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
+            let mut errors = Vec::new();
+            for member in &group.members {
+                let renderer_location = &member.renderer_location;
+                let renderer = match self.resolve_renderer(renderer_location) {
+                    Ok(renderer) => renderer,
+                    Err(error) => {
+                        errors.push(format!("{renderer_location}: {error}"));
+                        continue;
+                    }
+                };
+                if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
+                    continue;
+                }
+                match self
+                    .renderer_backend(renderer_location)?
+                    .clear_next(&renderer)
+                {
+                    Ok(()) => {
+                        let _ = self.mark_renderer_reachable(&renderer);
+                    }
+                    Err(error) => {
+                        let _ = self.mark_group_member_unreachable(renderer_location, &error);
+                        errors.push(format!("{renderer_location}: {error}"));
+                    }
+                }
+            }
             self.database
                 .mark_next_queue_entry_preloaded(group_location, None)?;
-            return Ok(());
+            if errors.is_empty() {
+                return Ok(());
+            }
+            return Err(io::Error::other(format!(
+                "group next-track clear failed: {}",
+                errors.join("; ")
+            )));
         };
 
         if self

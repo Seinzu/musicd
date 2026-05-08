@@ -1,8 +1,9 @@
 use std::io;
 
 use musicd_upnp::{
-    StreamResource, TransportSnapshot, get_transport_snapshot, inspect_renderer, next, pause, play,
-    previous, seek, set_av_transport_uri, set_next_av_transport_uri, stop,
+    StreamResource, TransportSnapshot, clear_next_av_transport_uri, get_transport_snapshot,
+    inspect_renderer, next, pause, play, previous, seek, set_av_transport_uri,
+    set_next_av_transport_uri, stop,
 };
 
 use crate::ids::normalized_renderer_name;
@@ -56,6 +57,10 @@ impl RendererBackend for UpnpRendererBackend {
     fn preload_next(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()> {
         let control_url = upnp_control_url(renderer)?;
         set_next_av_transport_uri(control_url, resource)
+    }
+
+    fn clear_next(&self, renderer: &RendererRecord) -> io::Result<()> {
+        clear_next_av_transport_uri(upnp_control_url(renderer)?)
     }
 
     fn play(&self, renderer: &RendererRecord) -> io::Result<()> {

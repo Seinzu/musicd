@@ -100,7 +100,7 @@ pub(crate) fn should_auto_advance(
 ) -> bool {
     if !matches!(
         snapshot.transport_info.transport_state.as_str(),
-        "STOPPED" | "NO_MEDIA_PRESENT"
+        "STOPPED" | "NO_MEDIA_PRESENT" | "COMPLETED"
     ) {
         return false;
     }
