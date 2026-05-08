@@ -9,7 +9,7 @@ use crate::renderer::{renderer_group_queue_key, renderer_kind_for_location, rend
 use crate::service::ServiceState;
 use crate::types::{
     AlbumSummary, ArtistSummary, EmbeddedMetadata, LibraryTrack, PlaybackSession, RendererGroup,
-    RendererRecord,
+    RendererRecord, TrackPlayRecord,
 };
 use crate::util::{
     bool_json, json_escape, now_unix_timestamp, option_bool_json, option_i64_json,
@@ -365,6 +365,44 @@ pub(crate) fn render_album_recommendations_json(
         "recommendations": state.album_recommendations(seed_album_id),
     })
     .to_string()
+}
+
+pub(crate) fn render_play_history_json(state: &ServiceState) -> String {
+    let records = state
+        .database
+        .load_recent_track_play_history(20)
+        .unwrap_or_default();
+    let entries = records
+        .iter()
+        .map(|record| play_history_record_json(state, record))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{"limit":20,"count":{},"entries":[{}]}}"#,
+        records.len(),
+        entries
+    )
+}
+
+fn play_history_record_json(state: &ServiceState, record: &TrackPlayRecord) -> String {
+    let track_json = state.find_track(&record.track_id).map_or_else(
+        || "null".to_string(),
+        |track| {
+            let fallback_artwork_url = state
+                .find_album(&track.album_id)
+                .and_then(|album| album.artwork_url);
+            track_summary_json(&track, fallback_artwork_url.as_deref())
+        },
+    );
+    format!(
+        r#"{{"id":{},"track_id":"{}","renderer_location":"{}","queue_entry_id":{},"played_unix":{},"track":{}}}"#,
+        record.id,
+        json_escape(&record.track_id),
+        json_escape(&record.renderer_location),
+        option_i64_json(record.queue_entry_id),
+        record.played_unix,
+        track_json,
+    )
 }
 
 pub(crate) fn render_metrics_text(state: &ServiceState) -> String {

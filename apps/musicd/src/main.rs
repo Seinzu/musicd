@@ -1912,6 +1912,45 @@ mod tests {
     }
 
     #[test]
+    fn loads_recent_track_play_history_newest_first() {
+        let config_path = temp_config_path("recent-track-play-history");
+        let database = Database::open(&config_path).expect("database should open");
+        let entries = (0..25)
+            .map(|index| QueueMutationEntry {
+                track_id: format!("track-{index:02}"),
+                album_id: Some("album-1".to_string()),
+                source_kind: "album".to_string(),
+                source_ref: Some("album-1".to_string()),
+            })
+            .collect::<Vec<_>>();
+        let queue = database
+            .replace_queue("renderer-1", "Test Queue", &entries)
+            .expect("queue should be created");
+
+        for entry in &queue.entries {
+            database
+                .mark_queue_play_started(
+                    "renderer-1",
+                    entry.id,
+                    &entry.track_id,
+                    &format!("http://musicd.local/stream/track/{}", entry.track_id),
+                    Some(180),
+                )
+                .expect("play should be recorded");
+        }
+
+        let history = database
+            .load_recent_track_play_history(20)
+            .expect("recent history should load");
+        assert_eq!(history.len(), 20);
+        assert_eq!(history[0].track_id, "track-24");
+        assert_eq!(history[19].track_id, "track-05");
+        assert!(history.windows(2).all(|window| window[0].id > window[1].id));
+
+        let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
     fn persists_normalized_albums_and_artists() {
         let config_path = temp_config_path("normalized-library");
         let database = Database::open(&config_path).expect("database should open");

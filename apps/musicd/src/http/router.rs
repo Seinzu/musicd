@@ -29,9 +29,9 @@ use crate::views::json::{
     render_album_artwork_candidates_json, render_album_detail_json,
     render_album_recommendations_json, render_albums_json, render_artist_detail_json,
     render_artists_json, render_discovery_json, render_metrics_text, render_now_playing_json,
-    render_playback_targets_json, render_queue_json, render_recommendation_seeds_json,
-    render_renderer_groups_json, render_renderers_json, render_server_json, render_session_json,
-    render_track_detail_json, render_tracks_json,
+    render_play_history_json, render_playback_targets_json, render_queue_json,
+    render_recommendation_seeds_json, render_renderer_groups_json, render_renderers_json,
+    render_server_json, render_session_json, render_track_detail_json, render_tracks_json,
 };
 use crate::views::{
     render_album_detail_page, render_home_page, render_queue_panel_html, render_track_detail_page,
@@ -197,6 +197,16 @@ pub(crate) fn handle_service_request(
                 return Ok(());
             }
             let body = render_queue_json(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/api/play-history") | ("HEAD", "/api/play-history") => {
+            let body = render_play_history_json(&state);
             respond_text(
                 writer,
                 "200 OK",

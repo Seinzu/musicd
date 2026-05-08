@@ -83,6 +83,38 @@ impl Database {
         Ok(records)
     }
 
+    pub(crate) fn load_recent_track_play_history(
+        &self,
+        limit: usize,
+    ) -> io::Result<Vec<TrackPlayRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, track_id, renderer_location, queue_entry_id, played_unix
+                 FROM track_play_history
+                 ORDER BY played_unix DESC, id DESC
+                 LIMIT ?",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+                Ok(TrackPlayRecord {
+                    id: row.get(0)?,
+                    track_id: row.get(1)?,
+                    renderer_location: row.get(2)?,
+                    queue_entry_id: row.get(3)?,
+                    played_unix: row.get(4)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row.map_err(db_error)?);
+        }
+        Ok(records)
+    }
+
     pub(crate) fn mark_queue_play_started(
         &self,
         renderer_location: &str,

@@ -1318,16 +1318,40 @@ pub(crate) fn handle_api_android_local_session_request(
         }
     };
     let _ = state.mark_renderer_reachable(&renderer);
-    let _ = state.database.record_transport_snapshot(
+    if let Err(error) = state.database.record_transport_snapshot(
         &renderer_location,
         &transport_state,
         current_track_uri.as_deref(),
         position_seconds,
         duration_seconds,
-    );
-    let _ = state.database.sync_queue_status(
+    ) {
+        state.debug_log(
+            "android-local-session-error",
+            format!("renderer={} record_error={}", renderer_location, error),
+        );
+    }
+    if let Err(error) = state.database.sync_queue_status(
         &renderer_location,
         queue_status_for_transport(&transport_state),
+    ) {
+        state.debug_log(
+            "android-local-session-error",
+            format!("renderer={} status_error={}", renderer_location, error),
+        );
+    }
+    state.debug_log(
+        "android-local-session",
+        format!(
+            "renderer={} state={} queue_current={:?} uri={:?} position={:?} duration={:?}",
+            renderer_location,
+            transport_state,
+            state
+                .queue_snapshot(&renderer_location)
+                .and_then(|queue| queue.current_entry_id),
+            current_track_uri,
+            position_seconds,
+            duration_seconds
+        ),
     );
 
     api_renderer_state_response(writer, state, &renderer_location, "Session updated.")
@@ -1372,16 +1396,40 @@ pub(crate) fn handle_api_cli_local_session_request(
         }
     };
     let _ = state.mark_renderer_reachable(&renderer);
-    let _ = state.database.record_transport_snapshot(
+    if let Err(error) = state.database.record_transport_snapshot(
         &renderer_location,
         &transport_state,
         current_track_uri,
         position_seconds,
         duration_seconds,
-    );
-    let _ = state.database.sync_queue_status(
+    ) {
+        state.debug_log(
+            "cli-local-session-error",
+            format!("renderer={} record_error={}", renderer_location, error),
+        );
+    }
+    if let Err(error) = state.database.sync_queue_status(
         &renderer_location,
         queue_status_for_transport(&transport_state),
+    ) {
+        state.debug_log(
+            "cli-local-session-error",
+            format!("renderer={} status_error={}", renderer_location, error),
+        );
+    }
+    state.debug_log(
+        "cli-local-session",
+        format!(
+            "renderer={} state={} queue_current={:?} uri={:?} position={:?} duration={:?}",
+            renderer_location,
+            transport_state,
+            state
+                .queue_snapshot(&renderer_location)
+                .and_then(|queue| queue.current_entry_id),
+            current_track_uri,
+            position_seconds,
+            duration_seconds
+        ),
     );
 
     api_renderer_state_response(writer, state, &renderer_location, "Session updated.")
@@ -1411,6 +1459,13 @@ pub(crate) fn handle_api_android_local_completed_request(
         .advance_queue_after_completion(&renderer_location)
     {
         Ok(next_entry_id) => {
+            state.debug_log(
+                "android-local-completed",
+                format!(
+                    "renderer={} next_entry={:?}",
+                    renderer_location, next_entry_id
+                ),
+            );
             if next_entry_id.is_some() {
                 if let Err(error) = state.start_current_queue_entry(&renderer_location) {
                     return api_error(
@@ -1468,6 +1523,13 @@ pub(crate) fn handle_api_cli_local_completed_request(
         .advance_queue_after_completion(&renderer_location)
     {
         Ok(next_entry_id) => {
+            state.debug_log(
+                "cli-local-completed",
+                format!(
+                    "renderer={} next_entry={:?}",
+                    renderer_location, next_entry_id
+                ),
+            );
             if next_entry_id.is_some() {
                 if let Err(error) = state.start_current_queue_entry(&renderer_location) {
                     return api_error(
@@ -1916,12 +1978,47 @@ pub(crate) fn handle_track_stream_request(
         return respond_not_found(writer, request.method == "HEAD");
     };
 
-    respond_with_file(
+    state.debug_log(
+        "stream-file-open",
+        format!(
+            "track_id={} title={} path={} method={} range={:?}",
+            track.id,
+            track.title,
+            track.path.display(),
+            request.method,
+            request.range_header
+        ),
+    );
+    let result = respond_with_file(
         writer,
         &track.path,
         request.method == "HEAD",
         request.range_header.clone(),
-    )
+    );
+    match &result {
+        Ok(()) => state.debug_log(
+            "stream-file-close",
+            format!(
+                "track_id={} path={} status=ok method={} range={:?}",
+                track.id,
+                track.path.display(),
+                request.method,
+                request.range_header
+            ),
+        ),
+        Err(error) => state.debug_log(
+            "stream-file-close",
+            format!(
+                "track_id={} path={} status=error method={} range={:?} error={}",
+                track.id,
+                track.path.display(),
+                request.method,
+                request.range_header,
+                error
+            ),
+        ),
+    }
+    result
 }
 
 pub(crate) fn handle_track_artwork_request(
@@ -1980,7 +2077,25 @@ pub(crate) fn respond_sse_stream(
     let _subscriber = state.events.subscribe(renderer_location);
     let mut last_version = state.events.version(renderer_location);
     let mut last_payload = render_playback_event_json_for_renderer(state, renderer_location);
-    write_sse_event(writer, "playback", &last_payload)?;
+    state.debug_log(
+        "sse-connect",
+        format!(
+            "renderer={} version={} payload_bytes={}",
+            renderer_location,
+            last_version,
+            last_payload.len()
+        ),
+    );
+    if let Err(error) = write_sse_event(writer, "playback", &last_payload) {
+        state.debug_log(
+            "sse-write-error",
+            format!(
+                "renderer={} phase=initial version={} error={}",
+                renderer_location, last_version, error
+            ),
+        );
+        return Err(error);
+    }
 
     loop {
         let new_version =
@@ -1989,10 +2104,52 @@ pub(crate) fn respond_sse_stream(
                 .wait_for_change(renderer_location, last_version, Duration::from_secs(15));
         let payload = render_playback_event_json_for_renderer(state, renderer_location);
         if payload != last_payload {
-            write_sse_event(writer, "playback", &payload)?;
+            if let Err(error) = write_sse_event(writer, "playback", &payload) {
+                state.debug_log(
+                    "sse-write-error",
+                    format!(
+                        "renderer={} phase=playback version={} error={}",
+                        renderer_location, new_version, error
+                    ),
+                );
+                return Err(error);
+            }
+            state.debug_log(
+                "sse-playback-sent",
+                format!(
+                    "renderer={} version={} payload_bytes={}",
+                    renderer_location,
+                    new_version,
+                    payload.len()
+                ),
+            );
             last_payload = payload;
         } else if new_version == last_version {
-            write_sse_comment(writer, "ping")?;
+            if let Err(error) = write_sse_comment(writer, "ping") {
+                state.debug_log(
+                    "sse-write-error",
+                    format!(
+                        "renderer={} phase=ping version={} error={}",
+                        renderer_location, last_version, error
+                    ),
+                );
+                return Err(error);
+            }
+            state.debug_log(
+                "sse-ping-sent",
+                format!("renderer={} version={}", renderer_location, last_version),
+            );
+        } else {
+            state.debug_log(
+                "sse-version-without-payload-change",
+                format!(
+                    "renderer={} old_version={} new_version={} payload_bytes={}",
+                    renderer_location,
+                    last_version,
+                    new_version,
+                    payload.len()
+                ),
+            );
         }
         last_version = new_version;
     }

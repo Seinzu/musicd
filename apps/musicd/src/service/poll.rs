@@ -197,6 +197,20 @@ impl ServiceState {
                 let _ = self
                     .database
                     .record_transport_poll_error(renderer_location, &error.to_string());
+                self.debug_log(
+                    "queue-poll-error",
+                    format!(
+                        "renderer={} queue_status={} current_entry={:?} session_state={} error={}",
+                        renderer_location,
+                        queue.status,
+                        queue.current_entry_id,
+                        session
+                            .as_ref()
+                            .map(|session| session.transport_state.as_str())
+                            .unwrap_or("<none>"),
+                        error
+                    ),
+                );
                 return Err(error);
             }
         };
@@ -223,6 +237,66 @@ impl ServiceState {
                 .as_ref()
                 .map(|session| session.transport_state.as_str())
                 .unwrap_or("<none>");
+            self.debug_log(
+                "queue-poll-snapshot",
+                format!(
+                    "renderer={} state={} status={} changed={} queue_status={} queue_version={} current_entry={:?} next_entry={:?} session_state={} uri={:?} position={:?} duration={:?}",
+                    renderer_location,
+                    snapshot.transport_info.transport_state,
+                    snapshot
+                        .transport_info
+                        .transport_status
+                        .as_deref()
+                        .unwrap_or("<none>"),
+                    state_changed,
+                    queue.status,
+                    queue.version,
+                    queue.current_entry_id,
+                    session.as_ref().and_then(|session| session.next_queue_entry_id),
+                    previous_state,
+                    snapshot.position_info.track_uri,
+                    snapshot.position_info.rel_time_seconds,
+                    snapshot.position_info.track_duration_seconds
+                ),
+            );
+            if snapshot.transport_info.transport_state == "PAUSED_PLAYBACK"
+                && previous_state != "PAUSED_PLAYBACK"
+            {
+                self.debug_log(
+                    "renderer-pause-observed",
+                    format!(
+                        "renderer={} previous_state={} queue_status={} current_entry={:?} uri={:?} position={:?} duration={:?}",
+                        renderer_location,
+                        previous_state,
+                        queue.status,
+                        queue.current_entry_id,
+                        snapshot.position_info.track_uri,
+                        snapshot.position_info.rel_time_seconds,
+                        snapshot.position_info.track_duration_seconds
+                    ),
+                );
+            }
+            if queue.status == "playing"
+                && !matches!(
+                    snapshot.transport_info.transport_state.as_str(),
+                    "PLAYING" | "TRANSITIONING"
+                )
+            {
+                self.debug_log(
+                    "renderer-nonplaying-observed",
+                    format!(
+                        "renderer={} observed_state={} previous_state={} queue_status={} current_entry={:?} uri={:?} position={:?} duration={:?}",
+                        renderer_location,
+                        snapshot.transport_info.transport_state,
+                        previous_state,
+                        queue.status,
+                        queue.current_entry_id,
+                        snapshot.position_info.track_uri,
+                        snapshot.position_info.rel_time_seconds,
+                        snapshot.position_info.track_duration_seconds
+                    ),
+                );
+            }
             if previous_state != snapshot.transport_info.transport_state
                 || previous_queue_status
                     != queue_status_for_transport(&snapshot.transport_info.transport_state)
@@ -244,6 +318,13 @@ impl ServiceState {
         }
 
         if self.adopt_renderer_advanced_entry(renderer_location, &queue, &snapshot)? {
+            self.debug_log(
+                "queue-adopt-renderer-advance",
+                format!(
+                    "renderer={} previous_entry={:?} reported_uri={:?}",
+                    renderer_location, queue.current_entry_id, snapshot.position_info.track_uri
+                ),
+            );
             if let Some(updated_queue) = self.queue_snapshot(renderer_location) {
                 queue = updated_queue;
             }
