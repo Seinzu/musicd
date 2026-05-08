@@ -562,7 +562,11 @@ mod tests {
             state.database.count_track_plays(&track_2.id).unwrap_or(0),
             1
         );
-        assert_eq!(backend.cleared_next_count(), 1);
+        assert_eq!(
+            backend.cleared_next_count(),
+            0,
+            "explicitly starting the next entry should not also clear a renderer next slot"
+        );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
     }

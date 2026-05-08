@@ -327,41 +327,16 @@ impl ServiceState {
         current_entry_id: i64,
     ) -> io::Result<()> {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
-            let mut errors = Vec::new();
-            for member in &group.members {
-                let renderer_location = &member.renderer_location;
-                let renderer = match self.resolve_renderer(renderer_location) {
-                    Ok(renderer) => renderer,
-                    Err(error) => {
-                        errors.push(format!("{renderer_location}: {error}"));
-                        continue;
-                    }
-                };
-                if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
-                    continue;
-                }
-                match self
-                    .renderer_backend(renderer_location)?
-                    .clear_next(&renderer)
-                {
-                    Ok(()) => {
-                        let _ = self.mark_renderer_reachable(&renderer);
-                    }
-                    Err(error) => {
-                        let _ = self.mark_group_member_unreachable(renderer_location, &error);
-                        errors.push(format!("{renderer_location}: {error}"));
-                    }
-                }
+            let had_preloaded_next = self
+                .playback_session(group_location)
+                .and_then(|session| session.next_queue_entry_id)
+                .is_some();
+            if had_preloaded_next {
+                self.clear_group_next_queue_entry(group_location, group, "no-successor");
             }
             self.database
                 .mark_next_queue_entry_preloaded(group_location, None)?;
-            if errors.is_empty() {
-                return Ok(());
-            }
-            return Err(io::Error::other(format!(
-                "group next-track clear failed: {}",
-                errors.join("; ")
-            )));
+            return Ok(());
         };
 
         if self
@@ -417,6 +392,65 @@ impl ServiceState {
             "group next-track preload failed: {}",
             errors.join("; ")
         )))
+    }
+
+    fn clear_group_next_queue_entry(
+        &self,
+        group_location: &str,
+        group: &RendererGroup,
+        reason: &str,
+    ) {
+        for member in &group.members {
+            let renderer_location = &member.renderer_location;
+            let renderer = match self.resolve_renderer(renderer_location) {
+                Ok(renderer) => renderer,
+                Err(error) => {
+                    self.debug_log(
+                        "group-clear-next-failed",
+                        format!(
+                            "group={} renderer={} reason={} resolve_error={}",
+                            group_location, renderer_location, reason, error
+                        ),
+                    );
+                    continue;
+                }
+            };
+            if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
+                continue;
+            }
+            match self.renderer_backend(renderer_location) {
+                Ok(backend) => match backend.clear_next(&renderer) {
+                    Ok(()) => {
+                        let _ = self.mark_renderer_reachable(&renderer);
+                        self.debug_log(
+                            "group-clear-next",
+                            format!(
+                                "group={} renderer={} reason={}",
+                                group_location, renderer_location, reason
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        self.debug_log(
+                            "group-clear-next-failed",
+                            format!(
+                                "group={} renderer={} reason={} error={}",
+                                group_location, renderer_location, reason, error
+                            ),
+                        );
+                    }
+                },
+                Err(error) => {
+                    self.debug_log(
+                        "group-clear-next-failed",
+                        format!(
+                            "group={} renderer={} reason={} backend_error={}",
+                            group_location, renderer_location, reason, error
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     pub(crate) fn poll_renderer_group_queue(&self, group_location: &str) -> io::Result<()> {
@@ -904,6 +938,20 @@ impl ServiceState {
             track_uri,
             next_track.duration_seconds,
         )?;
+        if next_queue_entry_after(queue, next_entry.id).is_none() {
+            match self.load_renderer_group_for_queue(group_location) {
+                Ok(group) => {
+                    self.clear_group_next_queue_entry(group_location, &group, "adopted-final")
+                }
+                Err(error) => self.debug_log(
+                    "group-clear-next-failed",
+                    format!(
+                        "group={} reason=adopted-final load_group_error={}",
+                        group_location, error
+                    ),
+                ),
+            }
+        }
         Ok(true)
     }
 

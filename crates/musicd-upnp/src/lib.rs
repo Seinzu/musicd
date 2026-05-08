@@ -327,6 +327,10 @@ pub fn clear_next_av_transport_uri(control_url: &str) -> io::Result<()> {
         Some(body.as_bytes()),
     )?;
 
+    if is_invalid_args_fault(&response) {
+        return Ok(());
+    }
+
     expect_successful_soap("SetNextAVTransportURI", response)
 }
 
@@ -583,6 +587,15 @@ fn expect_successful_soap(action: &str, response: HttpResponse) -> io::Result<()
             preview.trim()
         ),
     ))
+}
+
+fn is_invalid_args_fault(response: &HttpResponse) -> bool {
+    if response.status_code < 400 {
+        return false;
+    }
+    let body = String::from_utf8_lossy(&response.body);
+    body.contains("<errorCode>402</errorCode>")
+        || body.contains("<errorDescription>Invalid args</errorDescription>")
 }
 
 fn av_transport_action(control_url: &str, action: &str, body: &[u8]) -> io::Result<HttpResponse> {
@@ -1182,10 +1195,10 @@ mod tests {
         build_get_transport_info_envelope, build_next_envelope, build_pause_envelope,
         build_play_envelope, build_previous_envelope, build_seek_envelope,
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
-        build_stop_envelope, format_upnp_time, is_transition_not_available_fault,
-        parse_device_description, parse_http_url, parse_position_info_response,
-        parse_service_actions, parse_ssdp_response, parse_transport_info_response, resolve_url,
-        select_renderer_device_section,
+        build_stop_envelope, format_upnp_time, is_invalid_args_fault,
+        is_transition_not_available_fault, parse_device_description, parse_http_url,
+        parse_position_info_response, parse_service_actions, parse_ssdp_response,
+        parse_transport_info_response, resolve_url, select_renderer_device_section,
     };
     use std::collections::HashMap;
 
@@ -1513,5 +1526,30 @@ mod tests {
         };
 
         assert!(is_transition_not_available_fault(&response));
+    }
+
+    #[test]
+    fn detects_invalid_args_fault() {
+        let response = super::HttpResponse {
+            status_code: 500,
+            reason_phrase: "SOAP Error".to_string(),
+            headers: HashMap::new(),
+            body: br#"<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <s:Fault>
+      <detail>
+        <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+          <errorCode>402</errorCode>
+          <errorDescription>Invalid args</errorDescription>
+        </UPnPError>
+      </detail>
+    </s:Fault>
+  </s:Body>
+</s:Envelope>"#
+                .to_vec(),
+        };
+
+        assert!(is_invalid_args_fault(&response));
     }
 }
