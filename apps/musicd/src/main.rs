@@ -1,4 +1,5 @@
 mod artwork;
+mod assets;
 mod cli;
 mod db;
 mod handlers;

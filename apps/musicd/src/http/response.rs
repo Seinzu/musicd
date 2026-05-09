@@ -113,6 +113,30 @@ pub(crate) fn respond_text(
     )
 }
 
+/// Serve a static asset whose URL carries a version query string. The
+/// `Cache-Control: ... immutable` directive lets browsers skip even
+/// conditional revalidation; cache busts via the version-bumped URL.
+pub(crate) fn respond_asset(
+    writer: &mut ResponseWriter,
+    content_type: &str,
+    body: &[u8],
+    head_only: bool,
+) -> io::Result<()> {
+    write_response_owned(
+        writer,
+        "200 OK",
+        &[
+            ("Content-Type".to_string(), content_type.to_string()),
+            ("Content-Length".to_string(), body.len().to_string()),
+            (
+                "Cache-Control".to_string(),
+                "public, max-age=31536000, immutable".to_string(),
+            ),
+        ],
+        if head_only { None } else { Some(body) },
+    )
+}
+
 pub(crate) fn respond_json(
     writer: &mut ResponseWriter,
     status: &str,

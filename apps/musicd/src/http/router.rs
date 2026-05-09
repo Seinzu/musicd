@@ -37,9 +37,11 @@ use crate::views::{
     render_album_detail_page, render_home_page, render_queue_panel_html, render_track_detail_page,
 };
 
+use crate::assets;
+
 use super::ResponseWriter;
 use super::request::{HttpRequest, request_value};
-use super::response::{respond_method_not_allowed, respond_not_found, respond_text};
+use super::response::{respond_asset, respond_method_not_allowed, respond_not_found, respond_text};
 
 pub(crate) fn handle_service_request(
     writer: &mut ResponseWriter,
@@ -64,6 +66,34 @@ pub(crate) fn handle_service_request(
             b"ok",
             request.method == "HEAD",
         ),
+        ("GET", "/assets/home.css") | ("HEAD", "/assets/home.css") => respond_asset(
+            writer,
+            "text/css; charset=utf-8",
+            assets::HOME_CSS.as_bytes(),
+            request.method == "HEAD",
+        ),
+        ("GET", "/assets/home.js") | ("HEAD", "/assets/home.js") => respond_asset(
+            writer,
+            "text/javascript; charset=utf-8",
+            assets::HOME_JS.as_bytes(),
+            request.method == "HEAD",
+        ),
+        ("GET", "/assets/album_detail.css") | ("HEAD", "/assets/album_detail.css") => {
+            respond_asset(
+                writer,
+                "text/css; charset=utf-8",
+                assets::ALBUM_DETAIL_CSS.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/assets/track_detail.css") | ("HEAD", "/assets/track_detail.css") => {
+            respond_asset(
+                writer,
+                "text/css; charset=utf-8",
+                assets::TRACK_DETAIL_CSS.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
         ("GET", "/metrics") | ("HEAD", "/metrics") => {
             let body = render_metrics_text(&state);
             respond_text(
