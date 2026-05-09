@@ -2209,6 +2209,7 @@ mod tests {
                 discovery_timeout_ms: 1500,
                 default_renderer_location: None,
                 debug_mode: false,
+                skip_startup_scan: false,
             },
             database,
             library: arc_swap::ArcSwap::from_pointee(Library::build(

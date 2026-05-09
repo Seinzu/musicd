@@ -59,6 +59,7 @@ pub struct AppConfig {
     pub discovery_timeout_ms: u64,
     pub default_renderer_location: Option<String>,
     pub debug_mode: bool,
+    pub skip_startup_scan: bool,
 }
 
 impl AppConfig {
@@ -88,6 +89,7 @@ impl AppConfig {
                 .unwrap_or(1500),
             default_renderer_location: std::env::var("MUSICD_DEFAULT_RENDERER_LOCATION").ok(),
             debug_mode: parse_bool_env("MUSICD_DEBUG"),
+            skip_startup_scan: parse_bool_env("MUSICD_SKIP_STARTUP_SCAN"),
         }
     }
 
@@ -193,6 +195,7 @@ mod tests {
             discovery_timeout_ms: 1500,
             default_renderer_location: None,
             debug_mode: false,
+            skip_startup_scan: false,
         };
 
         assert_eq!(config.resolved_base_url(), "http://192.168.1.20:8787");

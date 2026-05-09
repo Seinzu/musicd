@@ -76,12 +76,29 @@ impl ServiceState {
             events: PlaybackEvents::new(),
         };
 
-        match scan_library(&state.config.library_path, &state.config.config_path) {
-            Ok(tracks) => state.replace_library(tracks)?,
-            Err(error) if state.track_count() > 0 => {
-                eprintln!("library scan failed, continuing with persisted index: {error}");
+        let persisted_track_count = state.track_count();
+        if state.config.skip_startup_scan && persisted_track_count > 0 {
+            eprintln!(
+                "library scan: skipped startup scan, using persisted index with {} tracks",
+                persisted_track_count
+            );
+        } else {
+            if state.config.skip_startup_scan {
+                eprintln!(
+                    "library scan: startup scan requested to skip but persisted index is empty"
+                );
             }
-            Err(error) => return Err(error),
+            eprintln!(
+                "library scan: starting initial scan of {}",
+                state.config.library_path.display()
+            );
+            match scan_library(&state.config.library_path, &state.config.config_path) {
+                Ok(tracks) => state.replace_library(tracks)?,
+                Err(error) if state.track_count() > 0 => {
+                    eprintln!("library scan failed, continuing with persisted index: {error}");
+                }
+                Err(error) => return Err(error),
+            }
         }
 
         state.debug_log(
@@ -193,6 +210,10 @@ impl ServiceState {
     }
 
     pub(crate) fn rescan(&self) -> io::Result<usize> {
+        eprintln!(
+            "library scan: starting manual rescan of {}",
+            self.config.library_path.display()
+        );
         let tracks = scan_library(&self.config.library_path, &self.config.config_path)?;
         let track_count = tracks.len();
         self.replace_library(tracks)?;
@@ -200,13 +221,25 @@ impl ServiceState {
     }
 
     pub(crate) fn replace_library(&self, tracks: Vec<LibraryTrack>) -> io::Result<()> {
+        eprintln!(
+            "library scan: building library index for {} tracks",
+            tracks.len()
+        );
         let overrides = self
             .database
             .list_album_artwork_overrides()
             .unwrap_or_default();
         let library = Library::build(self.config.library_path.clone(), tracks, &overrides);
+        eprintln!(
+            "library scan: saving {} tracks, {} albums, {} artists to database",
+            library.tracks.len(),
+            library.albums.len(),
+            library.artists.len()
+        );
         self.database.save_library(&library)?;
+        eprintln!("library scan: database save complete");
         self.library.store(Arc::new(library));
+        eprintln!("library scan: in-memory library index updated");
         Ok(())
     }
 

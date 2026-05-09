@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
@@ -27,6 +28,13 @@ struct AudioFileEntry {
     file_size: u64,
 }
 
+#[derive(Default)]
+struct ScanProgress {
+    visited_dirs: usize,
+    audio_files: usize,
+    skipped_entries: usize,
+}
+
 pub(crate) fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<LibraryTrack>> {
     if !root.exists() {
         return Err(io::Error::new(
@@ -39,24 +47,68 @@ pub(crate) fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<Li
     fs::create_dir_all(&artwork_cache_dir)?;
 
     let mut audio_files = Vec::new();
-    collect_audio_files(root, &mut audio_files)?;
+    let mut progress = ScanProgress::default();
+    collect_audio_files(root, &mut audio_files, &mut progress)?;
+    eprintln!(
+        "library scan: discovered {} audio files under {} (visited {} directories, skipped {} entries)",
+        audio_files.len(),
+        root.display(),
+        progress.visited_dirs,
+        progress.skipped_entries,
+    );
 
     let artwork_cache: AlbumArtworkCache = Arc::new(Mutex::new(HashMap::new()));
+    eprintln!(
+        "library scan: extracting metadata for {} audio files",
+        audio_files.len()
+    );
+    let processed_files = AtomicUsize::new(0);
 
     let mut tracks: Vec<LibraryTrack> = audio_files
         .par_iter()
-        .filter_map(|file| build_library_track(root, file, &artwork_cache_dir, &artwork_cache))
+        .filter_map(|file| {
+            let track = build_library_track(root, file, &artwork_cache_dir, &artwork_cache);
+            let processed = processed_files.fetch_add(1, Ordering::Relaxed) + 1;
+            if processed == 1 || processed % 250 == 0 || processed == audio_files.len() {
+                eprintln!(
+                    "library scan: metadata extracted for {}/{} files",
+                    processed,
+                    audio_files.len()
+                );
+            }
+            track
+        })
         .collect();
+    eprintln!(
+        "library scan: extracted metadata for {} playable tracks",
+        tracks.len()
+    );
 
     tracks.sort_by(compare_library_tracks);
     Ok(tracks)
 }
 
-fn collect_audio_files(root: &Path, output: &mut Vec<AudioFileEntry>) -> io::Result<()> {
-    walk_dir(root, output)
+fn collect_audio_files(
+    root: &Path,
+    output: &mut Vec<AudioFileEntry>,
+    progress: &mut ScanProgress,
+) -> io::Result<()> {
+    walk_dir(root, output, progress)
 }
 
-fn walk_dir(dir: &Path, output: &mut Vec<AudioFileEntry>) -> io::Result<()> {
+fn walk_dir(
+    dir: &Path,
+    output: &mut Vec<AudioFileEntry>,
+    progress: &mut ScanProgress,
+) -> io::Result<()> {
+    progress.visited_dirs += 1;
+    if progress.visited_dirs == 1 || progress.visited_dirs % 250 == 0 {
+        eprintln!(
+            "library scan: walking directories visited={} audio_files={}",
+            progress.visited_dirs, progress.audio_files
+        );
+    }
+
     let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.path());
 
@@ -67,11 +119,12 @@ fn walk_dir(dir: &Path, output: &mut Vec<AudioFileEntry>) -> io::Result<()> {
         let file_name = file_name.to_string_lossy();
 
         if should_skip_entry(&file_name) {
+            progress.skipped_entries += 1;
             continue;
         }
 
         if metadata.is_dir() {
-            walk_dir(&path, output)?;
+            walk_dir(&path, output, progress)?;
             continue;
         }
 
@@ -79,6 +132,13 @@ fn walk_dir(dir: &Path, output: &mut Vec<AudioFileEntry>) -> io::Result<()> {
             continue;
         }
 
+        progress.audio_files += 1;
+        if progress.audio_files % 1000 == 0 {
+            eprintln!(
+                "library scan: found {} audio files so far",
+                progress.audio_files
+            );
+        }
         output.push(AudioFileEntry {
             path,
             file_size: metadata.len(),
