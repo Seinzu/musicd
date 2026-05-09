@@ -1,0 +1,4 @@
+services:
+  musicd:
+    network_mode: host
+    ports: !reset []

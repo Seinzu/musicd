@@ -155,6 +155,76 @@ cargo run -p musicd -- play-file \
   "Test Track"
 ```
 
+## Run locally with Docker Compose
+
+The repository includes a local Compose setup for running the API from the Docker image with settings loaded from `.env`.
+
+```bash
+cp .env.example .env
+mkdir -p .musicd/config .musicd/music
+docker compose up --build
+```
+
+If you keep machine-specific settings in `.env.local`, use the local wrapper so `.env.local` overrides the defaults:
+
+```bash
+sh scripts/compose-local.sh up --build
+```
+
+By default this serves the API at:
+
+```text
+http://localhost:8787/
+```
+
+Set `MUSICD_LIBRARY_HOST_PATH` in `.env` to point at a real music folder on your machine. If you are testing playback against a real LAN renderer, also set `MUSICD_PUBLIC_BASE_URL` to your computer's LAN URL, for example `http://192.168.1.84:8787`, because the renderer cannot fetch `localhost` from your laptop.
+
+For large or network-mounted libraries, keep `RAYON_NUM_THREADS` low in `.env` while developing. The scanner reads metadata in parallel, and a small value such as `2` is friendlier to Docker Desktop memory and remote filesystems.
+
+The local Compose defaults also set `MUSICD_SKIP_STARTUP_SCAN=true`. Once `.musicd/config/musicd.db` contains a library index, container restarts reuse that index and bind the HTTP server quickly; use the app's rescan action when you actually want to refresh the library.
+To inspect the local SQLite database in a browser, start the optional sqlite-web tools service:
+
+```bash
+sh scripts/compose-local.sh --profile tools up --build
+```
+
+Then open:
+
+```text
+http://localhost:8080/
+```
+
+The database is mounted read-only into sqlite-web. If you change `SQLITE_WEB_HOST_PORT` in `.env` or `.env.local`, use that port instead.
+
+The same `tools` profile also starts a deterministic stub UPnP renderer for local queue and transport testing. It does not play audio, but it exposes a MediaRenderer description, responds to AVTransport SOAP calls, and lets you force renderer state from the host:
+
+```bash
+sh scripts/compose-local.sh --profile tools up --build stub-renderer
+```
+
+From the host, inspect or overwrite its state:
+
+```bash
+curl http://localhost:9091/stub/state
+curl -X POST http://localhost:9091/stub/state \
+  -H 'Content-Type: application/json' \
+  -d '{"transport_state":"PAUSED_PLAYBACK","position_seconds":42}'
+```
+
+When `musicd` is running on the normal Compose bridge network, you can make this the default renderer in `.env.local`:
+
+```text
+MUSICD_DEFAULT_RENDERER_LOCATION=http://stub-renderer:9091/description.xml
+```
+
+That gives the API a stable renderer even when LAN multicast discovery is flaky. If you are using `docker-compose.host.yml` and want to test against the stub instead of a real LAN renderer, use the host-published URL:
+
+```text
+MUSICD_DEFAULT_RENDERER_LOCATION=http://localhost:9091/description.xml
+```
+
+The stub returns a `URLBase` that matches the hostname used for `description.xml`, so either form works as long as `musicd` can reach that URL.
+
 ## Run on Unraid
 
 See [docs/unraid.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/unraid.md) for the recommended Docker packaging model, path mappings, environment variables, and example Unraid settings.

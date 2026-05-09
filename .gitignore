@@ -3,3 +3,6 @@ target/
 local.properties
 **/build/
 *.apk
+.env
+.env.local
+.musicd/

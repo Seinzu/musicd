@@ -1,0 +1,61 @@
+services:
+  musicd:
+    build:
+      context: .
+    image: musicd:local
+    container_name: musicd-local
+    ports:
+      - "${MUSICD_HOST_PORT:-8787}:8787"
+    environment:
+      MUSICD_MODE: "${MUSICD_MODE:-serve}"
+      MUSICD_BIND_ADDR: "${MUSICD_BIND_ADDR:-0.0.0.0:8787}"
+      MUSICD_LIBRARY_PATH: "${MUSICD_LIBRARY_PATH:-/music}"
+      MUSICD_CONFIG_PATH: "${MUSICD_CONFIG_PATH:-/config}"
+      MUSICD_PUBLIC_BASE_URL: "${MUSICD_PUBLIC_BASE_URL:-http://localhost:8787}"
+      MUSICD_INSTANCE_NAME: "${MUSICD_INSTANCE_NAME:-musicd local}"
+      MUSICD_DISCOVERY_TIMEOUT_MS: "${MUSICD_DISCOVERY_TIMEOUT_MS:-2000}"
+      MUSICD_SERVER_DISCOVERY: "${MUSICD_SERVER_DISCOVERY:-true}"
+      MUSICD_DEFAULT_RENDERER_LOCATION: "${MUSICD_DEFAULT_RENDERER_LOCATION:-}"
+      MUSICD_DEBUG: "${MUSICD_DEBUG:-true}"
+      MUSICD_SKIP_STARTUP_SCAN: "${MUSICD_SKIP_STARTUP_SCAN:-true}"
+      RAYON_NUM_THREADS: "${RAYON_NUM_THREADS:-2}"
+    volumes:
+      - "${MUSICD_CONFIG_HOST_PATH:-./.musicd/config}:/config"
+      - "${MUSICD_LIBRARY_HOST_PATH:-./.musicd/music}:/music:ro"
+
+  sqlite-web:
+    image: ghcr.io/coleifer/sqlite-web:latest
+    platform: linux/amd64
+    container_name: musicd-sqlite-web
+    profiles:
+      - tools
+    depends_on:
+      - musicd
+    ports:
+      - "${SQLITE_WEB_HOST_PORT:-8080}:8080"
+    volumes:
+      - "${MUSICD_CONFIG_HOST_PATH:-./.musicd/config}:/data:ro"
+    command:
+      - --read-only
+      - --foreign-keys
+      - musicd.db
+
+  stub-renderer:
+    build:
+      context: .
+      dockerfile: tools/stub-renderer/Dockerfile
+    image: musicd-stub-renderer:local
+    container_name: musicd-stub-renderer
+    profiles:
+      - tools
+    environment:
+      STUB_RENDERER_HTTP_PORT: "9091"
+      STUB_RENDERER_PUBLIC_HOST: "${STUB_RENDERER_PUBLIC_HOST:-stub-renderer}"
+      STUB_RENDERER_PUBLIC_PORT: "${STUB_RENDERER_PUBLIC_PORT:-9091}"
+      STUB_RENDERER_PUBLIC_BASE_URL: "${STUB_RENDERER_PUBLIC_BASE_URL:-http://stub-renderer:9091}"
+      STUB_RENDERER_NAME: "${STUB_RENDERER_NAME:-musicd Stub Renderer}"
+      STUB_RENDERER_STATE: "${STUB_RENDERER_STATE:-STOPPED}"
+      STUB_RENDERER_POSITION_SECONDS: "${STUB_RENDERER_POSITION_SECONDS:-0}"
+      STUB_RENDERER_DURATION_SECONDS: "${STUB_RENDERER_DURATION_SECONDS:-180}"
+    ports:
+      - "${STUB_RENDERER_HOST_PORT:-9091}:9091"
