@@ -47,7 +47,7 @@ pub(crate) fn render_home_page(state: &ServiceState, request: &HttpRequest) -> S
         match album.artwork_url.as_ref() {
             Some(artwork_url) => write!(
                 album_rows,
-                "<img class=\"cover-thumb\" src=\"{}\" alt=\"Artwork for {}\">",
+                "<img loading=\"lazy\" class=\"cover-thumb\" src=\"{}\" alt=\"Artwork for {}\">",
                 EscapeHtml(artwork_url),
                 EscapeHtml(&album.title)
             )
@@ -118,7 +118,7 @@ pub(crate) fn render_home_page(state: &ServiceState, request: &HttpRequest) -> S
         match track.artwork.as_ref() {
             Some(_) => write!(
                 rows,
-                "<img class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
+                "<img loading=\"lazy\" class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
                 EscapeHtml(&track.id),
                 EscapeHtml(&track.album)
             )
