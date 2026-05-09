@@ -884,9 +884,7 @@ pub(crate) fn handle_api_renderer_group_delete_request(
         Err(error) => return api_error(writer, "400 Bad Request", error),
     };
     let inherit_renderer_location = request_value(request, "inherit_renderer_location");
-    match state
-        .delete_renderer_group_by_queue_key(&renderer_location, inherit_renderer_location)
-    {
+    match state.delete_renderer_group_by_queue_key(&renderer_location, inherit_renderer_location) {
         Ok(group) => {
             let body = format!(
                 r#"{{"ok":true,"message":"Renderer group '{}' deleted.","renderer_location":"{}"}}"#,

@@ -445,13 +445,11 @@ impl ServiceState {
         )?;
         if next_queue_entry_after(queue, next_entry.id).is_none() {
             match self.resolve_renderer(renderer_location) {
-                Ok(renderer) => {
-                    self.clear_renderer_next_queue_entry(
-                        renderer_location,
-                        &renderer,
-                        "adopted-final",
-                    )
-                }
+                Ok(renderer) => self.clear_renderer_next_queue_entry(
+                    renderer_location,
+                    &renderer,
+                    "adopted-final",
+                ),
                 Err(error) => self.debug_log(
                     "clear-next-failed",
                     format!(

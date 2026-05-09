@@ -76,11 +76,8 @@ impl ServiceState {
                 // Move (rather than copy) so entry_status / completed_unix /
                 // session state survive — copying via replace_queue would
                 // resurface already-played tracks under "Up Next".
-                self.database.move_queue(
-                    source,
-                    &group_queue_key,
-                    Some(&source_queue.name),
-                )?;
+                self.database
+                    .move_queue(source, &group_queue_key, Some(&source_queue.name))?;
             }
             _ => {
                 self.database
@@ -122,9 +119,9 @@ impl ServiceState {
             .map(|member| member.renderer_location.clone())
             .collect::<Vec<_>>();
         self.check_private_renderer_additions_owned(members, &existing_members, client_id)?;
-        let updated_group =
-            self.database
-                .update_renderer_group(&group_before.id, name, members)?;
+        let updated_group = self
+            .database
+            .update_renderer_group(&group_before.id, name, members)?;
 
         let newly_added: Vec<String> = updated_group
             .members
@@ -663,7 +660,12 @@ impl ServiceState {
 
         eprintln!(
             "[musicd][group-create-sync] group={} source={} entry={} track={} target_position={:?} stream_url={}",
-            group.id, source_location, group_current.id, track.title, target_position, resource.stream_url
+            group.id,
+            source_location,
+            group_current.id,
+            track.title,
+            target_position,
+            resource.stream_url
         );
 
         for member in &group.members {
@@ -674,11 +676,9 @@ impl ServiceState {
                 "[musicd][group-create-sync] group={} member={} target_position={:?} starting catch_up",
                 group.id, member.renderer_location, target_position
             );
-            if let Err(error) = self.catch_up_group_member(
-                &member.renderer_location,
-                &resource,
-                target_position,
-            ) {
+            if let Err(error) =
+                self.catch_up_group_member(&member.renderer_location, &resource, target_position)
+            {
                 eprintln!(
                     "[musicd][group-create-sync] group={} member={} error={}",
                     group.id, member.renderer_location, error
@@ -720,11 +720,8 @@ impl ServiceState {
 
         // Move (rather than copy) so entry_status / completed_unix / session state
         // survive the transfer. Uses the existing queue name unless we want to rename.
-        self.database.move_queue(
-            group_location,
-            inheritor,
-            Some(&group_queue.name),
-        )?;
+        self.database
+            .move_queue(group_location, inheritor, Some(&group_queue.name))?;
 
         eprintln!(
             "[musicd][group-delete-sync] group={} inheritor={} entries={} status={:?}",
