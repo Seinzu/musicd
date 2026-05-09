@@ -86,6 +86,7 @@ Then open `http://<host>:<port>/` in a browser. The page lets you:
 The service also exposes:
 
 - `GET /health`
+- `GET /description.xml`
 - `GET /metrics`
 - `GET /api/server`
 - `GET /api/renderers`
@@ -130,6 +131,12 @@ Discover renderers:
 
 ```bash
 cargo run -p musicd -- discover
+```
+
+Discover musicd servers:
+
+```bash
+cargo run -p musicd -- discover-servers
 ```
 
 Inspect a renderer from its SSDP `LOCATION` URL:
@@ -182,6 +189,29 @@ Set `MUSICD_LIBRARY_HOST_PATH` in `.env` to point at a real music folder on your
 For large or network-mounted libraries, keep `RAYON_NUM_THREADS` low in `.env` while developing. The scanner reads metadata in parallel, and a small value such as `2` is friendlier to Docker Desktop memory and remote filesystems.
 
 The local Compose defaults also set `MUSICD_SKIP_STARTUP_SCAN=true`. Once `.musicd/config/musicd.db` contains a library index, container restarts reuse that index and bind the HTTP server quickly; use the app's rescan action when you actually want to refresh the library.
+
+Renderer discovery uses UPnP/SSDP multicast, so Docker's default bridge network may not see LAN renderers. For local discovery and playback testing, enable host networking in Docker Desktop first:
+
+```text
+Docker Desktop -> Settings -> Resources -> Network -> Enable host networking
+```
+
+Then start `musicd` with the host-network override:
+
+```bash
+sh scripts/compose-local.sh -f docker-compose.yml -f docker-compose.host.yml up --build
+```
+
+With host networking, Compose port mappings are disabled and `musicd` binds directly to `MUSICD_BIND_ADDR`, normally `0.0.0.0:8787`.
+
+`musicd` advertises itself for local-network clients using SSDP by default. Clients can search for:
+
+```text
+urn:schemas-musicd-org:device:MusicdServer:1
+```
+
+The SSDP response includes `LOCATION`, `MUSICD-BASE-URL`, and `MUSICD-NAME` headers. The `LOCATION` points at `/description.xml`, and clients should still verify candidates with `GET /api/server`. Set `MUSICD_SERVER_DISCOVERY=false` to disable the advert.
+
 To inspect the local SQLite database in a browser, start the optional sqlite-web tools service:
 
 ```bash

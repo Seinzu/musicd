@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
+use crate::discovery::render_musicd_device_description_xml;
 use crate::handlers::{
     authorize_direct_renderer_access, handle_album_artwork_request,
     handle_api_album_artwork_select_request, handle_api_android_local_completed_request,
@@ -91,6 +92,16 @@ pub(crate) fn handle_service_request(
                 writer,
                 "text/css; charset=utf-8",
                 assets::TRACK_DETAIL_CSS.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/description.xml") | ("HEAD", "/description.xml") => {
+            let body = render_musicd_device_description_xml(&state.config);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/xml; charset=utf-8",
+                body.as_bytes(),
                 request.method == "HEAD",
             )
         }

@@ -2,6 +2,7 @@ mod artwork;
 mod assets;
 mod cli;
 mod db;
+mod discovery;
 mod handlers;
 mod http;
 mod ids;
@@ -2207,6 +2208,7 @@ mod tests {
                 bind_address: "0.0.0.0:7878".to_string(),
                 base_url: "http://192.168.1.10:7878".to_string(),
                 discovery_timeout_ms: 1500,
+                server_discovery_enabled: true,
                 default_renderer_location: None,
                 debug_mode: false,
                 skip_startup_scan: false,

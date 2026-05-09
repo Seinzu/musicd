@@ -57,6 +57,7 @@ pub struct AppConfig {
     pub bind_address: String,
     pub base_url: String,
     pub discovery_timeout_ms: u64,
+    pub server_discovery_enabled: bool,
     pub default_renderer_location: Option<String>,
     pub debug_mode: bool,
     pub skip_startup_scan: bool,
@@ -87,6 +88,7 @@ impl AppConfig {
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(1500),
+            server_discovery_enabled: parse_bool_env_default("MUSICD_SERVER_DISCOVERY", true),
             default_renderer_location: std::env::var("MUSICD_DEFAULT_RENDERER_LOCATION").ok(),
             debug_mode: parse_bool_env("MUSICD_DEBUG"),
             skip_startup_scan: parse_bool_env("MUSICD_SKIP_STARTUP_SCAN"),
@@ -109,6 +111,10 @@ impl AppConfig {
 }
 
 fn parse_bool_env(name: &str) -> bool {
+    parse_bool_env_default(name, false)
+}
+
+fn parse_bool_env_default(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
         .map(|value| {
@@ -117,7 +123,7 @@ fn parse_bool_env(name: &str) -> bool {
                 "1" | "true" | "yes" | "on"
             )
         })
-        .unwrap_or(false)
+        .unwrap_or(default)
 }
 
 fn resolve_public_base_url(configured_base_url: &str, bind_address: &str) -> String {
@@ -193,6 +199,7 @@ mod tests {
             bind_address: "192.168.1.20:8787".to_string(),
             base_url: "auto".to_string(),
             discovery_timeout_ms: 1500,
+            server_discovery_enabled: true,
             default_renderer_location: None,
             debug_mode: false,
             skip_startup_scan: false,

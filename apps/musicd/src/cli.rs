@@ -8,6 +8,7 @@ use std::time::Duration;
 use musicd_core::AppConfig;
 use musicd_upnp::{StreamResource, discover_renderers, inspect_renderer, play_stream};
 
+use crate::discovery::{discover_musicd_servers, spawn_server_discovery_advertiser};
 use crate::http::{ServerMode, serve_tcp};
 use crate::metrics;
 use crate::service::{ServiceState, spawn_queue_worker};
@@ -27,6 +28,13 @@ pub(crate) fn run() -> io::Result<()> {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(1500);
             run_discover(Duration::from_millis(timeout_ms))
+        }
+        Some("discover-servers") => {
+            let timeout_ms = args
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(1500);
+            run_discover_servers(Duration::from_millis(timeout_ms))
         }
         Some("inspect") => {
             let location = required_arg(args.next(), "location URL")?;
@@ -79,6 +87,7 @@ fn run_serve() -> io::Result<()> {
     let track_count = state.track_count();
 
     spawn_queue_worker(Arc::clone(&state));
+    spawn_server_discovery_advertiser(config.clone());
 
     println!("{} service", config.instance_name);
     println!("Library path: {}", config.library_path.display());
@@ -103,6 +112,7 @@ fn run_serve() -> io::Result<()> {
         config.resolved_base_url()
     );
 
+    eprintln!("HTTP server: binding {}", config.bind_address);
     serve_tcp(&config.bind_address, ServerMode::Service(state))
 }
 
@@ -125,6 +135,36 @@ fn run_discover(timeout: Duration) -> io::Result<()> {
             println!("ST: {search_target}");
         }
         if let Some(usn) = renderer.usn {
+            println!("USN: {usn}");
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
+fn run_discover_servers(timeout: Duration) -> io::Result<()> {
+    let servers = discover_musicd_servers(timeout)?;
+    if servers.is_empty() {
+        println!(
+            "No musicd servers discovered within {}ms.",
+            timeout.as_millis()
+        );
+        return Ok(());
+    }
+
+    for server in servers {
+        println!("Location: {}", server.location);
+        if let Some(base_url) = server.base_url {
+            println!("Base URL: {base_url}");
+        }
+        if let Some(name) = server.name {
+            println!("Name: {name}");
+        }
+        if let Some(server_header) = server.server {
+            println!("Server: {server_header}");
+        }
+        if let Some(usn) = server.usn {
             println!("USN: {usn}");
         }
         println!();
@@ -221,6 +261,14 @@ fn print_status() {
     println!("HTTP base URL: {}", config.resolved_base_url());
     println!("Discovery timeout: {}ms", config.discovery_timeout_ms);
     println!(
+        "Server discovery: {}",
+        if config.server_discovery_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
         "Debug mode: {}",
         if config.debug_mode {
             "enabled"
@@ -235,6 +283,7 @@ fn print_status() {
     println!("Commands:");
     println!("- serve");
     println!("- discover [timeout_ms]");
+    println!("- discover-servers [timeout_ms]");
     println!("- inspect <renderer_location_url>");
     println!("- play-url <renderer_location_url> <stream_url> [title]");
     println!("- serve-file <audio_file_path> [bind_addr]");
@@ -255,6 +304,8 @@ fn print_help() {
     println!();
     println!("  discover [timeout_ms]");
     println!("    Send SSDP M-SEARCH and print discovered UPnP media renderers.");
+    println!("  discover-servers [timeout_ms]");
+    println!("    Send SSDP M-SEARCH and print discovered musicd servers.");
     println!();
     println!("  inspect <renderer_location_url>");
     println!("    Fetch the device description and print AVTransport details.");
