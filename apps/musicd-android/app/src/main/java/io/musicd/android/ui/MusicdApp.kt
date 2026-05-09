@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speaker
@@ -94,6 +95,7 @@ import io.musicd.android.data.AlbumArtworkCandidateDto
 import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
+import io.musicd.android.data.DiscoveredServer
 import io.musicd.android.data.QueueEntryDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.TrackSummaryDto
@@ -136,8 +138,13 @@ fun MusicdApp(viewModel: MusicdViewModel) {
             serverName = state.serverName,
             isConnecting = state.isConnecting,
             errorMessage = state.errorMessage,
+            isDiscoveringServers = state.isDiscoveringServers,
+            hasRunServerDiscovery = state.hasRunServerDiscovery,
+            discoveredServers = state.discoveredServers,
             onServerInputChange = viewModel::updateServerInput,
             onConnect = { viewModel.connect() },
+            onDiscoverServers = { viewModel.discoverServers() },
+            onSelectDiscoveredServer = viewModel::selectDiscoveredServer,
         )
         return
     }
@@ -154,6 +161,8 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onConnect = { viewModel.connect() },
         onRetryConnection = viewModel::retryConnection,
         onDisconnectServer = viewModel::disconnectServer,
+        onDiscoverServers = { viewModel.discoverServers() },
+        onSelectDiscoveredServer = viewModel::selectDiscoveredServer,
         onOpenRendererPicker = { viewModel.toggleRendererPicker(true) },
         onDismissRendererPicker = { viewModel.toggleRendererPicker(false) },
         onDismissError = viewModel::dismissError,
@@ -205,6 +214,8 @@ private fun MusicdRoot(
     onConnect: () -> Unit,
     onRetryConnection: () -> Unit,
     onDisconnectServer: () -> Unit,
+    onDiscoverServers: () -> Unit,
+    onSelectDiscoveredServer: (String) -> Unit,
     onOpenRendererPicker: () -> Unit,
     onDismissRendererPicker: () -> Unit,
     onDismissError: () -> Unit,
@@ -258,10 +269,15 @@ private fun MusicdRoot(
                 connectedBaseUrl = state.baseUrl,
                 isConnecting = state.isConnecting,
                 errorMessage = state.errorMessage,
+                isDiscoveringServers = state.isDiscoveringServers,
+                hasRunServerDiscovery = state.hasRunServerDiscovery,
+                discoveredServers = state.discoveredServers,
                 onServerInputChange = onServerInputChange,
                 onConnect = onConnect,
                 onRetry = onRetryConnection,
                 onDisconnect = onDisconnectServer,
+                onDiscoverServers = onDiscoverServers,
+                onSelectDiscoveredServer = onSelectDiscoveredServer,
             )
         }
     }
@@ -552,8 +568,13 @@ private fun ServerSetupScreen(
     serverName: String?,
     isConnecting: Boolean,
     errorMessage: String?,
+    isDiscoveringServers: Boolean,
+    hasRunServerDiscovery: Boolean,
+    discoveredServers: List<DiscoveredServer>,
     onServerInputChange: (String) -> Unit,
     onConnect: () -> Unit,
+    onDiscoverServers: () -> Unit,
+    onSelectDiscoveredServer: (String) -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -594,6 +615,113 @@ private fun ServerSetupScreen(
                 Button(onClick = onConnect, modifier = Modifier.fillMaxWidth(), enabled = !isConnecting) {
                     Text(if (isConnecting) "Connecting..." else "Connect")
                 }
+                Spacer(Modifier.height(20.dp))
+                DiscoveredServersSection(
+                    isDiscovering = isDiscoveringServers,
+                    hasRunDiscovery = hasRunServerDiscovery,
+                    discoveredServers = discoveredServers,
+                    onDiscoverServers = onDiscoverServers,
+                    onSelectDiscoveredServer = onSelectDiscoveredServer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveredServersSection(
+    isDiscovering: Boolean,
+    hasRunDiscovery: Boolean,
+    discoveredServers: List<DiscoveredServer>,
+    onDiscoverServers: () -> Unit,
+    onSelectDiscoveredServer: (String) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Servers on this network",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            if (isDiscovering) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                TextButton(onClick = onDiscoverServers) {
+                    Icon(Icons.Rounded.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(6.dp))
+                    Text(if (hasRunDiscovery) "Search again" else "Find servers")
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        when {
+            discoveredServers.isNotEmpty() -> {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    discoveredServers.forEach { server ->
+                        DiscoveredServerRow(
+                            server = server,
+                            onSelect = { onSelectDiscoveredServer(server.baseUrl) },
+                        )
+                    }
+                }
+            }
+            isDiscovering -> {
+                Text(
+                    "Looking for musicd servers…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            hasRunDiscovery -> {
+                Text(
+                    "No servers responded. Make sure the device is on the same Wi-Fi network as your musicd server.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            else -> {
+                Text(
+                    "Search for musicd servers on your local network.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveredServerRow(
+    server: DiscoveredServer,
+    onSelect: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onSelect,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Icon(Icons.Rounded.Wifi, contentDescription = null, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.size(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                server.name?.takeIf { it.isNotBlank() } ?: server.baseUrl,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!server.name.isNullOrBlank()) {
+                Text(
+                    server.baseUrl,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -1348,10 +1476,15 @@ private fun ServerEditorSheet(
     connectedBaseUrl: String,
     isConnecting: Boolean,
     errorMessage: String?,
+    isDiscoveringServers: Boolean,
+    hasRunServerDiscovery: Boolean,
+    discoveredServers: List<DiscoveredServer>,
     onServerInputChange: (String) -> Unit,
     onConnect: () -> Unit,
     onRetry: () -> Unit,
     onDisconnect: () -> Unit,
+    onDiscoverServers: () -> Unit,
+    onSelectDiscoveredServer: (String) -> Unit,
 ) {
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
         Text("Server", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
@@ -1397,6 +1530,14 @@ private fun ServerEditorSheet(
         OutlinedButton(onClick = onRetry, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
             Text("Retry current server")
         }
+        Spacer(Modifier.height(16.dp))
+        DiscoveredServersSection(
+            isDiscovering = isDiscoveringServers,
+            hasRunDiscovery = hasRunServerDiscovery,
+            discoveredServers = discoveredServers,
+            onDiscoverServers = onDiscoverServers,
+            onSelectDiscoveredServer = onSelectDiscoveredServer,
+        )
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
             Text("Disconnect")

@@ -10,6 +10,7 @@ import io.musicd.android.data.AlbumArtworkCandidateDto
 import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
+import io.musicd.android.data.DiscoveredServer
 import io.musicd.android.data.MusicdApiException
 import io.musicd.android.data.MusicdRepository
 import io.musicd.android.data.MutationResponseDto
@@ -78,6 +79,9 @@ data class MusicdUiState(
     val isConnecting: Boolean = false,
     val isLoading: Boolean = false,
     val isDiscovering: Boolean = false,
+    val isDiscoveringServers: Boolean = false,
+    val discoveredServers: List<DiscoveredServer> = emptyList(),
+    val hasRunServerDiscovery: Boolean = false,
     val errorMessage: String? = null,
     val warningMessage: String? = null,
     val infoMessage: String? = null,
@@ -98,7 +102,44 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         val savedBaseUrl = repository.loadBaseUrl()
         if (savedBaseUrl.isNotBlank()) {
             connect(savedBaseUrl)
+        } else {
+            discoverServers(auto = true)
         }
+    }
+
+    fun discoverServers(auto: Boolean = false) {
+        if (uiState.value.isDiscoveringServers) return
+        if (auto && uiState.value.hasRunServerDiscovery) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isDiscoveringServers = true,
+                    hasRunServerDiscovery = true,
+                    errorMessage = if (auto) it.errorMessage else null,
+                )
+            }
+            val results = runCatching { repository.discoverServers() }
+                .getOrDefault(emptyList())
+            _uiState.update { state ->
+                state.copy(
+                    isDiscoveringServers = false,
+                    discoveredServers = results,
+                    infoMessage = if (auto || state.connected) {
+                        state.infoMessage
+                    } else if (results.isEmpty()) {
+                        "No musicd servers found on this network."
+                    } else {
+                        state.infoMessage
+                    },
+                )
+            }
+        }
+    }
+
+    fun selectDiscoveredServer(baseUrl: String) {
+        if (baseUrl.isBlank()) return
+        _uiState.update { it.copy(serverInput = baseUrl) }
+        connect(baseUrl)
     }
 
     fun updateServerInput(value: String) {

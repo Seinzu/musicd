@@ -12,8 +12,12 @@ import java.util.UUID
 class MusicdRepository(
     context: Context,
     private val api: MusicdApi = MusicdApi(),
+    private val discovery: MusicdDiscovery = MusicdDiscovery(context),
 ) {
     private val prefs = context.getSharedPreferences("musicd_android", Context.MODE_PRIVATE)
+
+    suspend fun discoverServers(timeoutMillis: Long = MusicdDiscovery.DEFAULT_TIMEOUT_MS): List<DiscoveredServer> =
+        discovery.discoverServers(timeoutMillis)
 
     fun loadBaseUrl(): String = prefs.getString(KEY_BASE_URL, "").orEmpty()
 
