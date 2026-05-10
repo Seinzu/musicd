@@ -82,7 +82,7 @@ pub(crate) fn render_musicd_device_description_xml(config: &AppConfig) -> String
   <device>
     <deviceType>{}</deviceType>
     <friendlyName>{}</friendlyName>
-    <manufacturer>musicd</manufacturer>
+    <manufacturer>Apodixis</manufacturer>
     <modelName>musicd server</modelName>
     <modelNumber>{}</modelNumber>
     <UDN>{}</UDN>
