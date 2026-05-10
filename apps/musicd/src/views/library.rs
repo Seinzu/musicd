@@ -130,7 +130,9 @@ fn render_albums_section(
 
     let renderer_location_escaped = html_escape(renderer_location);
     let mut rows = String::new();
-    for album in library.albums.iter() {
+    let mut albums: Vec<_> = library.albums.iter().collect();
+    albums.sort_by(|a, b| a.title.cmp(&b.title));
+    for album in albums {
         let mut search = album.title.to_lowercase();
         search.push(' ');
         search.push_str(&album.artist.to_lowercase());

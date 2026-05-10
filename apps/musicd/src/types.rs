@@ -23,7 +23,7 @@ pub(crate) struct LibraryTrack {
     pub(crate) metadata: TrackMetadata,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct AlbumSummary {
     pub(crate) id: String,
     pub(crate) artist_id: String,
@@ -48,7 +48,7 @@ pub(crate) struct ArtistSummary {
     pub(crate) first_album_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct TrackArtwork {
     pub(crate) cache_key: String,
     pub(crate) source: String,
@@ -68,7 +68,7 @@ pub(crate) struct TrackMetadata {
     pub(crate) genres: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub(crate) struct AlbumMetadata {
     pub(crate) musicbrainz_release_id: Option<String>,
     pub(crate) musicbrainz_release_group_id: Option<String>,
