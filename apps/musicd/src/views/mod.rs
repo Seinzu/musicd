@@ -1,11 +1,14 @@
 mod album_detail;
 mod error;
-mod home;
 pub(crate) mod json;
-mod queue_panel;
+mod layout;
+mod library;
+mod queue;
 mod track_detail;
+mod welcome;
 
 pub(crate) use album_detail::render_album_detail_page;
-pub(crate) use home::render_home_page;
-pub(crate) use queue_panel::render_queue_panel_html;
+pub(crate) use library::render_library_page;
+pub(crate) use queue::{render_queue_page, render_queue_panel_html};
 pub(crate) use track_detail::render_track_detail_page;
+pub(crate) use welcome::render_welcome_page;

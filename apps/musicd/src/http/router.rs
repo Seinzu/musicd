@@ -35,7 +35,8 @@ use crate::views::json::{
     render_server_json, render_session_json, render_track_detail_json, render_tracks_json,
 };
 use crate::views::{
-    render_album_detail_page, render_home_page, render_queue_panel_html, render_track_detail_page,
+    render_album_detail_page, render_library_page, render_queue_page, render_queue_panel_html,
+    render_track_detail_page, render_welcome_page,
 };
 
 use crate::assets;
@@ -51,7 +52,27 @@ pub(crate) fn handle_service_request(
 ) -> io::Result<()> {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") | ("HEAD", "/") => {
-            let body = render_home_page(&state, request);
+            let body = render_welcome_page(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "text/html; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/library") | ("HEAD", "/library") => {
+            let body = render_library_page(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "text/html; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/queue") | ("HEAD", "/queue") => {
+            let body = render_queue_page(&state, request);
             respond_text(
                 writer,
                 "200 OK",
