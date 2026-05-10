@@ -77,14 +77,21 @@ data class TrackSummaryDto(
 )
 
 @Serializable
+data class AlbumMetadataDto(
+    @SerialName("release_date") val releaseDate: String,
+)
+
+@Serializable
 data class AlbumSummaryDto(
     val id: String,
     val title: String,
     val artist: String,
     @SerialName("track_count") val trackCount: Int,
     @SerialName("first_track_id") val firstTrackId: String,
-    @SerialName("artwork_url") val artworkUrl: String,
+    @SerialName("artwork_url") val artworkUrl: String = "",
 )
+
+
 
 @Serializable
 data class ArtistSummaryDto(
@@ -101,9 +108,10 @@ data class AlbumDetailDto(
     val id: String,
     val title: String,
     val artist: String,
+    val metadata: AlbumMetadataDto,
     @SerialName("track_count") val trackCount: Int,
     @SerialName("first_track_id") val firstTrackId: String,
-    @SerialName("artwork_url") val artworkUrl: String,
+    @SerialName("artwork_url") val artworkUrl: String = "",
     val tracks: List<TrackSummaryDto> = emptyList(),
 )
 
@@ -244,7 +252,10 @@ sealed class MusicdApiException(
 
 class MusicdApi(
     private val client: OkHttpClient = OkHttpClient(),
-    private val json: Json = Json { ignoreUnknownKeys = true },
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        coerceInputValues = true
+                                  },
 ) {
     suspend fun getServerInfo(baseUrl: String): ServerInfoDto =
         get("$baseUrl/api/server")
