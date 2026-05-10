@@ -12,11 +12,11 @@ use lofty::tag::{Accessor, ItemKey, Tag};
 use rayon::prelude::*;
 
 use crate::artwork::{EmbeddedPicture, resolve_track_artwork};
-use crate::ids::{stable_album_id, stable_track_id};
+use crate::ids::{stable_album_id_from_folder, stable_album_id_from_release, stable_track_id};
 use crate::types::{LibraryTrack, ParsedTrackTags, TrackArtwork, TrackMetadata};
 use crate::util::{
     component_to_string, infer_artist_and_album, infer_disc_and_track_numbers, infer_mime_type,
-    inferred_title, is_supported_audio_file, should_skip_entry,
+    inferred_title, is_supported_audio_file, looks_like_disc_folder, should_skip_entry,
 };
 
 use super::sort::compare_library_tracks;
@@ -186,7 +186,49 @@ fn build_library_track(
     let track_number = parsed_tags.track_number.or(fallback_track_number);
     let mime_type = infer_mime_type(path).to_string();
     let id = stable_track_id(&relative_path);
-    let album_id = stable_album_id(&artist, &album);
+
+    let album_artist = parsed_tags
+        .album_artist
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            if parsed_tags.compilation.unwrap_or(false) {
+                Some("Various Artists".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| artist.clone());
+
+    let album_id = parsed_tags
+        .metadata
+        .musicbrainz_release_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(stable_album_id_from_release)
+        .unwrap_or_else(|| {
+            let parent_is_disc = {
+                let len = relative_components.len();
+                len >= 2
+                    && relative_components
+                        .get(len - 2)
+                        .map(|value| looks_like_disc_folder(value))
+                        .unwrap_or(false)
+            };
+            let album_folder = if parent_is_disc && relative_components.len() >= 3 {
+                relative_components
+                    .get(relative_components.len() - 3)
+                    .cloned()
+            } else {
+                relative_components
+                    .len()
+                    .checked_sub(2)
+                    .and_then(|idx| relative_components.get(idx).cloned())
+            };
+            let folder = album_folder.unwrap_or_else(|| album.clone());
+
+            stable_album_id_from_folder(&folder)
+        });
 
     let artwork = resolve_album_artwork(artwork_cache, &album_id, || {
         resolve_track_artwork(
@@ -205,6 +247,7 @@ fn build_library_track(
         title,
         artist,
         album,
+        album_artist,
         disc_number,
         track_number,
         duration_seconds: parsed_tags.duration_seconds,
@@ -254,6 +297,9 @@ fn extract_tags(tagged_file: &TaggedFile) -> ParsedTrackTags {
         title: tag.title().map(|value| value.into_owned()),
         artist: tag.artist().map(|value| value.into_owned()),
         album: tag.album().map(|value| value.into_owned()),
+        album_artist: tag_text(tag, ItemKey::AlbumArtist),
+        compilation: tag_text(tag, ItemKey::FlagCompilation)
+            .map(|value| value == "1"),
         disc_number: tag.disk(),
         track_number: tag.track(),
         duration_seconds: {

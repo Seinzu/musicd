@@ -53,6 +53,7 @@ impl Database {
                     title TEXT NOT NULL,
                     artist TEXT NOT NULL,
                     album TEXT NOT NULL,
+                    album_artist TEXT NOT NULL DEFAULT '',
                     disc_number INTEGER,
                     track_number INTEGER,
                     duration_seconds INTEGER,
@@ -251,6 +252,7 @@ impl Database {
         ensure_column(&connection, "tracks", "release_country", "TEXT")?;
         ensure_column(&connection, "tracks", "release_type", "TEXT")?;
         ensure_column(&connection, "tracks", "genres_json", "TEXT")?;
+        ensure_column(&connection, "tracks", "album_artist", "TEXT NOT NULL DEFAULT ''")?;
         ensure_column(&connection, "albums", "artist_id", "TEXT")?;
         ensure_column(&connection, "albums", "title", "TEXT")?;
         ensure_column(&connection, "albums", "artist_name", "TEXT")?;

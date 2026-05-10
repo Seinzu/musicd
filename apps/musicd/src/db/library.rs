@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use rusqlite::{Connection, params};
 
-use crate::ids::stable_album_id;
+use crate::ids::stable_album_id_from_folder;
 use crate::library::{Library, build_album_summaries, build_artist_summaries_from_albums};
 use crate::types::{AlbumArtworkOverride, LibraryTrack, TrackArtwork, TrackMetadata};
 #[cfg(test)]
@@ -30,7 +30,7 @@ impl Database {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT id, album_id, title, artist, album, disc_number, track_number,
+                "SELECT id, album_id, title, artist, album, album_artist, disc_number, track_number,
                         duration_seconds, relative_path, path, mime_type, file_size,
                         artwork_cache_key, artwork_source, artwork_mime_type,
                         musicbrainz_release_id, musicbrainz_release_group_id,
@@ -38,32 +38,32 @@ impl Database {
                         release_date, original_release_date, release_country,
                         release_type, genres_json
                  FROM tracks
-                 ORDER BY artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
+                 ORDER BY album_artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
             )
             .map_err(db_error)?;
         let rows = statement
             .query_map([], |row| {
-                let artist: String = row.get(3)?;
                 let album: String = row.get(4)?;
                 Ok(LibraryTrack {
                     id: row.get(0)?,
                     album_id: row
                         .get::<_, Option<String>>(1)?
-                        .unwrap_or_else(|| stable_album_id(&artist, &album)),
+                        .unwrap_or_else(|| stable_album_id_from_folder(&album)),
                     title: row.get(2)?,
-                    artist,
+                    artist: row.get(3)?,
                     album,
-                    disc_number: row.get(5)?,
-                    track_number: row.get(6)?,
-                    duration_seconds: row.get(7)?,
-                    relative_path: row.get(8)?,
-                    path: PathBuf::from(row.get::<_, String>(9)?),
-                    mime_type: row.get(10)?,
-                    file_size: row.get(11)?,
+                    album_artist: row.get::<_, String>(5)?.trim().to_string(),
+                    disc_number: row.get(6)?,
+                    track_number: row.get(7)?,
+                    duration_seconds: row.get(8)?,
+                    relative_path: row.get(9)?,
+                    path: PathBuf::from(row.get::<_, String>(10)?),
+                    mime_type: row.get(11)?,
+                    file_size: row.get(12)?,
                     artwork: match (
-                        row.get::<_, Option<String>>(12)?,
                         row.get::<_, Option<String>>(13)?,
                         row.get::<_, Option<String>>(14)?,
+                        row.get::<_, Option<String>>(15)?,
                     ) {
                         (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
                             cache_key,
@@ -73,15 +73,15 @@ impl Database {
                         _ => None,
                     },
                     metadata: TrackMetadata {
-                        musicbrainz_release_id: row.get(15)?,
-                        musicbrainz_release_group_id: row.get(16)?,
-                        musicbrainz_recording_id: row.get(17)?,
-                        musicbrainz_release_track_id: row.get(18)?,
-                        release_date: row.get(19)?,
-                        original_release_date: row.get(20)?,
-                        release_country: row.get(21)?,
-                        release_type: row.get(22)?,
-                        genres: parse_genres_json(row.get(23)?),
+                        musicbrainz_release_id: row.get(16)?,
+                        musicbrainz_release_group_id: row.get(17)?,
+                        musicbrainz_recording_id: row.get(18)?,
+                        musicbrainz_release_track_id: row.get(19)?,
+                        release_date: row.get(20)?,
+                        original_release_date: row.get(21)?,
+                        release_country: row.get(22)?,
+                        release_type: row.get(23)?,
+                        genres: parse_genres_json(row.get(24)?),
                     },
                 })
             })
@@ -115,14 +115,14 @@ impl Database {
             let mut statement = transaction
                 .prepare(
                     "INSERT INTO tracks
-                     (id, album_id, title, artist, album, disc_number, track_number,
+                     (id, album_id, title, artist, album, album_artist, disc_number, track_number,
                       duration_seconds, relative_path, path, mime_type, file_size,
                       artwork_cache_key, artwork_source, artwork_mime_type,
                       musicbrainz_release_id, musicbrainz_release_group_id,
                       musicbrainz_recording_id, musicbrainz_release_track_id,
                       release_date, original_release_date, release_country,
                       release_type, genres_json)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
@@ -144,6 +144,7 @@ impl Database {
                         track.title,
                         track.artist,
                         track.album,
+                        track.album_artist,
                         track.disc_number,
                         track.track_number,
                         track.duration_seconds,
@@ -349,7 +350,7 @@ pub(super) fn load_tracks_from_connection(
 ) -> io::Result<Vec<LibraryTrack>> {
     let mut statement = connection
         .prepare(
-            "SELECT id, album_id, title, artist, album, disc_number, track_number,
+            "SELECT id, album_id, title, artist, album, album_artist, disc_number, track_number,
                     duration_seconds, relative_path, path, mime_type, file_size,
                     artwork_cache_key, artwork_source, artwork_mime_type,
                     musicbrainz_release_id, musicbrainz_release_group_id,
@@ -357,32 +358,32 @@ pub(super) fn load_tracks_from_connection(
                     release_date, original_release_date, release_country,
                     release_type, genres_json
              FROM tracks
-             ORDER BY artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
+             ORDER BY album_artist, album, COALESCE(disc_number, 0), COALESCE(track_number, 0), title, relative_path",
         )
         .map_err(db_error)?;
     let rows = statement
         .query_map([], |row| {
-            let artist: String = row.get(3)?;
             let album: String = row.get(4)?;
             Ok(LibraryTrack {
                 id: row.get(0)?,
                 album_id: row
                     .get::<_, Option<String>>(1)?
-                    .unwrap_or_else(|| stable_album_id(&artist, &album)),
+                    .unwrap_or_else(|| stable_album_id_from_folder(&album)),
                 title: row.get(2)?,
-                artist,
+                artist: row.get(3)?,
                 album,
-                disc_number: row.get(5)?,
-                track_number: row.get(6)?,
-                duration_seconds: row.get(7)?,
-                relative_path: row.get(8)?,
-                path: PathBuf::from(row.get::<_, String>(9)?),
-                mime_type: row.get(10)?,
-                file_size: row.get(11)?,
+                album_artist: row.get::<_, String>(5)?.trim().to_string(),
+                disc_number: row.get(6)?,
+                track_number: row.get(7)?,
+                duration_seconds: row.get(8)?,
+                relative_path: row.get(9)?,
+                path: PathBuf::from(row.get::<_, String>(10)?),
+                mime_type: row.get(11)?,
+                file_size: row.get(12)?,
                 artwork: match (
-                    row.get::<_, Option<String>>(12)?,
                     row.get::<_, Option<String>>(13)?,
                     row.get::<_, Option<String>>(14)?,
+                    row.get::<_, Option<String>>(15)?,
                 ) {
                     (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
                         cache_key,
@@ -392,15 +393,15 @@ pub(super) fn load_tracks_from_connection(
                     _ => None,
                 },
                 metadata: TrackMetadata {
-                    musicbrainz_release_id: row.get(15)?,
-                    musicbrainz_release_group_id: row.get(16)?,
-                    musicbrainz_recording_id: row.get(17)?,
-                    musicbrainz_release_track_id: row.get(18)?,
-                    release_date: row.get(19)?,
-                    original_release_date: row.get(20)?,
-                    release_country: row.get(21)?,
-                    release_type: row.get(22)?,
-                    genres: parse_genres_json(row.get(23)?),
+                    musicbrainz_release_id: row.get(16)?,
+                    musicbrainz_release_group_id: row.get(17)?,
+                    musicbrainz_recording_id: row.get(18)?,
+                    musicbrainz_release_track_id: row.get(19)?,
+                    release_date: row.get(20)?,
+                    original_release_date: row.get(21)?,
+                    release_country: row.get(22)?,
+                    release_type: row.get(23)?,
+                    genres: parse_genres_json(row.get(24)?),
                 },
             })
         })

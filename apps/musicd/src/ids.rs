@@ -17,6 +17,17 @@ pub(crate) fn stable_album_id(artist: &str, album: &str) -> String {
     ))
 }
 
+pub(crate) fn stable_album_id_from_release(mbid: &str) -> String {
+    stable_track_id(&format!("mb_release:{}", mbid.trim()))
+}
+
+pub(crate) fn stable_album_id_from_folder(folder_path: &str) -> String {
+    stable_track_id(&format!(
+        "folder:{}",
+        folder_path.trim().to_ascii_lowercase()
+    ))
+}
+
 pub(crate) fn stable_artist_id(artist: &str) -> String {
     stable_track_id(&format!("artist:{}", artist.trim().to_ascii_lowercase()))
 }

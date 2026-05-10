@@ -1842,14 +1842,16 @@ mod tests {
     #[test]
     fn merges_artists_with_same_normalized_name() {
         let mut first = sample_track("track-1", Some(1), Some(1), "Song A");
-        first.artist = "Radiohead".to_string();
+        first.artist = "J Dilla".to_string();
+        first.album_artist = "Radiohead".to_string();
         first.album = "In Rainbows".to_string();
-        first.album_id = stable_album_id(&first.artist, &first.album);
+        first.album_id = stable_album_id(&first.album_artist, &first.album);
 
         let mut second = sample_track("track-2", Some(1), Some(1), "Song B");
-        second.artist = " radiohead ".to_string();
+        second.artist = "MF DOOM".to_string();
+        second.album_artist = " radiohead ".to_string();
         second.album = "Kid A".to_string();
-        second.album_id = stable_album_id(&second.artist, &second.album);
+        second.album_id = stable_album_id(&second.album_artist, &second.album);
 
         let artists = build_artist_summaries(&[first, second]);
         assert_eq!(artists.len(), 1);
@@ -1963,8 +1965,9 @@ mod tests {
 
         let mut first = sample_track("track-1", Some(1), Some(1), "15 Step");
         first.artist = "Radiohead".to_string();
+        first.album_artist = "Radiohead".to_string();
         first.album = "In Rainbows".to_string();
-        first.album_id = stable_album_id(&first.artist, &first.album);
+        first.album_id = stable_album_id(&first.album_artist, &first.album);
         first.artwork = Some(TrackArtwork {
             cache_key: "cover.jpg".to_string(),
             source: "Embedded artwork".to_string(),
@@ -1981,13 +1984,15 @@ mod tests {
 
         let mut second = sample_track("track-2", Some(1), Some(2), "Bodysnatchers");
         second.artist = "Radiohead".to_string();
+        second.album_artist = "Radiohead".to_string();
         second.album = "In Rainbows".to_string();
-        second.album_id = stable_album_id(&second.artist, &second.album);
+        second.album_id = stable_album_id(&second.album_artist, &second.album);
 
         let mut third = sample_track("track-3", Some(1), Some(1), "Everything In Its Right Place");
         third.artist = "Radiohead".to_string();
+        third.album_artist = "Radiohead".to_string();
         third.album = "Kid A".to_string();
-        third.album_id = stable_album_id(&third.artist, &third.album);
+        third.album_id = stable_album_id(&third.album_artist, &third.album);
 
         let library = Library::build(
             PathBuf::from("/music"),
@@ -2185,6 +2190,7 @@ mod tests {
             title: title.to_string(),
             artist: "Artist".to_string(),
             album: "Album".to_string(),
+            album_artist: "Artist".to_string(),
             disc_number,
             track_number,
             duration_seconds: Some(180),

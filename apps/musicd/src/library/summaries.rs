@@ -29,9 +29,9 @@ pub(crate) fn build_album_summaries(tracks: &[LibraryTrack]) -> Vec<AlbumSummary
             let artwork = album_tracks.iter().find_map(|track| track.artwork.clone());
             Some(AlbumSummary {
                 id: album_id,
-                artist_id: stable_artist_id(&first_track.artist),
+                artist_id: stable_artist_id(&first_track.album_artist),
                 title: first_track.album.clone(),
-                artist: first_track.artist.clone(),
+                artist: first_track.album_artist.clone(),
                 track_count: album_tracks.len(),
                 artwork_track_id: artwork_track_id.clone(),
                 artwork: artwork.clone(),
@@ -132,7 +132,7 @@ pub(crate) fn build_artist_summaries_from_albums(
     let mut track_counts = HashMap::<String, usize>::new();
     for track in tracks {
         *track_counts
-            .entry(stable_artist_id(&track.artist))
+            .entry(stable_artist_id(&track.album_artist))
             .or_default() += 1;
     }
 
