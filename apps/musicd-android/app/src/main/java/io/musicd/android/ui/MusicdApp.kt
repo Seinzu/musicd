@@ -2565,7 +2565,7 @@ private fun AlbumDetailScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = listOf(album.artist, "${album.trackCount} tracks").joinToString(" · "),
+                        text = listOf(album.artist, album.metadata.releaseDate, "${album.trackCount} tracks").joinToString(" · "),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,

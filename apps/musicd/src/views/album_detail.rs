@@ -89,6 +89,7 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
   <main>
     <header>
       <h1>{}</h1>
+      <p> {} </p>
       <p>{} tracks • {}</p>
       <div class="actions">
         <a href="/">Back to Library</a>
@@ -133,6 +134,7 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
 </html>"#,
         html_escape(&album.title),
         html_escape(&album.title),
+        html_escape(&album.metadata.release_date.unwrap_or("".to_string())),
         album.track_count,
         html_escape(&album.artist),
         message_html,
