@@ -53,11 +53,15 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
     <li><span class="stats-value">{artists}</span><span class="stats-label">Artists</span></li>
   </ul>
   <p class="meta">Library path: {library_path}</p>
-  <form class="control-row" action="/rescan" method="get">
+  <form class="control-row" action="/rescan" method="get" id="rescan_form" data-progress-url="/rescan-progress">
     {renderer_input_hidden}
     <input type="hidden" name="return_to" value="/">
-    <button type="submit" class="secondary">Rescan Library</button>
+    <button type="submit" id="rescan_button" class="secondary">Rescan Library</button>
+    <span id="rescan_status" class="visually-hidden" aria-live="polite"></span>
   </form>
+  <div id="progress_bar_container">
+    <progress id="rescan_progress_bar" value="0" max="100" aria-label="Library rescan progress"></progress>
+  </div>
 </section>"#,
         instance = html_escape(&ctx.instance_name),
         base_url = html_escape(&ctx.base_url),

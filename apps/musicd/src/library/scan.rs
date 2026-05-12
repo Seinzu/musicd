@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
@@ -33,6 +33,16 @@ struct ScanProgress {
     visited_dirs: usize,
     audio_files: usize,
     skipped_entries: usize,
+}
+
+/// Progress event emitted during library scan (for SSE streaming)
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanProgressEvent {
+    pub stage: String,
+    pub current: usize,
+    pub total: Option<usize>,
+    pub percent: Option<u8>,
+    pub message: Option<String>,
 }
 
 pub(crate) fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<LibraryTrack>> {
@@ -96,6 +106,18 @@ fn collect_audio_files(
     walk_dir(root, output, progress)
 }
 
+fn collect_audio_files_with_progress<F>(
+    root: &Path,
+    output: &mut Vec<AudioFileEntry>,
+    progress: &mut ScanProgress,
+    report_progress: &F,
+) -> io::Result<()>
+where
+    F: Fn(ScanProgressEvent) -> io::Result<()> + Sync,
+{
+    walk_dir_with_progress(root, output, progress, report_progress)
+}
+
 fn walk_dir(
     dir: &Path,
     output: &mut Vec<AudioFileEntry>,
@@ -145,6 +167,86 @@ fn walk_dir(
         });
     }
     Ok(())
+}
+
+fn walk_dir_with_progress<F>(
+    dir: &Path,
+    output: &mut Vec<AudioFileEntry>,
+    progress: &mut ScanProgress,
+    report_progress: &F,
+) -> io::Result<()>
+where
+    F: Fn(ScanProgressEvent) -> io::Result<()> + Sync,
+{
+    progress.visited_dirs += 1;
+    if progress.visited_dirs == 1 || progress.visited_dirs % 50 == 0 {
+        eprintln!(
+            "library scan: walking directories visited={} audio_files={}",
+            progress.visited_dirs, progress.audio_files
+        );
+        report_discovery_progress(progress, report_progress)?;
+    }
+
+    let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if should_skip_entry(&file_name) {
+            progress.skipped_entries += 1;
+            continue;
+        }
+
+        if metadata.is_dir() {
+            walk_dir_with_progress(&path, output, progress, report_progress)?;
+            continue;
+        }
+
+        if !is_supported_audio_file(&path) {
+            continue;
+        }
+
+        progress.audio_files += 1;
+        if progress.audio_files == 1 || progress.audio_files % 250 == 0 {
+            eprintln!(
+                "library scan: found {} audio files so far",
+                progress.audio_files
+            );
+            report_discovery_progress(progress, report_progress)?;
+        }
+        output.push(AudioFileEntry {
+            path,
+            file_size: metadata.len(),
+        });
+    }
+    Ok(())
+}
+
+fn report_discovery_progress<F>(progress: &ScanProgress, report_progress: &F) -> io::Result<()>
+where
+    F: Fn(ScanProgressEvent) -> io::Result<()> + Sync,
+{
+    report_progress(ScanProgressEvent {
+        stage: "discovering".to_string(),
+        current: progress.audio_files,
+        total: None,
+        percent: Some(discovery_percent(progress)),
+        message: Some(format!(
+            "Visited {} directories and found {} audio files",
+            progress.visited_dirs, progress.audio_files
+        )),
+    })
+}
+
+fn discovery_percent(progress: &ScanProgress) -> u8 {
+    let directory_score = (progress.visited_dirs as f64 / (progress.visited_dirs as f64 + 100.0))
+        * 12.0;
+    let file_score = (progress.audio_files as f64 / (progress.audio_files as f64 + 1_000.0)) * 8.0;
+    (directory_score + file_score).clamp(1.0, 19.0).round() as u8
 }
 
 fn build_library_track(
@@ -383,4 +485,147 @@ fn extract_embedded_picture(tagged_file: &TaggedFile) -> Option<EmbeddedPicture>
         pic_type: format!("{:?}", picture.pic_type()),
         tag_label,
     })
+}
+
+/// Perform a library scan and report coarse progress as the same scan work runs.
+pub(crate) fn scan_library_with_progress<F>(
+    root: &Path,
+    config_path: &Path,
+    report_progress: F,
+) -> io::Result<Vec<LibraryTrack>>
+where
+    F: Fn(ScanProgressEvent) -> io::Result<()> + Sync,
+{
+    if !root.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("library path does not exist: {}", root.display()),
+        ));
+    }
+
+    let artwork_cache_dir = config_path.join("artwork");
+    fs::create_dir_all(&artwork_cache_dir)?;
+
+    let mut audio_files = Vec::new();
+    let mut progress = ScanProgress::default();
+    collect_audio_files_with_progress(root, &mut audio_files, &mut progress, &report_progress)?;
+
+    report_progress(ScanProgressEvent {
+        stage: "discovering".to_string(),
+        current: audio_files.len(),
+        total: None,
+        percent: Some(20),
+        message: Some(format!(
+            "library scan: discovered {} audio files",
+            audio_files.len()
+        )),
+    })?;
+
+    eprintln!(
+        "library scan: discovered {} audio files under {} (visited {} directories, skipped {} entries)",
+        audio_files.len(),
+        root.display(),
+        progress.visited_dirs,
+        progress.skipped_entries,
+    );
+
+    let artwork_cache: AlbumArtworkCache = Arc::new(Mutex::new(HashMap::new()));
+
+    report_progress(ScanProgressEvent {
+        stage: "extracting_metadata".to_string(),
+        current: 0,
+        total: Some(audio_files.len()),
+        percent: Some(20),
+        message: None,
+    })?;
+
+    eprintln!(
+        "library scan: extracting metadata for {} audio files",
+        audio_files.len()
+    );
+
+    let processed_files = AtomicUsize::new(0);
+    let progress_interval = progress_report_interval(audio_files.len());
+    let progress_failed = AtomicBool::new(false);
+    let progress_error = Mutex::new(None);
+
+    let mut tracks: Vec<LibraryTrack> = audio_files
+        .par_iter()
+        .filter_map(|file| {
+            if progress_failed.load(Ordering::Relaxed) {
+                return None;
+            }
+            let track = build_library_track(root, file, &artwork_cache_dir, &artwork_cache);
+            let processed = processed_files.fetch_add(1, Ordering::Relaxed) + 1;
+
+            if processed == 1 || processed % progress_interval == 0 || processed == audio_files.len()
+            {
+                let event = ScanProgressEvent {
+                    stage: "extracting_metadata".to_string(),
+                    current: processed,
+                    total: Some(audio_files.len()),
+                    percent: Some(metadata_percent(processed, audio_files.len())),
+                    message: None,
+                };
+                if let Err(error) = report_progress(event) {
+                    progress_failed.store(true, Ordering::Relaxed);
+                    let mut guard = progress_error.lock().expect("progress error lock poisoned");
+                    if guard.is_none() {
+                        *guard = Some(error);
+                    }
+                }
+                eprintln!(
+                    "library scan: metadata extracted for {}/{} files",
+                    processed,
+                    audio_files.len()
+                );
+            }
+            track
+        })
+        .collect();
+
+    if let Some(error) = progress_error
+        .into_inner()
+        .expect("progress error lock poisoned")
+    {
+        return Err(error);
+    }
+
+    report_progress(ScanProgressEvent {
+        stage: "building_index".to_string(),
+        current: tracks.len(),
+        total: None,
+        percent: Some(90),
+        message: Some(format!(
+            "library scan: extracted metadata for {} playable tracks",
+            tracks.len()
+        )),
+    })?;
+
+    eprintln!(
+        "library scan: extracted metadata for {} playable tracks",
+        tracks.len()
+    );
+
+    tracks.sort_by(compare_library_tracks);
+    report_progress(ScanProgressEvent {
+        stage: "building_index".to_string(),
+        current: tracks.len(),
+        total: None,
+        percent: Some(93),
+        message: Some("library scan: sorted tracks".to_string()),
+    })?;
+    Ok(tracks)
+}
+
+fn progress_report_interval(total: usize) -> usize {
+    (total / 100).max(1)
+}
+
+fn metadata_percent(processed: usize, total: usize) -> u8 {
+    if total == 0 {
+        return 88;
+    }
+    let progress = processed as f64 / total as f64;
+    (20.0 + progress * 68.0).clamp(20.0, 88.0).round() as u8
 }

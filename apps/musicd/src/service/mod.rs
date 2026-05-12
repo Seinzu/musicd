@@ -5,7 +5,7 @@ use arc_swap::ArcSwap;
 use musicd_core::AppConfig;
 
 use crate::db::Database;
-use crate::library::{Library, scan_library};
+use crate::library::{Library, ScanProgressEvent, scan_library, scan_library_with_progress};
 use crate::metrics;
 use crate::renderer::{RendererBackend, RendererBackends};
 use crate::types::{
@@ -38,6 +38,41 @@ pub(crate) struct ServiceState {
     pub(crate) renderer_backends: RendererBackends,
     pub(crate) metrics: OnceLock<Arc<metrics::Metrics>>,
     pub(crate) events: PlaybackEvents,
+    /// State for tracking concurrent rescans
+    pub(crate) rescan_state: RescanState,
+}
+
+/// State for tracking an active rescan operation
+#[derive(Debug)]
+pub(crate) struct RescanState {
+    is_scanning: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RescanState {
+    pub(crate) fn new() -> Self {
+        Self {
+            is_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn try_start(&self) -> bool {
+        !self
+            .is_scanning
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    }
+
+    fn finish(&self) {
+        self.is_scanning
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct RescanGuard<'a>(&'a RescanState);
+
+impl Drop for RescanGuard<'_> {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
 }
 
 impl ServiceState {
@@ -74,6 +109,7 @@ impl ServiceState {
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
             events: PlaybackEvents::new(),
+            rescan_state: RescanState::new(),
         };
 
         let persisted_track_count = state.track_count();
@@ -209,13 +245,52 @@ impl ServiceState {
             .flatten()
     }
 
-    pub(crate) fn rescan(&self) -> io::Result<usize> {
+    fn begin_rescan(&self) -> io::Result<RescanGuard<'_>> {
+        if !self.rescan_state.try_start() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "A library rescan is already in progress",
+            ));
+        }
+        Ok(RescanGuard(&self.rescan_state))
+    }
+
+    pub(crate) fn start_rescan(&self) -> io::Result<usize> {
+        let _guard = self.begin_rescan()?;
         eprintln!(
             "library scan: starting manual rescan of {}",
             self.config.library_path.display()
         );
         let tracks = scan_library(&self.config.library_path, &self.config.config_path)?;
         let track_count = tracks.len();
+        self.replace_library(tracks)?;
+        Ok(track_count)
+    }
+
+    pub(crate) fn start_rescan_with_progress<F>(&self, report_progress: F) -> io::Result<usize>
+    where
+        F: Fn(ScanProgressEvent) -> io::Result<()> + Sync,
+    {
+        let _guard = self.begin_rescan()?;
+        eprintln!(
+            "library scan: starting manual rescan of {}",
+            self.config.library_path.display()
+        );
+
+        let tracks = scan_library_with_progress(
+            &self.config.library_path,
+            &self.config.config_path,
+            &report_progress,
+        )?;
+
+        let track_count = tracks.len();
+        report_progress(ScanProgressEvent {
+            stage: "saving_library".to_string(),
+            current: track_count,
+            total: None,
+            percent: Some(96),
+            message: Some(format!("Saving index for {track_count} tracks")),
+        })?;
         self.replace_library(tracks)?;
         Ok(track_count)
     }

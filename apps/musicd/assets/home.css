@@ -789,3 +789,35 @@ tbody tr:hover {
 .album-tracks {
   padding-top: 0.25rem;
 }
+
+#progress_bar_container {
+  display: none;
+  margin-top: 1rem;
+}
+
+progress[value]::-webkit-progress-bar {
+  background-color: var(--md-sys-color-outline-variant);
+  border-radius: 4px;
+}
+
+progress[value]::-webkit-progress-value {
+  background-color: var(--md-sys-color-primary);
+  border-radius: 4px;
+  transition: width 0.2s ease-out;
+}
+
+progress[value]::-moz-progress-bar {
+  background-color: var(--md-sys-color-primary);
+  border-radius: 4px;
+}
+
+#rescan_progress_bar {
+  -webkit-appearance: none;
+  accent-color: var(--md-sys-color-primary);
+  appearance: none;
+  background-color: var(--md-sys-color-outline-variant);
+  border: 0;
+  border-radius: 4px;
+  height: 0.5rem;
+  width: 100%;
+}

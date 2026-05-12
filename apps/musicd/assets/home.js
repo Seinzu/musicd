@@ -245,6 +245,120 @@ function startQueueRefresh() {
   }, 2500);
 }
 
+/* ------------------------------------------------------ Library rescan */
+function parseEventData(event) {
+  try {
+    return JSON.parse(event.data || '{}');
+  } catch (_error) {
+    return {};
+  }
+}
+
+function setRescanControls(scanning, message) {
+  const button = document.getElementById('rescan_button');
+  const progressContainer = document.getElementById('progress_bar_container');
+  const status = document.getElementById('rescan_status');
+
+  if (button) {
+    button.disabled = scanning;
+  }
+  if (progressContainer) {
+    progressContainer.style.display = scanning ? 'block' : 'none';
+  }
+  if (status && message) {
+    status.textContent = message;
+    status.classList.add('visually-hidden');
+  }
+}
+
+function showRescanStatus(message) {
+  const status = document.getElementById('rescan_status');
+  if (status) {
+    status.textContent = message;
+    status.classList.remove('visually-hidden');
+  }
+}
+
+function updateRescanProgress(data) {
+  const progressBar = document.getElementById('rescan_progress_bar');
+  const status = document.getElementById('rescan_status');
+
+  if (progressBar) {
+    let percent = Number(data.percent);
+    if (!Number.isFinite(percent) && typeof data.total === 'number' && data.total > 0) {
+      percent = Math.round((Number(data.current || 0) / data.total) * 100);
+    }
+    if (Number.isFinite(percent)) {
+      progressBar.value = Math.max(0, Math.min(100, percent));
+    }
+  }
+
+  if (data.message && status) {
+    status.textContent = data.message;
+  }
+}
+
+function setupRescanProgress() {
+  const form = document.getElementById('rescan_form');
+  if (!form) {
+    return;
+  }
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const progressBar = document.getElementById('rescan_progress_bar');
+    if (progressBar) {
+      progressBar.value = 0;
+    }
+    setRescanControls(true, 'Starting library scan...');
+
+    const params = new URLSearchParams(new FormData(form));
+    const progressUrl = form.dataset.progressUrl || form.action;
+    const url = `${progressUrl}?${params.toString()}`;
+    const source = new EventSource(url);
+    let closed = false;
+
+    const closeSource = () => {
+      closed = true;
+      source.close();
+    };
+
+    source.addEventListener('scan_start', () => {
+      if (progressBar) {
+        progressBar.value = 1;
+      }
+      setRescanControls(true, 'Scanning library...');
+    });
+
+    source.addEventListener('scan_progress', (scanEvent) => {
+      updateRescanProgress(parseEventData(scanEvent));
+    });
+
+    source.addEventListener('scan_complete', (scanEvent) => {
+      const data = parseEventData(scanEvent);
+      updateRescanProgress(data);
+      closeSource();
+      window.setTimeout(() => window.location.reload(), 800);
+    });
+
+    source.addEventListener('scan_error', (scanEvent) => {
+      const data = parseEventData(scanEvent);
+      closeSource();
+      setRescanControls(false, '');
+      showRescanStatus(data.message || 'Library rescan failed.');
+    });
+
+    source.onerror = () => {
+      if (closed) {
+        return;
+      }
+      closeSource();
+      setRescanControls(false, '');
+      showRescanStatus('Connection lost. Please refresh the page.');
+    };
+  });
+}
+
 /* --------------------------------------------------------------- Boot */
 document.addEventListener('change', (event) => {
   if (event.target instanceof HTMLInputElement && event.target.name === 'track_id') {
@@ -255,3 +369,4 @@ document.addEventListener('change', (event) => {
 setupLibraryChips();
 syncSelectedTrackSidebar();
 startQueueRefresh();
+setupRescanProgress();

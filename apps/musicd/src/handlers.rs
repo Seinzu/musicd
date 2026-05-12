@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::http::{
@@ -6,6 +7,7 @@ use crate::http::{
     request_value, respond_json, respond_not_found, respond_with_file, write_sse_comment,
     write_sse_event,
 };
+use crate::library::ScanProgressEvent;
 use crate::metrics;
 use crate::renderer::{
     RendererKind, android_local_renderer_capabilities, local_renderer_capabilities,
@@ -791,13 +793,19 @@ pub(crate) fn handle_rescan_request(
     state: &ServiceState,
 ) -> io::Result<()> {
     let renderer_location = request.query.get("renderer_location").map(String::as_str);
-    match state.rescan() {
+    match state.start_rescan() {
         Ok(track_count) => redirect_home(
             writer,
             renderer_location,
             Some(&format!(
                 "Library rescan complete. Indexed {track_count} tracks."
             )),
+            None,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => redirect_home(
+            writer,
+            renderer_location,
+            Some("A library rescan is already in progress. Please wait for it to complete."),
             None,
         ),
         Err(error) => redirect_home(
@@ -807,6 +815,15 @@ pub(crate) fn handle_rescan_request(
             Some(&format!("Library rescan failed: {error}")),
         ),
     }
+}
+
+pub(crate) fn handle_rescan_progress_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = request.query.get("renderer_location").map(String::as_str);
+    respond_sse_scan_progress(writer, state, renderer_location)
 }
 
 pub(crate) fn handle_api_renderer_discover_request(
@@ -2151,4 +2168,98 @@ pub(crate) fn respond_sse_stream(
         }
         last_version = new_version;
     }
+}
+
+pub(crate) fn respond_sse_scan_progress(
+    writer: &mut ResponseWriter,
+    state: &ServiceState,
+    _renderer_location: Option<&str>,
+) -> io::Result<()> {
+    metrics::set_response_status(200);
+    write!(writer, "HTTP/1.1 200 OK\r\n")?;
+    write!(writer, "Connection: keep-alive\r\n")?;
+    write!(writer, "Cache-Control: no-cache\r\n")?;
+    write!(writer, "Content-Type: text/event-stream; charset=utf-8\r\n")?;
+    write!(writer, "X-Accel-Buffering: no\r\n")?;
+    write!(writer, "\r\n")?;
+    writer.flush()?;
+
+    if let Err(error) = write_sse_event(writer, "scan_start", r#"{"status":"started"}"#) {
+        state.debug_log(
+            "sse-scan-start-error",
+            format!("error sending scan start: {}", error),
+        );
+        return Err(error);
+    }
+
+    let scan_result = {
+        let writer = Mutex::new(&mut *writer);
+        state.start_rescan_with_progress(|event| {
+            let payload = scan_progress_event_json(&event);
+            let mut guard = writer.lock().expect("SSE scan writer lock poisoned");
+            write_sse_event(&mut **guard, "scan_progress", &payload)
+        })
+    };
+
+    match scan_result {
+        Ok(track_count) => {
+            let payload = format!(
+                r#"{{"status":"complete","track_count":{},"percent":100,"message":"{}"}}"#,
+                track_count,
+                json_escape(&format!(
+                    "Library rescan complete. Indexed {} tracks.",
+                    track_count
+                )),
+            );
+            if let Err(error) = write_sse_event(writer, "scan_complete", &payload) {
+                state.debug_log(
+                    "sse-scan-complete-error",
+                    format!("error sending scan complete: {}", error),
+                );
+                return Err(error);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let payload = format!(
+                r#"{{"status":"busy","message":"{}"}}"#,
+                json_escape(
+                    "A library rescan is already in progress. Please wait for it to complete."
+                ),
+            );
+            write_sse_event(writer, "scan_error", &payload)?;
+        }
+        Err(error) => {
+            let payload = format!(
+                r#"{{"status":"error","message":"{}"}}"#,
+                json_escape(&format!("Library rescan failed: {error}")),
+            );
+            write_sse_event(writer, "scan_error", &payload)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn scan_progress_event_json(event: &ScanProgressEvent) -> String {
+    let total = event
+        .total
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let message = event
+        .message
+        .as_ref()
+        .map(|value| format!(r#""{}""#, json_escape(value)))
+        .unwrap_or_else(|| "null".to_string());
+    let percent = event
+        .percent
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    format!(
+        r#"{{"stage":"{}","current":{},"total":{},"percent":{},"message":{}}}"#,
+        json_escape(&event.stage),
+        event.current,
+        total,
+        percent,
+        message,
+    )
 }

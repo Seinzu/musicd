@@ -13,6 +13,7 @@ pub(crate) use metadata::inspect_embedded_metadata;
 #[cfg(test)]
 pub(crate) use metadata::{decode_id3v1_text, parse_vorbis_comment_block};
 pub(crate) use scan::scan_library;
+pub(crate) use scan::{ScanProgressEvent, scan_library_with_progress};
 pub(crate) use sort::compare_track_album_order;
 #[cfg(test)]
 pub(crate) use summaries::build_artist_summaries;
