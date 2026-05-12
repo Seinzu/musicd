@@ -36,15 +36,15 @@ use crate::views::json::{
     render_server_json, render_session_json, render_track_detail_json, render_tracks_json,
 };
 use crate::views::{
-    render_album_detail_page, render_library_page, render_queue_page, render_queue_panel_html,
-    render_track_detail_page, render_welcome_page,
+    render_album_detail_page, render_library_page, render_library_rows_json, render_queue_page,
+    render_queue_panel_html, render_track_detail_page, render_welcome_page,
 };
 
 use crate::assets;
 
-use super::ResponseWriter;
-use super::request::{HttpRequest, request_value};
+use super::request::{request_value, HttpRequest};
 use super::response::{respond_asset, respond_method_not_allowed, respond_not_found, respond_text};
+use super::ResponseWriter;
 
 pub(crate) fn handle_service_request(
     writer: &mut ResponseWriter,
@@ -68,6 +68,16 @@ pub(crate) fn handle_service_request(
                 writer,
                 "200 OK",
                 "text/html; charset=utf-8",
+                body.as_bytes(),
+                request.method == "HEAD",
+            )
+        }
+        ("GET", "/library/rows") | ("HEAD", "/library/rows") => {
+            let body = render_library_rows_json(&state, request);
+            respond_text(
+                writer,
+                "200 OK",
+                "application/json; charset=utf-8",
                 body.as_bytes(),
                 request.method == "HEAD",
             )

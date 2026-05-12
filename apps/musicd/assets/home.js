@@ -148,6 +148,8 @@ function syncSelectedTrackSidebar() {
 }
 
 /* ------------------------------------------------------- Library filter */
+let libraryFilterTimer = null;
+
 function getActiveFacet() {
   const active = document.querySelector('.filter-chips .chip.active');
   return active?.dataset?.facet || 'all';
@@ -166,18 +168,29 @@ function filterLibrary() {
   if (!input) {
     return;
   }
-  const needle = input.value.trim().toLowerCase();
-  const rows = document.querySelectorAll(
-    '#track_table tr, #album_table tr, .artist-list .artist-row'
-  );
-  for (const row of rows) {
-    const text = row.dataset.search || '';
-    row.style.display = !needle || text.includes(needle) ? '' : 'none';
+  if (libraryFilterTimer !== null) {
+    clearTimeout(libraryFilterTimer);
   }
+  libraryFilterTimer = setTimeout(() => {
+    const nextUrl = new URL('/library', window.location.origin);
+    const facet = getActiveFacet();
+    const query = input.value.trim();
+    const rendererLocation = document.body.dataset.rendererLocation || '';
+    if (facet && facet !== 'all') {
+      nextUrl.searchParams.set('facet', facet);
+    }
+    if (query) {
+      nextUrl.searchParams.set('q', query);
+    }
+    if (rendererLocation) {
+      nextUrl.searchParams.set('renderer_location', rendererLocation);
+    }
+    window.location.href = `${nextUrl.pathname}${nextUrl.search}`;
+  }, 300);
 }
 
 function setupLibraryChips() {
-  const chips = document.querySelectorAll('.filter-chips .chip');
+  const chips = document.querySelectorAll('.filter-chips button.chip');
   if (!chips.length) {
     return;
   }
@@ -191,6 +204,78 @@ function setupLibraryChips() {
     });
   }
   applyFacet(getActiveFacet());
+}
+
+let libraryLoadObserver = null;
+
+function setupLibraryInfiniteScroll() {
+  const loaders = document.querySelectorAll('[data-library-loader]');
+  if (!loaders.length) {
+    return;
+  }
+  if (!('IntersectionObserver' in window)) {
+    for (const loader of loaders) {
+      loader.hidden = true;
+    }
+    return;
+  }
+  libraryLoadObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        loadMoreLibraryRows(entry.target);
+      }
+    }
+  }, { rootMargin: '600px 0px' });
+  for (const loader of loaders) {
+    libraryLoadObserver.observe(loader);
+  }
+}
+
+async function loadMoreLibraryRows(loader) {
+  if (loader.dataset.loading === 'true') {
+    return;
+  }
+  const target = document.getElementById(loader.dataset.targetId || '');
+  if (!target) {
+    loader.remove();
+    return;
+  }
+  loader.dataset.loading = 'true';
+  const params = new URLSearchParams();
+  params.set('facet', loader.dataset.facet || '');
+  params.set('offset', loader.dataset.offset || '0');
+  if (loader.dataset.q) {
+    params.set('q', loader.dataset.q);
+  }
+  if (loader.dataset.rendererLocation) {
+    params.set('renderer_location', loader.dataset.rendererLocation);
+  }
+
+  try {
+    const response = await fetch(`/library/rows?${params.toString()}`, {
+      headers: { 'X-Requested-With': 'musicd-library-scroll' },
+    });
+    if (!response.ok) {
+      throw new Error('request failed');
+    }
+    const payload = await response.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || 'request failed');
+    }
+    if (payload.rows) {
+      target.insertAdjacentHTML('beforeend', payload.rows);
+    }
+    if (payload.has_more) {
+      loader.dataset.offset = String(payload.next_offset);
+      loader.dataset.loading = 'false';
+    } else {
+      libraryLoadObserver?.unobserve(loader);
+      loader.remove();
+    }
+  } catch (_error) {
+    loader.dataset.loading = 'false';
+    loader.textContent = 'Could not load more items. Scroll to retry.';
+  }
 }
 
 /* ---------------------------------------------------------- Queue panel */
@@ -367,6 +452,7 @@ document.addEventListener('change', (event) => {
 });
 
 setupLibraryChips();
+setupLibraryInfiniteScroll();
 syncSelectedTrackSidebar();
 startQueueRefresh();
 setupRescanProgress();

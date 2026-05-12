@@ -303,6 +303,7 @@ input[type="text"]:focus, select:focus {
 /* Filter chips */
 .filter-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .chip {
+  display: inline-block;
   padding: 0.4rem 0.85rem;
   border-radius: 999px;
   border: 1px solid var(--md-sys-color-outline);
@@ -310,6 +311,7 @@ input[type="text"]:focus, select:focus {
   color: var(--md-sys-color-on-surface-variant);
   cursor: pointer;
   font-size: 0.88rem;
+  text-decoration: none;
 }
 .chip.active {
   background: var(--md-sys-color-secondary-container);
@@ -512,6 +514,11 @@ input[type="text"]:focus, select:focus {
 .library-filter { width: 100%; }
 .library-section { gap: 0.5rem; }
 .library-section.facet-hidden { display: none; }
+.library-load-more {
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 0.85rem;
+  text-align: center;
+}
 .library-tracks-grid {
   display: grid;
   gap: 1rem;

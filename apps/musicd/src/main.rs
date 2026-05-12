@@ -25,7 +25,7 @@ fn main() {
 mod tests {
     use crate::artwork::{artwork_name_priority, infer_image_mime_from_bytes};
     use crate::db::Database;
-    use crate::http::{parse_query_string, parse_range_header, parse_request_form};
+    use crate::http::{HttpRequest, parse_query_string, parse_range_header, parse_request_form};
     use crate::ids::{stable_album_id, stable_artist_id, stable_track_id};
     use crate::library::{
         Library, build_artist_summaries, compare_track_album_order, decode_id3v1_text,
@@ -47,11 +47,12 @@ mod tests {
         cleanup_track_label, infer_artist_and_album, infer_disc_and_track_numbers,
         should_skip_entry,
     };
+    use crate::views::{render_library_page, render_library_rows_json};
     use musicd_core::AppConfig;
     use musicd_upnp::{
         PositionInfo, RendererCapabilities, StreamResource, TransportInfo, TransportSnapshot,
     };
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1858,6 +1859,75 @@ mod tests {
         assert_eq!(artists[0].track_count, 2);
         assert_eq!(artists[0].album_count, 2);
         assert_eq!(artists[0].id, stable_artist_id("Radiohead"));
+    }
+
+    #[test]
+    fn library_albums_facet_omits_track_table() {
+        let state = sample_state(vec![sample_track("track-1", Some(1), Some(1), "Song A")]);
+        let mut query = HashMap::new();
+        query.insert("facet".to_string(), "albums".to_string());
+        let request = HttpRequest {
+            method: "GET".to_string(),
+            target: "/library?facet=albums".to_string(),
+            path: "/library".to_string(),
+            query,
+            form: HashMap::new(),
+            range_header: None,
+            content_type: None,
+            body: Vec::new(),
+        };
+
+        let html = render_library_page(&state, &request);
+
+        assert!(html.contains("id=\"album_table\""));
+        assert!(!html.contains("id=\"track_table\""));
+        assert!(!html.contains("id=\"track_detail_panel\""));
+        assert!(!html.contains("class=\"artist-list\""));
+        assert!(html.contains("facet=tracks"));
+    }
+
+    #[test]
+    fn library_tracks_facet_loads_rows_in_pages() {
+        let tracks = (0..105)
+            .map(|idx| sample_track(&format!("track-{idx}"), Some(1), Some(idx + 1), &format!("Song {idx}")))
+            .collect();
+        let state = sample_state(tracks);
+        let mut query = HashMap::new();
+        query.insert("facet".to_string(), "tracks".to_string());
+        let request = HttpRequest {
+            method: "GET".to_string(),
+            target: "/library?facet=tracks".to_string(),
+            path: "/library".to_string(),
+            query,
+            form: HashMap::new(),
+            range_header: None,
+            content_type: None,
+            body: Vec::new(),
+        };
+
+        let html = render_library_page(&state, &request);
+        assert_eq!(html.matches("<tr data-search=").count(), 100);
+        assert!(html.contains("data-library-loader"));
+        assert!(html.contains("data-offset=\"100\""));
+
+        let mut query = HashMap::new();
+        query.insert("facet".to_string(), "tracks".to_string());
+        query.insert("offset".to_string(), "100".to_string());
+        let request = HttpRequest {
+            method: "GET".to_string(),
+            target: "/library/rows?facet=tracks&offset=100".to_string(),
+            path: "/library/rows".to_string(),
+            query,
+            form: HashMap::new(),
+            range_header: None,
+            content_type: None,
+            body: Vec::new(),
+        };
+
+        let json = render_library_rows_json(&state, &request);
+        assert_eq!(json.matches("<tr data-search=").count(), 5);
+        assert!(json.contains(r#""next_offset":105"#));
+        assert!(json.contains(r#""has_more":false"#));
     }
 
     #[test]
