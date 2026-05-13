@@ -382,6 +382,89 @@ mod tests {
     }
 
     #[test]
+    fn skip_next_marks_previous_current_completed() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_a = sample_track("track-a", Some(1), Some(1), "A");
+        let track_b = sample_track("track-b", Some(1), Some(2), "B");
+        let track_c = sample_track("track-c", Some(1), Some(3), "C");
+        let track_d = sample_track("track-d", Some(1), Some(4), "D");
+        let backend = Arc::new(FakeRendererBackend::new(renderer_location, Vec::new()));
+        let state = sample_state_with_backend(
+            vec![
+                track_a.clone(),
+                track_b.clone(),
+                track_c.clone(),
+                track_d.clone(),
+            ],
+            backend.clone(),
+        );
+        let first_stream_url = state.stream_resource_for_track(&track_a).stream_url;
+        let second_resource = state.stream_resource_for_track(&track_b);
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Four Tracks",
+                &[
+                    queue_entry_for_track(&track_a),
+                    queue_entry_for_track(&track_b),
+                    queue_entry_for_track(&track_c),
+                    queue_entry_for_track(&track_d),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let first_entry_id = queue.current_entry_id.expect("queue should have current");
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                first_entry_id,
+                &track_a.id,
+                &first_stream_url,
+                track_a.duration_seconds,
+            )
+            .expect("queue play should start");
+
+        state
+            .skip_to_next(renderer_location)
+            .expect("skip next should advance queue");
+
+        let played = backend.played_streams();
+        assert_eq!(played.len(), 1);
+        assert_eq!(played[0].stream_url, second_resource.stream_url);
+        let advanced_queue = state
+            .database
+            .load_queue(renderer_location)
+            .expect("queue lookup should succeed")
+            .expect("queue should remain");
+        assert_eq!(advanced_queue.current_entry_id, Some(queue.entries[1].id));
+        assert_eq!(
+            advanced_queue
+                .entries
+                .iter()
+                .map(|entry| (entry.track_id.as_str(), entry.entry_status.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("track-a", "completed"),
+                ("track-b", "playing"),
+                ("track-c", "pending"),
+                ("track-d", "pending"),
+            ]
+        );
+        assert_eq!(
+            advanced_queue
+                .entries
+                .iter()
+                .filter(|entry| entry.entry_status == "pending")
+                .map(|entry| entry.track_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["track-c", "track-d"]
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn queue_poll_clears_final_completed_track_without_restarting_it() {
         let renderer_location = "http://renderer.local/description.xml";
         let track = sample_track("track-1", Some(1), Some(1), "Track 1");
@@ -1889,7 +1972,14 @@ mod tests {
     #[test]
     fn library_tracks_facet_loads_rows_in_pages() {
         let tracks = (0..105)
-            .map(|idx| sample_track(&format!("track-{idx}"), Some(1), Some(idx + 1), &format!("Song {idx}")))
+            .map(|idx| {
+                sample_track(
+                    &format!("track-{idx}"),
+                    Some(1),
+                    Some(idx + 1),
+                    &format!("Song {idx}"),
+                )
+            })
             .collect();
         let state = sample_state(tracks);
         let mut query = HashMap::new();

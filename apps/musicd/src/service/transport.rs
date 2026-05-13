@@ -279,9 +279,9 @@ impl ServiceState {
         self.debug_log("next-request", format!("renderer={renderer_location}"));
         if let Some(queue) = self.queue_snapshot(renderer_location) {
             if let Some(current_entry_id) = queue.current_entry_id {
-                if let Some(next_entry) = next_queue_entry_after(&queue, current_entry_id) {
+                if next_queue_entry_after(&queue, current_entry_id).is_some() {
                     self.database
-                        .select_queue_entry(renderer_location, next_entry.id)?;
+                        .advance_queue_after_completion(renderer_location)?;
                     let (track, _, renderer_name, _) =
                         self.start_current_queue_entry(renderer_location)?;
                     return Ok(format!(
