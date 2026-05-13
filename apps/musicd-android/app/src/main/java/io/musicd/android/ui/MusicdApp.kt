@@ -189,6 +189,8 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onApplyAlbumArtwork = viewModel::applyAlbumArtwork,
         onPlayTrack = viewModel::playTrack,
         onPlayAlbum = viewModel::playAlbum,
+        onLikeAlbum = viewModel::likeAlbum,
+        onLikeTrack = viewModel::likeTrack,
         onAppendTrack = viewModel::appendTrack,
         onPlayNextTrack = viewModel::playNextTrack,
         onAppendAlbum = viewModel::appendAlbum,
@@ -242,6 +244,8 @@ private fun MusicdRoot(
     onApplyAlbumArtwork: (String) -> Unit,
     onPlayTrack: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
+    onLikeAlbum: (String) -> Unit,
+    onLikeTrack: (String) -> Unit,
     onAppendTrack: (String) -> Unit,
     onPlayNextTrack: (String) -> Unit,
     onAppendAlbum: (String) -> Unit,
@@ -447,6 +451,7 @@ private fun MusicdRoot(
                     onPrevious = onPrevious,
                     onOpenAlbum = onOpenAlbum,
                     onPlayAlbum = onPlayAlbum,
+                    onLikeAlbum = onLikeAlbum,
                     onAppendAlbum = onAppendAlbum,
                     onPlayNextAlbum = onPlayNextAlbum,
                     onOpenRendererPicker = onOpenRendererPicker,
@@ -467,6 +472,8 @@ private fun MusicdRoot(
                     onOpenAlbumArtworkPicker = onOpenAlbumArtworkPicker,
                     onPlayTrack = onPlayTrack,
                     onPlayAlbum = onPlayAlbum,
+                    onLikeAlbum = onLikeAlbum,
+                    onLikeTrack = onLikeTrack,
                     onAppendTrack = onAppendTrack,
                     onPlayNextTrack = onPlayNextTrack,
                     onAppendAlbum = onAppendAlbum,
@@ -737,6 +744,7 @@ private fun HomeScreen(
     onPrevious: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
+    onLikeAlbum: (String) -> Unit,
     onAppendAlbum: (String) -> Unit,
     onPlayNextAlbum: (String) -> Unit,
     onOpenRendererPicker: () -> Unit,
@@ -804,6 +812,7 @@ private fun HomeScreen(
                 album = album,
                 onOpenAlbum = { onOpenAlbum(album.id) },
                 onPlayAlbum = { onPlayAlbum(album.id) },
+                onLikeAlbum = { onLikeAlbum(album.id) },
                 onAppendAlbum = { onAppendAlbum(album.id) },
                 onPlayNextAlbum = { onPlayNextAlbum(album.id) },
             )
@@ -833,6 +842,8 @@ private fun LibraryScreen(
     onOpenAlbumArtworkPicker: () -> Unit,
     onPlayTrack: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
+    onLikeAlbum: (String) -> Unit,
+    onLikeTrack: (String) -> Unit,
     onAppendTrack: (String) -> Unit,
     onPlayNextTrack: (String) -> Unit,
     onAppendAlbum: (String) -> Unit,
@@ -876,9 +887,11 @@ private fun LibraryScreen(
             backLabel = if (state.selectedArtistDetail != null) "Back to artist" else "Back to library",
             onOpenArtist = { onOpenArtistByName(album.artist) },
             onPlayAlbum = { onPlayAlbum(album.id) },
+            onLikeAlbum = { onLikeAlbum(album.id) },
             onAppendAlbum = { onAppendAlbum(album.id) },
             onPlayNextAlbum = { onPlayNextAlbum(album.id) },
             onPlayTrack = onPlayTrack,
+            onLikeTrack = onLikeTrack,
             onAppendTrack = onAppendTrack,
             onPlayNextTrack = onPlayNextTrack,
             onOpenArtistByName = onOpenArtistByName,
@@ -894,6 +907,7 @@ private fun LibraryScreen(
             onBack = onCloseArtistDetail,
             onOpenAlbum = onOpenAlbumPreservingArtist,
             onPlayAlbum = onPlayAlbum,
+            onLikeAlbum = onLikeAlbum,
             onAppendAlbum = onAppendAlbum,
             onPlayNextAlbum = onPlayNextAlbum,
         )
@@ -1009,6 +1023,7 @@ private fun LibraryScreen(
                             onOpenAlbum = { onOpenAlbum(album.id) },
                             onOpenArtist = { onOpenArtistByName(album.artist) },
                             onPlayAlbum = { onPlayAlbum(album.id) },
+                            onLikeAlbum = { onLikeAlbum(album.id) },
                             onAppendAlbum = { onAppendAlbum(album.id) },
                             onPlayNextAlbum = { onPlayNextAlbum(album.id) },
                             highlightQuery = query,
@@ -1033,6 +1048,7 @@ private fun LibraryScreen(
                             baseUrl = state.baseUrl,
                             track = track,
                             onPlayTrack = { onPlayTrack(track.id) },
+                            onLikeTrack = { onLikeTrack(track.id) },
                             onAppendTrack = { onAppendTrack(track.id) },
                             onPlayNextTrack = { onPlayNextTrack(track.id) },
                             onOpenArtist = { onOpenArtistByName(track.artist) },
@@ -1076,6 +1092,7 @@ private fun LibraryScreen(
                         onOpenAlbum = { onOpenAlbum(album.id) },
                         onOpenArtist = { onOpenArtistByName(album.artist) },
                         onPlayAlbum = { onPlayAlbum(album.id) },
+                        onLikeAlbum = { onLikeAlbum(album.id) },
                         onAppendAlbum = { onAppendAlbum(album.id) },
                         onPlayNextAlbum = { onPlayNextAlbum(album.id) },
                         highlightQuery = null,
@@ -2348,6 +2365,7 @@ private fun AlbumRow(
     onOpenAlbum: () -> Unit,
     onOpenArtist: (() -> Unit)? = null,
     onPlayAlbum: () -> Unit,
+    onLikeAlbum: () -> Unit,
     onAppendAlbum: () -> Unit,
     onPlayNextAlbum: () -> Unit,
     highlightQuery: String? = null,
@@ -2392,6 +2410,12 @@ private fun AlbumRow(
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     OutlinedButton(onClick = onPlayAlbum) { Text("Play") }
+                    TextButton(
+                        enabled = !album.likedByClient,
+                        onClick = onLikeAlbum,
+                    ) {
+                        Text("🦥 ${album.likeCount}")
+                    }
                     onOpenArtist?.let { TextButton(onClick = it) { Text("Artist") } }
                     TextButton(onClick = onPlayNextAlbum) { Text("Play Next") }
                     TextButton(onClick = onAppendAlbum) { Text("Add Queue") }
@@ -2455,6 +2479,7 @@ private fun ArtistDetailScreen(
     onBack: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
+    onLikeAlbum: (String) -> Unit,
     onAppendAlbum: (String) -> Unit,
     onPlayNextAlbum: (String) -> Unit,
 ) {
@@ -2486,6 +2511,7 @@ private fun ArtistDetailScreen(
                 album = album,
                 onOpenAlbum = { onOpenAlbum(album.id) },
                 onPlayAlbum = { onPlayAlbum(album.id) },
+                onLikeAlbum = { onLikeAlbum(album.id) },
                 onAppendAlbum = { onAppendAlbum(album.id) },
                 onPlayNextAlbum = { onPlayNextAlbum(album.id) },
                 highlightQuery = null,
@@ -2503,9 +2529,11 @@ private fun AlbumDetailScreen(
     onOpenArtist: (() -> Unit)?,
     onOpenArtworkPicker: () -> Unit,
     onPlayAlbum: () -> Unit,
+    onLikeAlbum: () -> Unit,
     onAppendAlbum: () -> Unit,
     onPlayNextAlbum: () -> Unit,
     onPlayTrack: (String) -> Unit,
+    onLikeTrack: (String) -> Unit,
     onAppendTrack: (String) -> Unit,
     onPlayNextTrack: (String) -> Unit,
     onOpenArtistByName: (String) -> Unit,
@@ -2585,6 +2613,12 @@ private fun AlbumDetailScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            enabled = !album.likedByClient,
+                            onClick = onLikeAlbum,
+                        ) {
+                            Text("🦥 ${album.likeCount}")
+                        }
                         onOpenArtist?.let {
                             OutlinedButton(onClick = it) {
                                 Text("Artist")
@@ -2604,6 +2638,7 @@ private fun AlbumDetailScreen(
             AlbumTrackRow(
                 track = track,
                 onPlayTrack = { onPlayTrack(track.id) },
+                onLikeTrack = { onLikeTrack(track.id) },
                 onAppendTrack = { onAppendTrack(track.id) },
                 onPlayNextTrack = { onPlayNextTrack(track.id) },
                 onOpenArtist = { onOpenArtistByName(track.artist) },
@@ -2725,6 +2760,7 @@ private fun AlbumArtworkPickerSheet(
 private fun AlbumTrackRow(
     track: TrackSummaryDto,
     onPlayTrack: () -> Unit,
+    onLikeTrack: () -> Unit,
     onAppendTrack: () -> Unit,
     onPlayNextTrack: () -> Unit,
     onOpenArtist: (() -> Unit)? = null,
@@ -2802,6 +2838,12 @@ private fun AlbumTrackRow(
                         )
                     }
                 }
+                TextButton(
+                    enabled = !track.likedByClient,
+                    onClick = onLikeTrack,
+                ) {
+                    Text("🦥 ${track.likeCount}")
+                }
             }
             if (track.discNumber != null || track.artist.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))
@@ -2822,6 +2864,7 @@ private fun TrackRow(
     baseUrl: String,
     track: TrackSummaryDto,
     onPlayTrack: () -> Unit,
+    onLikeTrack: () -> Unit,
     onAppendTrack: () -> Unit,
     onPlayNextTrack: () -> Unit,
     onOpenArtist: (() -> Unit)?,
@@ -2876,6 +2919,12 @@ private fun TrackRow(
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        enabled = !track.likedByClient,
+                        onClick = onLikeTrack,
+                    ) {
+                        Text("🦥 ${track.likeCount}")
+                    }
                     TextButton(onClick = onPlayNextTrack) { Text("Play Next") }
                     TextButton(onClick = onAppendTrack) { Text("Add Queue") }
                 }

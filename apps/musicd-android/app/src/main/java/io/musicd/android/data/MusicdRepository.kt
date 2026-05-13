@@ -52,7 +52,7 @@ class MusicdRepository(
     }
 
     suspend fun getAlbums(baseUrl: String): List<AlbumSummaryDto> = withContext(Dispatchers.IO) {
-        api.getAlbums(baseUrl.normalizeBaseUrl())
+        api.getAlbums(baseUrl.normalizeBaseUrl(), loadClientId())
     }
 
     suspend fun getArtists(baseUrl: String): List<ArtistSummaryDto> = withContext(Dispatchers.IO) {
@@ -61,7 +61,7 @@ class MusicdRepository(
 
     suspend fun getAlbumDetail(baseUrl: String, albumId: String): AlbumDetailDto =
         withContext(Dispatchers.IO) {
-            api.getAlbumDetail(baseUrl.normalizeBaseUrl(), albumId)
+            api.getAlbumDetail(baseUrl.normalizeBaseUrl(), albumId, loadClientId())
         }
 
     suspend fun getAlbumArtworkCandidates(
@@ -73,11 +73,11 @@ class MusicdRepository(
 
     suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
         withContext(Dispatchers.IO) {
-            api.getArtistDetail(baseUrl.normalizeBaseUrl(), artistId)
+            api.getArtistDetail(baseUrl.normalizeBaseUrl(), artistId, loadClientId())
         }
 
     suspend fun getTracks(baseUrl: String): List<TrackSummaryDto> = withContext(Dispatchers.IO) {
-        api.getTracks(baseUrl.normalizeBaseUrl())
+        api.getTracks(baseUrl.normalizeBaseUrl(), loadClientId())
     }
 
     suspend fun getRenderers(baseUrl: String): List<RendererDto> = withContext(Dispatchers.IO) {
@@ -242,6 +242,20 @@ class MusicdRepository(
         albumId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
         api.playNextAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId, loadClientId())
+    }
+
+    suspend fun likeAlbum(baseUrl: String, albumId: String): LikeResponseDto =
+        likeItem(baseUrl, "album", albumId)
+
+    suspend fun likeTrack(baseUrl: String, trackId: String): LikeResponseDto =
+        likeItem(baseUrl, "track", trackId)
+
+    private suspend fun likeItem(
+        baseUrl: String,
+        itemKind: String,
+        itemId: String,
+    ): LikeResponseDto = withContext(Dispatchers.IO) {
+        api.likeItem(baseUrl.normalizeBaseUrl(), itemKind, itemId, loadClientId())
     }
 
     suspend fun moveQueueEntry(

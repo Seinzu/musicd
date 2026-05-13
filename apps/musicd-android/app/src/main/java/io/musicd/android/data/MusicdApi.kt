@@ -74,6 +74,8 @@ data class TrackSummaryDto(
     @SerialName("duration_seconds") val durationSeconds: Long? = null,
     @SerialName("artwork_url") val artworkUrl: String? = null,
     @SerialName("mime_type") val mimeType: String? = null,
+    @SerialName("like_count") val likeCount: Long = 0L,
+    @SerialName("liked_by_client") val likedByClient: Boolean = false,
 )
 
 @Serializable
@@ -89,6 +91,8 @@ data class AlbumSummaryDto(
     @SerialName("track_count") val trackCount: Int,
     @SerialName("first_track_id") val firstTrackId: String,
     @SerialName("artwork_url") val artworkUrl: String = "",
+    @SerialName("like_count") val likeCount: Long = 0L,
+    @SerialName("liked_by_client") val likedByClient: Boolean = false,
 )
 
 
@@ -112,6 +116,8 @@ data class AlbumDetailDto(
     @SerialName("track_count") val trackCount: Int,
     @SerialName("first_track_id") val firstTrackId: String,
     @SerialName("artwork_url") val artworkUrl: String = "",
+    @SerialName("like_count") val likeCount: Long = 0L,
+    @SerialName("liked_by_client") val likedByClient: Boolean = false,
     val tracks: List<TrackSummaryDto> = emptyList(),
 )
 
@@ -224,6 +230,17 @@ data class MutationResponseDto(
 )
 
 @Serializable
+data class LikeResponseDto(
+    val ok: Boolean,
+    @SerialName("item_kind") val itemKind: String,
+    @SerialName("item_id") val itemId: String,
+    @SerialName("like_count") val likeCount: Long = 0L,
+    @SerialName("liked_by_client") val likedByClient: Boolean = false,
+    val created: Boolean = false,
+    val error: String? = null,
+)
+
+@Serializable
 private data class ErrorEnvelopeDto(
     val error: String? = null,
     val message: String? = null,
@@ -260,14 +277,14 @@ class MusicdApi(
     suspend fun getServerInfo(baseUrl: String): ServerInfoDto =
         get("$baseUrl/api/server")
 
-    suspend fun getAlbums(baseUrl: String): List<AlbumSummaryDto> =
-        get("$baseUrl/api/albums")
+    suspend fun getAlbums(baseUrl: String, clientId: String): List<AlbumSummaryDto> =
+        get("$baseUrl/api/albums?client_id=${clientId.encodeForUrl()}")
 
     suspend fun getArtists(baseUrl: String): List<ArtistSummaryDto> =
         get("$baseUrl/api/artists")
 
-    suspend fun getAlbumDetail(baseUrl: String, albumId: String): AlbumDetailDto =
-        get("$baseUrl/api/albums/${albumId.encodeForUrl()}")
+    suspend fun getAlbumDetail(baseUrl: String, albumId: String, clientId: String): AlbumDetailDto =
+        get("$baseUrl/api/albums/${albumId.encodeForUrl()}?client_id=${clientId.encodeForUrl()}")
 
     suspend fun getAlbumArtworkCandidates(
         baseUrl: String,
@@ -275,11 +292,11 @@ class MusicdApi(
     ): AlbumArtworkCandidatesResponseDto =
         get("$baseUrl/api/albums/${albumId.encodeForUrl()}/artwork/candidates")
 
-    suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
-        get("$baseUrl/api/artists/${artistId.encodeForUrl()}")
+    suspend fun getArtistDetail(baseUrl: String, artistId: String, clientId: String): ArtistDetailDto =
+        get("$baseUrl/api/artists/${artistId.encodeForUrl()}?client_id=${clientId.encodeForUrl()}")
 
-    suspend fun getTracks(baseUrl: String): List<TrackSummaryDto> =
-        get("$baseUrl/api/tracks")
+    suspend fun getTracks(baseUrl: String, clientId: String): List<TrackSummaryDto> =
+        get("$baseUrl/api/tracks?client_id=${clientId.encodeForUrl()}")
 
     suspend fun getRenderers(baseUrl: String, clientId: String): List<RendererDto> =
         get("$baseUrl/api/renderers?client_id=${clientId.encodeForUrl()}")
@@ -490,6 +507,20 @@ class MusicdApi(
             "renderer_location" to rendererLocation,
             "client_id" to clientId,
             "album_id" to albumId,
+        ),
+    )
+
+    suspend fun likeItem(
+        baseUrl: String,
+        itemKind: String,
+        itemId: String,
+        clientId: String,
+    ): LikeResponseDto = post(
+        "$baseUrl/api/like",
+        mapOf(
+            "item_kind" to itemKind,
+            "item_id" to itemId,
+            "client_id" to clientId,
         ),
     )
 

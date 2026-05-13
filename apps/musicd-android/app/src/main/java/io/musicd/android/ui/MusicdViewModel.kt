@@ -11,6 +11,7 @@ import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.DiscoveredServer
+import io.musicd.android.data.LikeResponseDto
 import io.musicd.android.data.MusicdApiException
 import io.musicd.android.data.MusicdRepository
 import io.musicd.android.data.MutationResponseDto
@@ -1035,6 +1036,30 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         repository.playNextAlbum(baseUrl, renderer, albumId)
     }
 
+    fun likeAlbum(albumId: String) {
+        likeItem { baseUrl -> repository.likeAlbum(baseUrl, albumId) }
+    }
+
+    fun likeTrack(trackId: String) {
+        likeItem { baseUrl -> repository.likeTrack(baseUrl, trackId) }
+    }
+
+    private fun likeItem(request: suspend (String) -> LikeResponseDto) {
+        val baseUrl = uiState.value.baseUrl
+        if (baseUrl.isBlank()) return
+        viewModelScope.launch {
+            runCatching { request(baseUrl) }
+                .onSuccess { response ->
+                    _uiState.update { state -> state.applyLikeResponse(response) }
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(errorMessage = connectionErrorMessage(error))
+                    }
+                }
+        }
+    }
+
     fun moveQueueEntryUp(entryId: Long) = queueMutationAction("Queue order updated.") { baseUrl, renderer ->
         repository.moveQueueEntry(baseUrl, renderer, entryId, "up")
     }
@@ -1283,6 +1308,78 @@ private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
     state.queue?.entries?.isNotEmpty() == true ||
         state.nowPlaying?.currentTrack != null ||
         state.nowPlaying?.session?.queueEntryId != null
+
+private fun MusicdUiState.applyLikeResponse(response: LikeResponseDto): MusicdUiState =
+    when (response.itemKind) {
+        "album" -> copy(
+            albums = albums.map { album ->
+                if (album.id == response.itemId) {
+                    album.copy(likeCount = response.likeCount, likedByClient = response.likedByClient)
+                } else {
+                    album
+                }
+            },
+            selectedAlbumDetail = selectedAlbumDetail?.let { album ->
+                if (album.id == response.itemId) {
+                    album.copy(likeCount = response.likeCount, likedByClient = response.likedByClient)
+                } else {
+                    album
+                }
+            },
+            selectedArtistDetail = selectedArtistDetail?.let { artist ->
+                artist.copy(
+                    albums = artist.albums.map { album ->
+                        if (album.id == response.itemId) {
+                            album.copy(
+                                likeCount = response.likeCount,
+                                likedByClient = response.likedByClient,
+                            )
+                        } else {
+                            album
+                        }
+                    },
+                )
+            },
+        )
+        "track" -> copy(
+            tracks = tracks.map { track ->
+                if (track.id == response.itemId) {
+                    track.copy(likeCount = response.likeCount, likedByClient = response.likedByClient)
+                } else {
+                    track
+                }
+            },
+            selectedAlbumDetail = selectedAlbumDetail?.let { album ->
+                album.copy(
+                    tracks = album.tracks.map { track ->
+                        if (track.id == response.itemId) {
+                            track.copy(
+                                likeCount = response.likeCount,
+                                likedByClient = response.likedByClient,
+                            )
+                        } else {
+                            track
+                        }
+                    },
+                )
+            },
+            nowPlaying = nowPlaying?.let { nowPlaying ->
+                nowPlaying.copy(
+                    currentTrack = nowPlaying.currentTrack?.let { track ->
+                        if (track.id == response.itemId) {
+                            track.copy(
+                                likeCount = response.likeCount,
+                                likedByClient = response.likedByClient,
+                            )
+                        } else {
+                            track
+                        }
+                    },
+                )
+            },
+        )
+        else -> this
+    }
 
 private sealed interface RendererGroupQuickAddMutation {
     data class CreateAdHocGroup(
