@@ -116,11 +116,14 @@ pub(crate) fn render_tracks_json(state: &ServiceState) -> String {
 
 pub(crate) fn render_albums_json(state: &ServiceState) -> String {
     let albums = state.albums_snapshot();
-    let mut sorted_albums = albums
-        .iter()
-        .collect::<Vec<_>>();
+    let mut sorted_albums = albums.iter().collect::<Vec<_>>();
 
-    sorted_albums.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
+    sorted_albums.sort_by(|a, b| {
+        a.title
+            .to_lowercase()
+            .cmp(&b.title.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
 
     serde_json::to_string(&sorted_albums).unwrap_or("[]".to_string())
 }

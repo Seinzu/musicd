@@ -3,9 +3,9 @@ use std::fmt::Write;
 use crate::http::HttpRequest;
 use crate::service::ServiceState;
 use crate::types::{AlbumSummary, ArtistSummary, LibraryTrack};
-use crate::util::{html_escape, json_escape, url_encode, EscapeHtml};
+use crate::util::{EscapeHtml, html_escape, json_escape, url_encode};
 
-use super::layout::{render_layout, renderer_location_input, LayoutContext, PageTab};
+use super::layout::{LayoutContext, PageTab, render_layout, renderer_location_input};
 
 const LIBRARY_PAGE_SIZE: usize = 100;
 
@@ -548,13 +548,13 @@ fn render_track_row(
     renderer_qs: &str,
 ) {
     let artwork = match track.artwork.as_ref() {
-            Some(_) => format!(
-                "<img loading=\"lazy\" class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
-                EscapeHtml(&track.id),
-                EscapeHtml(&track.album)
-            ),
-            None => "<div class=\"cover-thumb placeholder\">No Art</div>".to_string(),
-        };
+        Some(_) => format!(
+            "<img loading=\"lazy\" class=\"cover-thumb\" src=\"/artwork/track/{}\" alt=\"Artwork for {}\">",
+            EscapeHtml(&track.id),
+            EscapeHtml(&track.album)
+        ),
+        None => "<div class=\"cover-thumb placeholder\">No Art</div>".to_string(),
+    };
     let _ = write!(
         rows,
         r#"<tr data-search="{search}">

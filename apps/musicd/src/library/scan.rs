@@ -243,8 +243,8 @@ where
 }
 
 fn discovery_percent(progress: &ScanProgress) -> u8 {
-    let directory_score = (progress.visited_dirs as f64 / (progress.visited_dirs as f64 + 100.0))
-        * 12.0;
+    let directory_score =
+        (progress.visited_dirs as f64 / (progress.visited_dirs as f64 + 100.0)) * 12.0;
     let file_score = (progress.audio_files as f64 / (progress.audio_files as f64 + 1_000.0)) * 8.0;
     (directory_score + file_score).clamp(1.0, 19.0).round() as u8
 }
@@ -400,8 +400,7 @@ fn extract_tags(tagged_file: &TaggedFile) -> ParsedTrackTags {
         artist: tag.artist().map(|value| value.into_owned()),
         album: tag.album().map(|value| value.into_owned()),
         album_artist: tag_text(tag, ItemKey::AlbumArtist),
-        compilation: tag_text(tag, ItemKey::FlagCompilation)
-            .map(|value| value == "1"),
+        compilation: tag_text(tag, ItemKey::FlagCompilation).map(|value| value == "1"),
         disc_number: tag.disk(),
         track_number: tag.track(),
         duration_seconds: {
@@ -558,7 +557,9 @@ where
             let track = build_library_track(root, file, &artwork_cache_dir, &artwork_cache);
             let processed = processed_files.fetch_add(1, Ordering::Relaxed) + 1;
 
-            if processed == 1 || processed % progress_interval == 0 || processed == audio_files.len()
+            if processed == 1
+                || processed % progress_interval == 0
+                || processed == audio_files.len()
             {
                 let event = ScanProgressEvent {
                     stage: "extracting_metadata".to_string(),

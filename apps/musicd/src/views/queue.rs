@@ -178,7 +178,9 @@ pub(crate) fn render_queue_fragment(
     }
 
     if rows.is_empty() {
-        rows = "<li class=\"queue-entry empty-row\"><p class=\"empty\">The queue is empty.</p></li>".to_string();
+        rows =
+            "<li class=\"queue-entry empty-row\"><p class=\"empty\">The queue is empty.</p></li>"
+                .to_string();
     }
 
     format!(

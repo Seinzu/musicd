@@ -42,9 +42,9 @@ use crate::views::{
 
 use crate::assets;
 
-use super::request::{request_value, HttpRequest};
-use super::response::{respond_asset, respond_method_not_allowed, respond_not_found, respond_text};
 use super::ResponseWriter;
+use super::request::{HttpRequest, request_value};
+use super::response::{respond_asset, respond_method_not_allowed, respond_not_found, respond_text};
 
 pub(crate) fn handle_service_request(
     writer: &mut ResponseWriter,

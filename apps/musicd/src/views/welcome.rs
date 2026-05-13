@@ -114,7 +114,11 @@ fn render_spotlight(
     let renderer_qs = url_encode(renderer_location);
     let mut cards = String::new();
     for album in eligible.iter().take(count) {
-        let album_url = format!("/album/{}?renderer_location={}", url_encode(&album.id), renderer_qs);
+        let album_url = format!(
+            "/album/{}?renderer_location={}",
+            url_encode(&album.id),
+            renderer_qs
+        );
         let artwork = match album.artwork_url.as_ref() {
             Some(url) => format!(
                 "<img loading=\"lazy\" class=\"spotlight-art\" src=\"{}\" alt=\"Artwork for {}\">",

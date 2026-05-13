@@ -65,8 +65,9 @@ pub(crate) struct LayoutContext {
 impl LayoutContext {
     pub(crate) fn from_request(state: &ServiceState, request: &HttpRequest) -> Self {
         let library = state.library_snapshot();
-        let renderer_location = state
-            .preferred_renderer_location(request.query.get("renderer_location").map(String::as_str));
+        let renderer_location = state.preferred_renderer_location(
+            request.query.get("renderer_location").map(String::as_str),
+        );
         let known_renderers = state.renderer_snapshot();
 
         let mut renderer_options_html = String::new();
@@ -112,8 +113,16 @@ impl LayoutContext {
             renderer_location,
             renderer_options_html,
             selected_renderer_label,
-            message: request.query.get("message").cloned().filter(|s| !s.is_empty()),
-            error: request.query.get("error").cloned().filter(|s| !s.is_empty()),
+            message: request
+                .query
+                .get("message")
+                .cloned()
+                .filter(|s| !s.is_empty()),
+            error: request
+                .query
+                .get("error")
+                .cloned()
+                .filter(|s| !s.is_empty()),
         }
     }
 }
