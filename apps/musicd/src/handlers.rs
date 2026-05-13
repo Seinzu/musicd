@@ -1063,6 +1063,54 @@ pub(crate) fn handle_api_play_album_request(
     }
 }
 
+pub(crate) fn handle_api_like_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let item_kind = match required_request_value(request, "item_kind") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let item_id = match required_request_value(request, "item_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let client_id = match required_request_value(request, "client_id") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+
+    match state.like_item(&item_kind, &item_id, &client_id) {
+        Ok(result) => {
+            let body = format!(
+                r#"{{"ok":true,"item_kind":"{}","item_id":"{}","like_count":{},"liked_by_client":{},"created":{}}}"#,
+                json_escape(&result.item_kind),
+                json_escape(&result.item_id),
+                result.like_count,
+                if result.liked_by_client {
+                    "true"
+                } else {
+                    "false"
+                },
+                if result.created { "true" } else { "false" },
+            );
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("like failed: {error}"),
+        ),
+    }
+}
+
 pub(crate) fn handle_api_album_artwork_select_request(
     writer: &mut ResponseWriter,
     request: &HttpRequest,

@@ -6,8 +6,8 @@ use crate::handlers::{
     authorize_direct_renderer_access, handle_album_artwork_request,
     handle_api_album_artwork_select_request, handle_api_android_local_completed_request,
     handle_api_android_local_session_request, handle_api_cli_local_completed_request,
-    handle_api_cli_local_session_request, handle_api_events_request, handle_api_play_album_request,
-    handle_api_play_request, handle_api_queue_append_album_request,
+    handle_api_cli_local_session_request, handle_api_events_request, handle_api_like_request,
+    handle_api_play_album_request, handle_api_play_request, handle_api_queue_append_album_request,
     handle_api_queue_append_track_request, handle_api_queue_clear_request,
     handle_api_queue_move_request, handle_api_queue_play_next_album_request,
     handle_api_queue_play_next_track_request, handle_api_queue_remove_request,
@@ -148,7 +148,7 @@ pub(crate) fn handle_service_request(
             )
         }
         ("GET", "/api/tracks") | ("HEAD", "/api/tracks") => {
-            let body = render_tracks_json(&state);
+            let body = render_tracks_json(&state, request);
             respond_text(
                 writer,
                 "200 OK",
@@ -158,7 +158,7 @@ pub(crate) fn handle_service_request(
             )
         }
         ("GET", "/api/albums") | ("HEAD", "/api/albums") => {
-            let body = render_albums_json(&state);
+            let body = render_albums_json(&state, request);
             respond_text(
                 writer,
                 "200 OK",
@@ -331,6 +331,7 @@ pub(crate) fn handle_service_request(
         }
         ("POST", "/api/play") => handle_api_play_request(writer, request, &state),
         ("POST", "/api/play-album") => handle_api_play_album_request(writer, request, &state),
+        ("POST", "/api/like") => handle_api_like_request(writer, request, &state),
         ("POST", "/api/albums/artwork/select") => {
             handle_api_album_artwork_select_request(writer, request, &state)
         }
@@ -489,6 +490,7 @@ pub(crate) fn handle_service_request(
         | ("HEAD", "/play-album")
         | ("HEAD", "/api/play")
         | ("HEAD", "/api/play-album")
+        | ("HEAD", "/api/like")
         | ("HEAD", "/api/transport/play")
         | ("HEAD", "/api/transport/pause")
         | ("HEAD", "/api/transport/stop")

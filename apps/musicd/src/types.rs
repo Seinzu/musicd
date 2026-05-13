@@ -255,6 +255,15 @@ pub(crate) struct TrackPlayRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LikeResult {
+    pub(crate) item_kind: String,
+    pub(crate) item_id: String,
+    pub(crate) like_count: u64,
+    pub(crate) liked_by_client: bool,
+    pub(crate) created: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QueueMutationEntry {
     pub(crate) track_id: String,
     pub(crate) album_id: Option<String>,

@@ -2080,6 +2080,37 @@ mod tests {
     }
 
     #[test]
+    fn likes_are_counted_once_per_client_and_item() {
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let album_id = track.album_id.clone();
+        let state = sample_state(vec![track.clone()]);
+
+        let first = state
+            .like_item("track", &track.id, "client-a")
+            .expect("first track like should save");
+        assert!(first.created);
+        assert_eq!(first.like_count, 1);
+
+        let duplicate = state
+            .like_item("track", &track.id, "client-a")
+            .expect("duplicate track like should be idempotent");
+        assert!(!duplicate.created);
+        assert_eq!(duplicate.like_count, 1);
+
+        let second_client = state
+            .like_item("track", &track.id, "client-b")
+            .expect("second client track like should save");
+        assert!(second_client.created);
+        assert_eq!(second_client.like_count, 2);
+
+        let album_like = state
+            .like_item("album", &album_id, "client-a")
+            .expect("album like should save separately from track likes");
+        assert!(album_like.created);
+        assert_eq!(album_like.like_count, 1);
+    }
+
+    #[test]
     fn loads_recent_track_play_history_newest_first() {
         let config_path = temp_config_path("recent-track-play-history");
         let database = Database::open(&config_path).expect("database should open");

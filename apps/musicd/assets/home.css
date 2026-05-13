@@ -284,6 +284,30 @@ button.icon-button.primary {
   color: var(--md-sys-color-on-primary);
 }
 
+.like-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 3.4rem;
+  justify-content: center;
+  padding: 0.35rem 0.65rem;
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+.like-button.liked {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+.like-button.like-error {
+  background: rgba(179, 38, 30, 0.12);
+  color: var(--md-sys-color-error);
+}
+.like-icon { line-height: 1; }
+.like-count {
+  font-variant-numeric: tabular-nums;
+  min-width: 1ch;
+}
+
 input[type="text"], select {
   flex: 1 1 18rem;
   min-width: 12rem;

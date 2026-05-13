@@ -21,6 +21,121 @@ function formatDuration(seconds) {
   return `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
+/* --------------------------------------------------------------- Likes */
+const MUSICD_CLIENT_ID_KEY = 'musicd.clientId';
+const MUSICD_LIKED_ITEMS_KEY = 'musicd.likedItems';
+
+function getMusicdClientId() {
+  try {
+    const existing = window.localStorage.getItem(MUSICD_CLIENT_ID_KEY);
+    if (existing) {
+      return existing;
+    }
+    const generated = window.crypto?.randomUUID
+      ? window.crypto.randomUUID()
+      : `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    window.localStorage.setItem(MUSICD_CLIENT_ID_KEY, generated);
+    return generated;
+  } catch (_error) {
+    return `web-volatile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+function loadLikedItems() {
+  try {
+    return new Set(JSON.parse(window.localStorage.getItem(MUSICD_LIKED_ITEMS_KEY) || '[]'));
+  } catch (_error) {
+    return new Set();
+  }
+}
+
+function saveLikedItems(items) {
+  try {
+    window.localStorage.setItem(MUSICD_LIKED_ITEMS_KEY, JSON.stringify([...items]));
+  } catch (_error) {
+    /* localStorage can be unavailable in private contexts */
+  }
+}
+
+function likedItemKey(kind, id) {
+  return `${kind}:${id}`;
+}
+
+function updateLikeButtons(kind, id, count, liked) {
+  const cssEscape = window.CSS?.escape || ((value) => String(value).replaceAll('"', '\\"'));
+  const selector = `.like-button[data-like-kind="${cssEscape(kind)}"][data-like-id="${cssEscape(id)}"]`;
+  for (const button of document.querySelectorAll(selector)) {
+    button.dataset.likeCount = String(count);
+    button.classList.toggle('liked', liked);
+    button.disabled = liked;
+    button.setAttribute('aria-pressed', liked ? 'true' : 'false');
+    const countNode = button.querySelector('.like-count');
+    if (countNode) {
+      countNode.textContent = String(count);
+    }
+  }
+}
+
+async function likeItem(button) {
+  const kind = button.dataset.likeKind || '';
+  const id = button.dataset.likeId || '';
+  if (!kind || !id || button.dataset.loading === 'true') {
+    return;
+  }
+
+  button.dataset.loading = 'true';
+  const form = new URLSearchParams();
+  form.set('item_kind', kind);
+  form.set('item_id', id);
+  form.set('client_id', getMusicdClientId());
+
+  try {
+    const response = await fetch('/api/like', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || 'Like failed');
+    }
+    const likedItems = loadLikedItems();
+    likedItems.add(likedItemKey(kind, id));
+    saveLikedItems(likedItems);
+    updateLikeButtons(kind, id, payload.like_count ?? button.dataset.likeCount ?? 0, true);
+  } catch (_error) {
+    button.classList.add('like-error');
+    window.setTimeout(() => button.classList.remove('like-error'), 1200);
+  } finally {
+    button.dataset.loading = 'false';
+  }
+}
+
+function setupLikeButtons() {
+  const buttons = document.querySelectorAll('.like-button');
+  if (!buttons.length) {
+    return;
+  }
+  const likedItems = loadLikedItems();
+  for (const button of buttons) {
+    const kind = button.dataset.likeKind || '';
+    const id = button.dataset.likeId || '';
+    const liked = likedItems.has(likedItemKey(kind, id));
+    button.classList.toggle('liked', liked);
+    button.disabled = liked;
+    button.setAttribute('aria-pressed', liked ? 'true' : 'false');
+    if (button.dataset.likeReady === 'true') {
+      continue;
+    }
+    button.dataset.likeReady = 'true';
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      likeItem(button);
+    });
+  }
+}
+
 /* -------------------------------------------------------------- Renderer */
 function syncRendererFields(value) {
   const proxies = document.querySelectorAll('.renderer-location-proxy');
@@ -264,6 +379,7 @@ async function loadMoreLibraryRows(loader) {
     }
     if (payload.rows) {
       target.insertAdjacentHTML('beforeend', payload.rows);
+      setupLikeButtons();
     }
     if (payload.has_more) {
       loader.dataset.offset = String(payload.next_offset);
@@ -453,6 +569,7 @@ document.addEventListener('change', (event) => {
 
 setupLibraryChips();
 setupLibraryInfiniteScroll();
+setupLikeButtons();
 syncSelectedTrackSidebar();
 startQueueRefresh();
 setupRescanProgress();

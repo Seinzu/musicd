@@ -234,6 +234,7 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/albums/artwork/select",
     "/api/artists",
     "/api/events",
+    "/api/like",
     "/api/now-playing",
     "/api/play",
     "/api/play-album",

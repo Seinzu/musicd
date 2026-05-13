@@ -4,6 +4,7 @@ use crate::util::{format_track_position, html_escape, url_encode};
 
 use super::error::render_detail_error_page;
 use super::layout::{LayoutContext, PageTab, render_layout, renderer_location_input};
+use super::library::render_like_button;
 
 pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpRequest) -> String {
     let album_id = request.path.trim_start_matches("/album/");
@@ -14,6 +15,12 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
     let Some(album) = state.find_album(album_id) else {
         return render_detail_error_page("Album not found");
     };
+    let album_like_count = state
+        .album_like_counts()
+        .get(&album.id)
+        .copied()
+        .unwrap_or(0);
+    let track_like_counts = state.track_like_counts();
 
     let tracks = state.tracks_for_album(&album.id);
     let artwork_html = album
@@ -51,10 +58,15 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
                 url_encode(&album.id)
             );
             format!(
-                "<tr><td data-label=\"Position\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><a href=\"{}\">Play Track</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Play Next</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Queue</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}?renderer_location={}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
+                "<tr><td data-label=\"Position\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td><td data-label=\"Likes\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><a href=\"{}\">Play Track</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Play Next</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Queue</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}?renderer_location={}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
                 html_escape(&format_track_position(track.disc_number, track.track_number)),
                 html_escape(&track.title),
                 html_escape(&track.artist),
+                render_like_button(
+                    "track",
+                    &track.id,
+                    track_like_counts.get(&track.id).copied().unwrap_or(0)
+                ),
                 html_escape(&play_url),
                 html_escape(&play_next_url),
                 html_escape(&queue_url),
@@ -73,6 +85,7 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
     <h1>{}</h1>
     <p class="meta">{}</p>
     <p class="meta small">{} tracks</p>
+    <div class="album-like">{}</div>
   </div>
   {}
   <div class="album-actions">
@@ -97,6 +110,7 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
           <th>Position</th>
           <th>Title</th>
           <th>Artist</th>
+          <th>Likes</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -107,6 +121,7 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
         html_escape(&album.title),
         html_escape(&album.metadata.release_date.unwrap_or("".to_string())),
         album.track_count,
+        render_like_button("album", &album.id, album_like_count),
         artwork_html,
         html_escape(&album.id),
         html_escape(&ctx.renderer_location),

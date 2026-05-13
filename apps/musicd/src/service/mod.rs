@@ -9,7 +9,8 @@ use crate::library::{Library, ScanProgressEvent, scan_library, scan_library_with
 use crate::metrics;
 use crate::renderer::{RendererBackend, RendererBackends};
 use crate::types::{
-    AlbumSummary, ArtistSummary, LibraryTrack, PlaybackQueue, PlaybackSession, RendererRecord,
+    AlbumSummary, ArtistSummary, LibraryTrack, LikeResult, PlaybackQueue, PlaybackSession,
+    RendererRecord,
 };
 use crate::util::now_unix_timestamp;
 
@@ -231,6 +232,67 @@ impl ServiceState {
                     .map(|&idx| library.albums[idx].clone())
                     .collect()
             })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn like_item(
+        &self,
+        item_kind: &str,
+        item_id: &str,
+        client_id: &str,
+    ) -> io::Result<LikeResult> {
+        match item_kind {
+            "album" if self.find_album(item_id).is_none() => {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "album not found"));
+            }
+            "track" if self.find_track(item_id).is_none() => {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "track not found"));
+            }
+            "album" | "track" => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "item_kind must be album or track",
+                ));
+            }
+        }
+
+        let created =
+            self.database
+                .add_item_like(item_kind, item_id, client_id, now_unix_timestamp())?;
+        let like_count = self.database.count_item_likes(item_kind, item_id)?;
+        Ok(LikeResult {
+            item_kind: item_kind.to_string(),
+            item_id: item_id.to_string(),
+            like_count,
+            liked_by_client: true,
+            created,
+        })
+    }
+
+    pub(crate) fn album_like_counts(&self) -> std::collections::HashMap<String, u64> {
+        self.database.item_like_counts("album").unwrap_or_default()
+    }
+
+    pub(crate) fn track_like_counts(&self) -> std::collections::HashMap<String, u64> {
+        self.database.item_like_counts("track").unwrap_or_default()
+    }
+
+    pub(crate) fn client_liked_album_ids(
+        &self,
+        client_id: Option<&str>,
+    ) -> std::collections::HashSet<String> {
+        self.database
+            .client_liked_item_ids("album", client_id)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn client_liked_track_ids(
+        &self,
+        client_id: Option<&str>,
+    ) -> std::collections::HashSet<String> {
+        self.database
+            .client_liked_item_ids("track", client_id)
             .unwrap_or_default()
     }
 

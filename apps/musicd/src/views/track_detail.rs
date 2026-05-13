@@ -6,6 +6,7 @@ use crate::types::EmbeddedMetadata;
 use crate::util::{format_duration_seconds, format_track_position, html_escape, url_encode};
 
 use super::error::render_detail_error_page;
+use super::library::render_like_button;
 
 pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpRequest) -> String {
     let track_id = request.path.trim_start_matches("/track/");
@@ -19,6 +20,11 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
     let Some(track) = state.find_track(track_id) else {
         return render_detail_error_page("Track not found");
     };
+    let like_count = state
+        .track_like_counts()
+        .get(&track.id)
+        .copied()
+        .unwrap_or(0);
 
     let metadata =
         inspect_embedded_metadata(&track.path).unwrap_or_else(|error| EmbeddedMetadata {
@@ -159,6 +165,7 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
         <a class="secondary" href="/stream/track/{}" target="_blank" rel="noreferrer">Preview Stream</a>
         <a class="secondary" href="{}">Queue Track</a>
         <a href="{}">Play On Renderer</a>
+        {}
       </div>
     </header>
     <section>
@@ -173,6 +180,7 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
       {}
     </section>
   </main>
+  <script src="/assets/home.js?v={asset_version}" defer></script>
 </body>
 </html>"#,
         html_escape(&track.title),
@@ -184,6 +192,7 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
         html_escape(&track.id),
         html_escape(&queue_url),
         html_escape(&play_url),
+        render_like_button("track", &track.id, like_count),
         inferred_rows,
         artwork_html,
         html_escape(&metadata.format_name),

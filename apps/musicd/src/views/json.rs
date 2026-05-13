@@ -21,6 +21,13 @@ pub(crate) fn render_track_detail_json(state: &ServiceState, request: &HttpReque
     let Some(track) = state.find_track(track_id) else {
         return r#"{"error":"track not found"}"#.to_string();
     };
+    let client_id = request_value(request, "client_id");
+    let like_count = state
+        .track_like_counts()
+        .get(&track.id)
+        .copied()
+        .unwrap_or(0);
+    let liked_by_client = state.client_liked_track_ids(client_id).contains(&track.id);
 
     let metadata =
         inspect_embedded_metadata(&track.path).unwrap_or_else(|error| EmbeddedMetadata {
@@ -61,7 +68,7 @@ pub(crate) fn render_track_detail_json(state: &ServiceState, request: &HttpReque
     );
 
     format!(
-        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"metadata":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
+        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"relative_path":"{}","absolute_path":"{}","mime_type":"{}","size":{},"artwork":{},"metadata":{},"like_count":{},"liked_by_client":{},"embedded_metadata":{{"parser":"{}","fields":[{}],"notes":[{}]}}}}"#,
         json_escape(&track.id),
         json_escape(&track.album_id),
         json_escape(&track.title),
@@ -76,14 +83,19 @@ pub(crate) fn render_track_detail_json(state: &ServiceState, request: &HttpReque
         track.file_size,
         artwork_json,
         track_metadata_json(&track),
+        like_count,
+        bool_json(liked_by_client),
         json_escape(&metadata.format_name),
         fields,
         notes,
     )
 }
 
-pub(crate) fn render_tracks_json(state: &ServiceState) -> String {
+pub(crate) fn render_tracks_json(state: &ServiceState, request: &HttpRequest) -> String {
     let tracks = state.tracks_snapshot();
+    let client_id = request_value(request, "client_id");
+    let like_counts = state.track_like_counts();
+    let liked_track_ids = state.client_liked_track_ids(client_id);
     let album_artwork_by_id = state
         .albums_snapshot()
         .iter()
@@ -98,7 +110,12 @@ pub(crate) fn render_tracks_json(state: &ServiceState) -> String {
         .iter()
         .map(|track| {
             let fallback_artwork_url = album_artwork_by_id.get(&track.album_id).map(String::as_str);
-            let summary_json = track_summary_json(track, fallback_artwork_url);
+            let summary_json = track_summary_json_with_likes(
+                track,
+                fallback_artwork_url,
+                like_counts.get(&track.id).copied().unwrap_or(0),
+                liked_track_ids.contains(&track.id),
+            );
             if let Some(stripped) = summary_json.strip_suffix('}') {
                 format!(
                     r#"{stripped},"path":"{}","size":{}}}"#,
@@ -114,9 +131,12 @@ pub(crate) fn render_tracks_json(state: &ServiceState) -> String {
     format!("[{entries}]")
 }
 
-pub(crate) fn render_albums_json(state: &ServiceState) -> String {
+pub(crate) fn render_albums_json(state: &ServiceState, request: &HttpRequest) -> String {
     let albums = state.albums_snapshot();
     let mut sorted_albums = albums.iter().collect::<Vec<_>>();
+    let client_id = request_value(request, "client_id");
+    let like_counts = state.album_like_counts();
+    let liked_album_ids = state.client_liked_album_ids(client_id);
 
     sorted_albums.sort_by(|a, b| {
         a.title
@@ -125,7 +145,18 @@ pub(crate) fn render_albums_json(state: &ServiceState) -> String {
             .then_with(|| a.id.cmp(&b.id))
     });
 
-    serde_json::to_string(&sorted_albums).unwrap_or("[]".to_string())
+    let entries = sorted_albums
+        .into_iter()
+        .map(|album| {
+            album_summary_json_with_likes(
+                album,
+                like_counts.get(&album.id).copied().unwrap_or(0),
+                liked_album_ids.contains(&album.id),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{entries}]")
 }
 
 pub(crate) fn render_artists_json(state: &ServiceState) -> String {
@@ -146,14 +177,30 @@ pub(crate) fn render_album_detail_json(state: &ServiceState, request: &HttpReque
     let Some(album) = state.find_album(album_id) else {
         return r#"{"error":"album not found"}"#.to_string();
     };
+    let client_id = request_value(request, "client_id");
+    let album_like_count = state
+        .album_like_counts()
+        .get(&album.id)
+        .copied()
+        .unwrap_or(0);
+    let liked_album_ids = state.client_liked_album_ids(client_id);
+    let track_like_counts = state.track_like_counts();
+    let liked_track_ids = state.client_liked_track_ids(client_id);
     let tracks = state.tracks_for_album(&album.id);
     let tracks_json = tracks
         .into_iter()
-        .map(|track| track_summary_json(&track, album.artwork_url.as_deref()))
+        .map(|track| {
+            track_summary_json_with_likes(
+                &track,
+                album.artwork_url.as_deref(),
+                track_like_counts.get(&track.id).copied().unwrap_or(0),
+                liked_track_ids.contains(&track.id),
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{},"tracks":[{}]}}"#,
+        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{},"like_count":{},"liked_by_client":{},"tracks":[{}]}}"#,
         json_escape(&album.id),
         json_escape(&album.title),
         json_escape(&album.artist),
@@ -161,13 +208,23 @@ pub(crate) fn render_album_detail_json(state: &ServiceState, request: &HttpReque
         json_escape(&album.first_track_id),
         json_escape(album.artwork_url.as_deref().unwrap_or_default()),
         album_metadata_json(&album),
+        album_like_count,
+        bool_json(liked_album_ids.contains(&album.id)),
         tracks_json,
     )
 }
 
 pub(crate) fn album_summary_json(album: &AlbumSummary) -> String {
+    album_summary_json_with_likes(album, 0, false)
+}
+
+pub(crate) fn album_summary_json_with_likes(
+    album: &AlbumSummary,
+    like_count: u64,
+    liked_by_client: bool,
+) -> String {
     format!(
-        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{}}}"#,
+        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{},"like_count":{},"liked_by_client":{}}}"#,
         json_escape(&album.id),
         json_escape(&album.title),
         json_escape(&album.artist),
@@ -175,6 +232,8 @@ pub(crate) fn album_summary_json(album: &AlbumSummary) -> String {
         json_escape(&album.first_track_id),
         json_escape(album.artwork_url.as_deref().unwrap_or_default()),
         album_metadata_json(album),
+        like_count,
+        bool_json(liked_by_client),
     )
 }
 
@@ -196,9 +255,18 @@ pub(crate) fn render_artist_detail_json(state: &ServiceState, request: &HttpRequ
         return r#"{"error":"artist not found"}"#.to_string();
     };
     let albums = state.albums_for_artist(&artist.id);
+    let client_id = request_value(request, "client_id");
+    let like_counts = state.album_like_counts();
+    let liked_album_ids = state.client_liked_album_ids(client_id);
     let albums_json = albums
         .into_iter()
-        .map(|album| album_summary_json(&album))
+        .map(|album| {
+            album_summary_json_with_likes(
+                &album,
+                like_counts.get(&album.id).copied().unwrap_or(0),
+                liked_album_ids.contains(&album.id),
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     format!(
@@ -676,13 +744,22 @@ pub(crate) fn track_summary_json(
     track: &LibraryTrack,
     fallback_album_artwork_url: Option<&str>,
 ) -> String {
+    track_summary_json_with_likes(track, fallback_album_artwork_url, 0, false)
+}
+
+pub(crate) fn track_summary_json_with_likes(
+    track: &LibraryTrack,
+    fallback_album_artwork_url: Option<&str>,
+    like_count: u64,
+    liked_by_client: bool,
+) -> String {
     let artwork_url = if track.artwork.is_some() {
         Some(format!("/artwork/track/{}", track.id))
     } else {
         fallback_album_artwork_url.map(ToString::to_string)
     };
     format!(
-        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{},"mime_type":"{}","metadata":{}}}"#,
+        r#"{{"id":"{}","album_id":"{}","title":"{}","artist":"{}","album":"{}","disc_number":{},"track_number":{},"duration_seconds":{},"artwork_url":{},"mime_type":"{}","metadata":{},"like_count":{},"liked_by_client":{}}}"#,
         json_escape(&track.id),
         json_escape(&track.album_id),
         json_escape(&track.title),
@@ -694,6 +771,8 @@ pub(crate) fn track_summary_json(
         option_string_json(artwork_url.as_deref()),
         json_escape(&track.mime_type),
         track_metadata_json(track),
+        like_count,
+        bool_json(liked_by_client),
     )
 }
 

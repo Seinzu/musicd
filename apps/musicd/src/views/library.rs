@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::http::HttpRequest;
@@ -61,6 +62,8 @@ pub(crate) fn render_library_page(state: &ServiceState, request: &HttpRequest) -
     let renderer_location_url_encoded = url_encode(&ctx.renderer_location);
     let renderer_input = renderer_location_input(&ctx.renderer_location);
     let active_facet = LibraryFacet::from_request(request);
+    let album_like_counts = state.album_like_counts();
+    let track_like_counts = state.track_like_counts();
     let search_query = request
         .query
         .get("q")
@@ -85,6 +88,7 @@ pub(crate) fn render_library_page(state: &ServiceState, request: &HttpRequest) -
             &renderer_input,
             &renderer_location_url_encoded,
             &search_query,
+            &album_like_counts,
         )
     } else {
         String::new()
@@ -96,6 +100,7 @@ pub(crate) fn render_library_page(state: &ServiceState, request: &HttpRequest) -
             &renderer_input,
             &renderer_location_url_encoded,
             &search_query,
+            &track_like_counts,
         )
     } else {
         String::new()
@@ -290,6 +295,7 @@ fn render_albums_section(
     renderer_input: &str,
     renderer_qs: &str,
     search_query: &str,
+    album_like_counts: &HashMap<String, u64>,
 ) -> String {
     if library.albums.is_empty() {
         return r#"<section class="card library-section" data-section="albums">
@@ -304,6 +310,7 @@ fn render_albums_section(
         renderer_input,
         renderer_qs,
         search_query,
+        album_like_counts,
         0,
         LIBRARY_PAGE_SIZE,
     );
@@ -334,6 +341,7 @@ fn render_albums_section(
           <th>Album</th>
           <th>Artist</th>
           <th>Tracks</th>
+          <th>Likes</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -351,6 +359,7 @@ fn render_album_rows(
     renderer_input: &str,
     renderer_qs: &str,
     search_query: &str,
+    album_like_counts: &HashMap<String, u64>,
     offset: usize,
     limit: usize,
 ) -> (String, usize, usize) {
@@ -365,7 +374,13 @@ fn render_album_rows(
             continue;
         }
         if total >= offset && rendered < limit {
-            render_album_row(&mut rows, album, renderer_input, renderer_qs);
+            render_album_row(
+                &mut rows,
+                album,
+                renderer_input,
+                renderer_qs,
+                album_like_counts.get(&album.id).copied().unwrap_or(0),
+            );
             rendered += 1;
         }
         total += 1;
@@ -382,6 +397,7 @@ fn render_album_row(
     album: &AlbumSummary,
     renderer_input: &str,
     renderer_qs: &str,
+    like_count: u64,
 ) {
     let mut search = album.title.to_lowercase();
     search.push(' ');
@@ -407,6 +423,7 @@ fn render_album_row(
   <td data-label="Album"><a class="album-link" href="{album_url}">{title}</a></td>
   <td data-label="Artist">{artist}</td>
   <td data-label="Tracks">{tracks}</td>
+  <td data-label="Likes">{like_button}</td>
   <td data-label="Actions" class="actions-cell">
     <form class="inline-form" action="/play-album" method="get">
       <input type="hidden" name="album_id" value="{album_id}">
@@ -434,6 +451,7 @@ fn render_album_row(
         title = EscapeHtml(&album.title),
         artist = EscapeHtml(&album.artist),
         tracks = album.track_count,
+        like_button = render_like_button("album", &album.id, like_count),
         album_id = EscapeHtml(&album.id),
         renderer_input = renderer_input,
     );
@@ -445,6 +463,7 @@ fn render_tracks_section(
     renderer_input: &str,
     renderer_qs: &str,
     search_query: &str,
+    track_like_counts: &HashMap<String, u64>,
 ) -> String {
     if library.tracks.is_empty() {
         return r#"<section class="card library-section" data-section="tracks">
@@ -459,6 +478,7 @@ fn render_tracks_section(
         renderer_input,
         renderer_qs,
         search_query,
+        track_like_counts,
         0,
         LIBRARY_PAGE_SIZE,
     );
@@ -493,6 +513,7 @@ fn render_tracks_section(
           <th>Title</th>
           <th>Artist</th>
           <th>Album</th>
+          <th>Likes</th>
           <th>Actions</th>
         </tr>
       </thead>
@@ -510,6 +531,7 @@ fn render_track_rows(
     renderer_input: &str,
     renderer_qs: &str,
     search_query: &str,
+    track_like_counts: &HashMap<String, u64>,
     offset: usize,
     limit: usize,
 ) -> (String, usize, usize) {
@@ -532,7 +554,14 @@ fn render_track_rows(
             continue;
         }
         if total >= offset && rendered < limit {
-            render_track_row(&mut rows, track, &search, renderer_input, renderer_qs);
+            render_track_row(
+                &mut rows,
+                track,
+                &search,
+                renderer_input,
+                renderer_qs,
+                track_like_counts.get(&track.id).copied().unwrap_or(0),
+            );
             rendered += 1;
         }
         total += 1;
@@ -546,6 +575,7 @@ fn render_track_row(
     search: &str,
     renderer_input: &str,
     renderer_qs: &str,
+    like_count: u64,
 ) {
     let artwork = match track.artwork.as_ref() {
         Some(_) => format!(
@@ -563,6 +593,7 @@ fn render_track_row(
   <td data-label="Title">{title}</td>
   <td data-label="Artist">{artist}</td>
   <td data-label="Album"><a class="album-link" href="/album/{album_id_encoded}?renderer_location={renderer_qs}">{album}</a></td>
+  <td data-label="Likes">{like_button}</td>
   <td data-label="Actions" class="actions-cell">
     <form class="inline-form" action="/queue/play-next-track" method="get">
       <input type="hidden" name="track_id" value="{track_id}">
@@ -586,6 +617,7 @@ fn render_track_row(
         title = EscapeHtml(&track.title),
         artist = EscapeHtml(&track.artist),
         album = EscapeHtml(&track.album),
+        like_button = render_like_button("track", &track.id, like_count),
         album_id_encoded = url_encode(&track.album_id),
         renderer_qs = renderer_qs,
         renderer_input = renderer_input,
@@ -598,6 +630,7 @@ fn render_tracks_grid(
     renderer_input: &str,
     renderer_qs: &str,
     search_query: &str,
+    track_like_counts: &HashMap<String, u64>,
 ) -> String {
     let tracks_html = render_tracks_section(
         library,
@@ -605,6 +638,7 @@ fn render_tracks_grid(
         renderer_input,
         renderer_qs,
         search_query,
+        track_like_counts,
     );
     format!(
         r#"<section class="library-tracks-grid">
@@ -648,6 +682,8 @@ pub(crate) fn render_library_rows_json(state: &ServiceState, request: &HttpReque
     let library = state.library_snapshot();
     let renderer_qs = url_encode(&ctx.renderer_location);
     let renderer_input = renderer_location_input(&ctx.renderer_location);
+    let album_like_counts = state.album_like_counts();
+    let track_like_counts = state.track_like_counts();
     let search_query = request
         .query
         .get("q")
@@ -673,6 +709,7 @@ pub(crate) fn render_library_rows_json(state: &ServiceState, request: &HttpReque
             &renderer_input,
             &renderer_qs,
             &search_query,
+            &album_like_counts,
             offset,
             LIBRARY_PAGE_SIZE,
         ),
@@ -681,6 +718,7 @@ pub(crate) fn render_library_rows_json(state: &ServiceState, request: &HttpReque
             &renderer_input,
             &renderer_qs,
             &search_query,
+            &track_like_counts,
             offset,
             LIBRARY_PAGE_SIZE,
         ),
@@ -693,6 +731,15 @@ pub(crate) fn render_library_rows_json(state: &ServiceState, request: &HttpReque
         next_offset,
         total,
         if next_offset < total { "true" } else { "false" },
+    )
+}
+
+pub(crate) fn render_like_button(item_kind: &str, item_id: &str, like_count: u64) -> String {
+    format!(
+        r#"<button type="button" class="like-button" data-like-kind="{kind}" data-like-id="{id}" data-like-count="{count}" aria-label="Like this {kind}" title="Like this {kind}"><span class="like-icon" aria-hidden="true">🦥</span><span class="like-count">{count}</span></button>"#,
+        kind = EscapeHtml(item_kind),
+        id = EscapeHtml(item_id),
+        count = like_count,
     )
 }
 

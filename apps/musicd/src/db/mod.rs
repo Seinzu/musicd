@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 
 mod groups;
 mod library;
+mod likes;
 mod playback;
 mod queue;
 mod recommendations;
@@ -184,6 +185,14 @@ impl Database {
                     played_unix INTEGER NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS item_likes (
+                    item_kind TEXT NOT NULL,
+                    item_id TEXT NOT NULL,
+                    client_id TEXT NOT NULL,
+                    liked_unix INTEGER NOT NULL,
+                    PRIMARY KEY(item_kind, item_id, client_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS album_artwork_overrides (
                     album_id TEXT PRIMARY KEY,
                     cache_key TEXT NOT NULL,
@@ -217,6 +226,9 @@ impl Database {
 
                 CREATE INDEX IF NOT EXISTS idx_track_play_history_renderer
                 ON track_play_history(renderer_location, played_unix DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_item_likes_kind_item
+                ON item_likes(item_kind, item_id);
 
                 CREATE INDEX IF NOT EXISTS idx_renderer_group_members_group
                 ON renderer_group_members(group_id, position ASC);
