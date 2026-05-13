@@ -937,8 +937,14 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun transportPlay() = transportAction { baseUrl, renderer ->
-        repository.transportPlay(baseUrl, renderer)
+    fun transportPlay() {
+        if (!canRequestPlaybackResume(uiState.value)) {
+            _uiState.update { it.copy(infoMessage = "Nothing queued to play.") }
+            return
+        }
+        transportAction { baseUrl, renderer ->
+            repository.transportPlay(baseUrl, renderer)
+        }
     }
 
     fun transportPause() = transportAction { baseUrl, renderer ->
@@ -1308,6 +1314,15 @@ private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
     state.queue?.entries?.isNotEmpty() == true ||
         state.nowPlaying?.currentTrack != null ||
         state.nowPlaying?.session?.queueEntryId != null
+
+private fun canRequestPlaybackResume(state: MusicdUiState): Boolean =
+    state.queue?.currentEntryId != null ||
+        state.queue?.entries?.any { entry ->
+            entry.entryStatus.equals("playing", ignoreCase = true) ||
+                entry.entryStatus.equals("pending", ignoreCase = true) ||
+                entry.entryStatus.equals("queued", ignoreCase = true)
+        } == true ||
+        state.nowPlaying?.currentTrack != null
 
 private fun MusicdUiState.applyLikeResponse(response: LikeResponseDto): MusicdUiState =
     when (response.itemKind) {

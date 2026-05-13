@@ -95,6 +95,12 @@ impl ServiceState {
                             .map(|session| session.transport_state.as_str()),
                         Some("PAUSED_PLAYBACK")
                     ) {
+                        self.debug_log_current_queue_file(
+                            "resume-track",
+                            renderer_location,
+                            queue.current_entry_id,
+                            "local-renderer-paused",
+                        );
                         self.database
                             .set_queue_status(renderer_location, "playing", "PLAYING")?;
                         return Ok("Playback resumed.".to_string());
@@ -111,12 +117,13 @@ impl ServiceState {
         }
         let queue = self.queue_snapshot(renderer_location);
         let session = self.playback_session(renderer_location);
+        let current_queue_entry_id = queue.as_ref().and_then(|queue| queue.current_entry_id);
         self.debug_log(
             "resume-request",
             format!(
                 "renderer={} queue_current={:?} session_state={}",
                 renderer_location,
-                queue.as_ref().and_then(|queue| queue.current_entry_id),
+                current_queue_entry_id,
                 session
                     .as_ref()
                     .map(|session| session.transport_state.as_str())
@@ -144,12 +151,33 @@ impl ServiceState {
                 ));
             }
         }
+        if current_queue_entry_id.is_none() {
+            self.debug_log(
+                "resume-empty-queue",
+                format!(
+                    "renderer={} session_entry={:?} session_state={}",
+                    renderer_location,
+                    session.as_ref().and_then(|session| session.queue_entry_id),
+                    session
+                        .as_ref()
+                        .map(|session| session.transport_state.as_str())
+                        .unwrap_or("<none>")
+                ),
+            );
+            return Err(io::Error::new(io::ErrorKind::NotFound, "queue is empty"));
+        }
 
         let renderer = self.resolve_renderer(renderer_location)?;
         if let Err(error) = self.renderer_backend(renderer_location)?.play(&renderer) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
             return Err(error);
         }
+        self.debug_log_current_queue_file(
+            "resume-track",
+            renderer_location,
+            session.as_ref().and_then(|session| session.queue_entry_id),
+            "renderer-play",
+        );
         let snapshot = self.refresh_transport_state(renderer_location)?;
         self.database.set_queue_status(
             renderer_location,
@@ -532,8 +560,15 @@ impl ServiceState {
         self.debug_log(
             "queue-start",
             format!(
-                "renderer={} entry={} track={} uri={}",
-                renderer_location, current_entry.id, track.title, stream_url
+                "renderer={} entry={} track_id={} title={:?} relative_path={:?} path={:?} uri={} mime_type={}",
+                renderer_location,
+                current_entry.id,
+                track.id,
+                track.title,
+                track.relative_path,
+                track.path.display().to_string(),
+                stream_url,
+                track.mime_type
             ),
         );
         if matches!(
@@ -662,9 +697,86 @@ impl ServiceState {
                 state.renderer_backend(member_location)?.play(renderer)
             },
         )?;
+        self.debug_log_current_queue_file(
+            "resume-track",
+            renderer_location,
+            current_entry_id,
+            "group-play",
+        );
         self.database
             .set_queue_status(renderer_location, "playing", "PLAYING")?;
         self.record_group_session_warning(renderer_location, "play", &fanout);
         Ok(self.group_fanout_message("resumed", &fanout))
+    }
+
+    fn debug_log_current_queue_file(
+        &self,
+        event: &str,
+        renderer_location: &str,
+        queue_entry_id: Option<i64>,
+        phase: &str,
+    ) {
+        if !self.debug_enabled() {
+            return;
+        }
+
+        let Some(queue) = self.queue_snapshot(renderer_location) else {
+            self.debug_log(
+                event,
+                format!(
+                    "renderer={} phase={} queue=<none>",
+                    renderer_location, phase
+                ),
+            );
+            return;
+        };
+        let entry_id = queue_entry_id.or(queue.current_entry_id);
+        let Some(entry_id) = entry_id else {
+            self.debug_log(
+                event,
+                format!(
+                    "renderer={} phase={} queue_current=<none>",
+                    renderer_location, phase
+                ),
+            );
+            return;
+        };
+        let Some(entry) = queue.entries.iter().find(|entry| entry.id == entry_id) else {
+            self.debug_log(
+                event,
+                format!(
+                    "renderer={} phase={} entry={} queue_entry=<missing>",
+                    renderer_location, phase, entry_id
+                ),
+            );
+            return;
+        };
+        let Some(track) = self.find_track(&entry.track_id) else {
+            self.debug_log(
+                event,
+                format!(
+                    "renderer={} phase={} entry={} track_id={} track=<missing>",
+                    renderer_location, phase, entry.id, entry.track_id
+                ),
+            );
+            return;
+        };
+
+        let resource = self.stream_resource_for_track(&track);
+        self.debug_log(
+            event,
+            format!(
+                "renderer={} phase={} entry={} track_id={} title={:?} relative_path={:?} path={:?} uri={} mime_type={}",
+                renderer_location,
+                phase,
+                entry.id,
+                track.id,
+                track.title,
+                track.relative_path,
+                track.path.display().to_string(),
+                resource.stream_url,
+                track.mime_type
+            ),
+        );
     }
 }

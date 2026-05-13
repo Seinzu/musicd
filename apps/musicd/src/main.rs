@@ -465,6 +465,44 @@ mod tests {
     }
 
     #[test]
+    fn resume_with_empty_queue_does_not_restart_renderer_media() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![playing_snapshot(&track, 1, 180)],
+        ));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        state
+            .database
+            .record_transport_snapshot(
+                renderer_location,
+                "STOPPED",
+                Some(&state.stream_resource_for_track(&track).stream_url),
+                Some(180),
+                track.duration_seconds,
+            )
+            .expect("stale renderer session should be recorded");
+
+        let error = state
+            .resume_renderer(renderer_location)
+            .expect_err("empty queue should not be resumable");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(backend.play_count(), 0);
+        assert!(
+            state
+                .database
+                .load_queue(renderer_location)
+                .expect("queue lookup should succeed")
+                .is_none(),
+            "resume should not recreate a queue"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn queue_poll_clears_final_completed_track_without_restarting_it() {
         let renderer_location = "http://renderer.local/description.xml";
         let track = sample_track("track-1", Some(1), Some(1), "Track 1");
@@ -2485,6 +2523,7 @@ mod tests {
         played_streams: Mutex<Vec<StreamResource>>,
         preloaded_streams: Mutex<Vec<StreamResource>>,
         cleared_next_count: Mutex<usize>,
+        play_count: Mutex<usize>,
     }
 
     impl FakeRendererBackend {
@@ -2516,6 +2555,7 @@ mod tests {
                 played_streams: Mutex::new(Vec::new()),
                 preloaded_streams: Mutex::new(Vec::new()),
                 cleared_next_count: Mutex::new(0),
+                play_count: Mutex::new(0),
             }
         }
 
@@ -2531,6 +2571,13 @@ mod tests {
                 .cleared_next_count
                 .lock()
                 .expect("cleared next count should not be poisoned")
+        }
+
+        fn play_count(&self) -> usize {
+            *self
+                .play_count
+                .lock()
+                .expect("play count should not be poisoned")
         }
     }
 
@@ -2576,6 +2623,10 @@ mod tests {
         }
 
         fn play(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            *self
+                .play_count
+                .lock()
+                .expect("play count should not be poisoned") += 1;
             Ok(())
         }
 
