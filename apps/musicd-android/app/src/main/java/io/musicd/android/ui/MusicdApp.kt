@@ -824,6 +824,24 @@ private fun HomeScreen(
                 onPlayNextAlbum = { onPlayNextAlbum(album.id) },
             )
         }
+        if (state.homeRecommendations.isNotEmpty()) {
+            item {
+                Text(
+                    "Something to add to your collection",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            items(state.homeRecommendations, key = { "home-recommendation-${it.recommendationKey}" }) { recommendation ->
+                AlbumRecommendationRow(
+                    baseUrl = state.baseUrl,
+                    recommendation = recommendation,
+                    localAlbum = null,
+                    supportingText = recommendationHomeReason(recommendation, state.albums),
+                    onOpenAlbum = {},
+                )
+            }
+        }
     }
 }
 
@@ -2687,6 +2705,7 @@ private fun AlbumRecommendationRow(
     baseUrl: String,
     recommendation: AlbumRecommendationDto,
     localAlbum: AlbumSummaryDto?,
+    supportingText: String? = null,
     onOpenAlbum: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
@@ -2749,10 +2768,12 @@ private fun AlbumRecommendationRow(
                         color = MaterialTheme.colorScheme.secondary,
                     )
                 }
-                recommendation.rationale?.takeIf { it.isNotBlank() }?.let { rationale ->
+                val recommendationContext = supportingText
+                    ?: recommendation.rationale?.takeIf { it.isNotBlank() }
+                recommendationContext?.let { text ->
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        rationale,
+                        text,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 3,
@@ -2762,6 +2783,14 @@ private fun AlbumRecommendationRow(
             }
         }
     }
+}
+
+private fun recommendationHomeReason(
+    recommendation: AlbumRecommendationDto,
+    albums: List<AlbumSummaryDto>,
+): String? {
+    val seedAlbum = albums.firstOrNull { it.id == recommendation.seedAlbumId } ?: return null
+    return "Because you have ${seedAlbum.title} by ${seedAlbum.artist}"
 }
 
 @Composable

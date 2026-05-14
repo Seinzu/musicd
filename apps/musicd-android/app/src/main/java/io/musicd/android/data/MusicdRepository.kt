@@ -79,6 +79,13 @@ class MusicdRepository(
         api.getAlbumRecommendations(baseUrl.normalizeBaseUrl(), albumId)
     }
 
+    suspend fun getCollectionRecommendations(
+        baseUrl: String,
+        limit: Int = 5,
+    ): AlbumRecommendationsResponseDto = withContext(Dispatchers.IO) {
+        api.getCollectionRecommendations(baseUrl.normalizeBaseUrl(), limit)
+    }
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
         withContext(Dispatchers.IO) {
             api.getArtistDetail(baseUrl.normalizeBaseUrl(), artistId, loadClientId())

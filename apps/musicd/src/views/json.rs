@@ -436,10 +436,31 @@ pub(crate) fn render_album_recommendations_json(
         .or_else(|| request_value(request, "seed_album_id"))
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let status = request_value(request, "status")
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let exclude_library = truthy_request_value(request, "exclude_library");
+    let randomize = truthy_request_value(request, "random");
+    let limit = request_value(request, "limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.clamp(1, 50));
     serde_json::json!({
-        "recommendations": state.album_recommendations(seed_album_id),
+        "recommendations": state.album_recommendations_for_display(
+            seed_album_id,
+            status,
+            exclude_library,
+            randomize,
+            limit,
+        ),
     })
     .to_string()
+}
+
+fn truthy_request_value(request: &HttpRequest, key: &str) -> bool {
+    matches!(
+        request_value(request, key).map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    )
 }
 
 pub(crate) fn render_play_history_json(state: &ServiceState) -> String {

@@ -135,6 +135,14 @@ Each candidate includes:
 
 Returns album recommendations for a seed album.
 
+Useful query parameters:
+
+- `album_id` or `seed_album_id`: return recommendations for one seed album
+- `status`: return only recommendations with the given status
+- `exclude_library=true`: omit recommendations that resolve to albums already in the library
+- `random=true`: return recommendations in pseudo-random order
+- `limit`: cap response size, clamped from 1 to 50
+
 Response:
 
 - `recommendations[]`

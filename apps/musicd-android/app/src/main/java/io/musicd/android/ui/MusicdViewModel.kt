@@ -66,6 +66,7 @@ data class MusicdUiState(
     val artists: List<ArtistSummaryDto> = emptyList(),
     val albums: List<AlbumSummaryDto> = emptyList(),
     val suppressedSpotlightAlbumIds: Set<String> = emptySet(),
+    val homeRecommendations: List<AlbumRecommendationDto> = emptyList(),
     val tracks: List<TrackSummaryDto> = emptyList(),
     val selectedArtistDetail: ArtistDetailDto? = null,
     val selectedAlbumDetail: AlbumDetailDto? = null,
@@ -203,7 +204,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             loadServerData(
                 baseUrl = normalized,
-                onSuccess = { serverInfo, renderers, artists, albums, nowPlaying, queue ->
+                onSuccess = { serverInfo, renderers, artists, albums, homeRecommendations, nowPlaying, queue ->
                     repository.saveBaseUrl(normalized)
                     _uiState.update {
                         it.copy(
@@ -214,6 +215,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             renderers = renderers,
                             artists = artists,
                             albums = albums,
+                            homeRecommendations = homeRecommendations,
                             tracks = emptyList(),
                             suppressedSpotlightAlbumIds = emptySet(),
                             selectedRendererLocation = nowPlaying?.rendererLocation
@@ -257,7 +259,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
             loadServerData(
                 baseUrl = baseUrl,
-                onSuccess = { serverInfo, renderers, artists, albums, nowPlaying, queue ->
+                onSuccess = { serverInfo, renderers, artists, albums, homeRecommendations, nowPlaying, queue ->
                     _uiState.update {
                         val selectedRendererLocation = nowPlaying?.rendererLocation
                             ?: chooseRendererLocation(
@@ -271,6 +273,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             renderers = renderers,
                             artists = artists,
                             albums = albums,
+                            homeRecommendations = homeRecommendations,
                             selectedRendererLocation = selectedRendererLocation,
                             nowPlaying = nowPlaying,
                             queue = queue,
@@ -307,7 +310,15 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun loadServerData(
         baseUrl: String,
-        onSuccess: (ServerInfoDto, List<RendererDto>, List<ArtistSummaryDto>, List<AlbumSummaryDto>, NowPlayingDto?, QueueDto?) -> Unit,
+        onSuccess: (
+            ServerInfoDto,
+            List<RendererDto>,
+            List<ArtistSummaryDto>,
+            List<AlbumSummaryDto>,
+            List<AlbumRecommendationDto>,
+            NowPlayingDto?,
+            QueueDto?,
+        ) -> Unit,
         onFailure: (Throwable) -> Unit,
     ) {
         runCatching {
@@ -324,6 +335,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             val renderers = repository.getRenderers(baseUrl)
             val artists = repository.getArtists(baseUrl)
             val albums = repository.getAlbums(baseUrl)
+            val homeRecommendations = runCatching {
+                repository.getCollectionRecommendations(baseUrl, HOME_RECOMMENDATION_LIMIT).recommendations
+            }.getOrDefault(emptyList())
             val rendererLocation = chooseRendererLocation(
                 currentSelection = uiState.value.selectedRendererLocation,
                 savedSelection = repository.loadRendererLocation(),
@@ -331,9 +345,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             )
             val nowPlaying = rendererLocation?.let { repository.getNowPlaying(baseUrl, it) }
             val queue = rendererLocation?.let { repository.getQueue(baseUrl, it) }
-            Sextuple(serverInfo, renderers, artists, albums, nowPlaying, queue)
-        }.onSuccess { (serverInfo, renderers, artists, albums, nowPlaying, queue) ->
-            onSuccess(serverInfo, renderers, artists, albums, nowPlaying, queue)
+            Septuple(serverInfo, renderers, artists, albums, homeRecommendations, nowPlaying, queue)
+        }.onSuccess { (serverInfo, renderers, artists, albums, homeRecommendations, nowPlaying, queue) ->
+            onSuccess(serverInfo, renderers, artists, albums, homeRecommendations, nowPlaying, queue)
         }.onFailure(onFailure)
     }
 
@@ -369,6 +383,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 nowPlaying = null,
                 albums = emptyList(),
                 suppressedSpotlightAlbumIds = emptySet(),
+                homeRecommendations = emptyList(),
                 tracks = emptyList(),
                 artists = emptyList(),
                 selectedArtistDetail = null,
@@ -1468,6 +1483,7 @@ private const val PLAYBACK_EVENT_RECONNECTING_MESSAGE = "Reconnecting live playb
 private const val PLAYBACK_NOTIFICATION_UNAVAILABLE_MESSAGE =
     "Connected, but Android blocked the playback notification service."
 private const val PLAYBACK_EVENT_WARNING_THRESHOLD = 3
+private const val HOME_RECOMMENDATION_LIMIT = 6
 
 private data class Quintuple<A, B, C, D, E>(
     val first: A,

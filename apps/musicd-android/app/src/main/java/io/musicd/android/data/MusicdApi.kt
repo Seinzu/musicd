@@ -331,6 +331,12 @@ class MusicdApi(
     ): AlbumRecommendationsResponseDto =
         get("$baseUrl/api/recommendations?album_id=${albumId.encodeForUrl()}")
 
+    suspend fun getCollectionRecommendations(
+        baseUrl: String,
+        limit: Int,
+    ): AlbumRecommendationsResponseDto =
+        get("$baseUrl/api/recommendations?exclude_library=true&status=suggested&random=true&limit=$limit")
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String, clientId: String): ArtistDetailDto =
         get("$baseUrl/api/artists/${artistId.encodeForUrl()}?client_id=${clientId.encodeForUrl()}")
 
