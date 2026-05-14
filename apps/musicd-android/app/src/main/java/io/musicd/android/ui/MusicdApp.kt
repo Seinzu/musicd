@@ -100,6 +100,7 @@ import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.DiscoveredServer
 import io.musicd.android.data.QueueEntryDto
+import io.musicd.android.data.RadioStationDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.TrackSummaryDto
 import java.time.LocalDate
@@ -181,6 +182,10 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onNext = viewModel::transportNext,
         onPrevious = viewModel::transportPrevious,
         onSearchQueryChange = viewModel::updateSearchQuery,
+        onRadioQueryChange = viewModel::updateRadioQuery,
+        onRadioCountryCodeChange = viewModel::updateRadioCountryCode,
+        onSearchRadio = viewModel::searchRadioStations,
+        onPlayRadioStation = viewModel::playRadioStation,
         onOpenArtist = viewModel::openArtist,
         onOpenArtistByName = viewModel::openArtistByName,
         onCloseArtistDetail = viewModel::closeArtistDetail,
@@ -236,6 +241,10 @@ private fun MusicdRoot(
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
+    onRadioQueryChange: (String) -> Unit,
+    onRadioCountryCodeChange: (String) -> Unit,
+    onSearchRadio: () -> Unit,
+    onPlayRadioStation: (RadioStationDto) -> Unit,
     onOpenArtist: (String) -> Unit,
     onOpenArtistByName: (String) -> Unit,
     onCloseArtistDetail: () -> Unit,
@@ -380,6 +389,12 @@ private fun MusicdRoot(
                         label = { Text("Library") },
                     )
                     NavigationBarItem(
+                        selected = state.selectedTab == MusicdTab.Radio,
+                        onClick = { onSelectTab(MusicdTab.Radio) },
+                        icon = { Icon(Icons.Rounded.Wifi, contentDescription = null) },
+                        label = { Text("Radio") },
+                    )
+                    NavigationBarItem(
                         selected = state.selectedTab == MusicdTab.Queue,
                         onClick = { onSelectTab(MusicdTab.Queue) },
                         icon = { Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = null) },
@@ -482,6 +497,14 @@ private fun MusicdRoot(
                     onAppendAlbum = onAppendAlbum,
                     onPlayNextAlbum = onPlayNextAlbum,
                 )
+                MusicdTab.Radio -> RadioScreen(
+                    state = state,
+                    onRadioQueryChange = onRadioQueryChange,
+                    onRadioCountryCodeChange = onRadioCountryCodeChange,
+                    onSearchRadio = onSearchRadio,
+                    onPlayRadioStation = onPlayRadioStation,
+                    onOpenRendererPicker = onOpenRendererPicker,
+                )
                 MusicdTab.Queue -> QueueScreen(
                     state = state,
                     onPlay = onPlay,
@@ -537,14 +560,13 @@ private fun MiniPlayerBar(
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        track?.title ?: "Nothing playing",
+                        playbackTitle(state),
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        listOfNotNull(track?.artist, track?.album).joinToString(" · ")
-                            .ifBlank { humanizeTransportState(state.nowPlaying?.session?.transportState) },
+                        playbackSubtitle(state),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
@@ -851,6 +873,172 @@ private fun homeGreeting(now: LocalTime = LocalTime.now()): String =
         now.hour < 18 -> "Good afternoon"
         else -> "Good evening"
     }
+
+@Composable
+private fun RadioScreen(
+    state: MusicdUiState,
+    onRadioQueryChange: (String) -> Unit,
+    onRadioCountryCodeChange: (String) -> Unit,
+    onSearchRadio: () -> Unit,
+    onPlayRadioStation: (RadioStationDto) -> Unit,
+    onOpenRendererPicker: () -> Unit,
+) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            ElevatedPanel {
+                Text("Internet Radio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Search Radio Browser and send a live stream to the selected renderer.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = state.radioQuery,
+                    onValueChange = onRadioQueryChange,
+                    label = { Text("Station search") },
+                    placeholder = { Text("BBC, jazz, KEXP") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = state.radioCountryCode,
+                        onValueChange = onRadioCountryCodeChange,
+                        label = { Text("Country") },
+                        placeholder = { Text("GB") },
+                        modifier = Modifier.weight(0.35f),
+                        singleLine = true,
+                    )
+                    Button(
+                        onClick = onSearchRadio,
+                        modifier = Modifier.weight(0.65f),
+                        enabled = !state.isSearchingRadio,
+                    ) {
+                        if (state.isSearchingRadio) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                            Spacer(Modifier.size(8.dp))
+                        }
+                        Text(if (state.isSearchingRadio) "Searching" else "Search")
+                    }
+                }
+                if (state.selectedRendererLocation.isBlank()) {
+                    Spacer(Modifier.height(12.dp))
+                    InlineMessage(
+                        text = "Choose a renderer before starting a station.",
+                        color = MaterialTheme.colorScheme.secondary,
+                        actionLabel = "Choose",
+                        onAction = onOpenRendererPicker,
+                    )
+                }
+            }
+        }
+
+        when {
+            state.radioStations.isNotEmpty() -> {
+                item {
+                    Text(
+                        "${state.radioStations.size} stations",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                items(state.radioStations, key = { "radio-${it.id}-${it.streamUrl}" }) { station ->
+                    RadioStationRow(
+                        station = station,
+                        canPlay = state.selectedRendererLocation.isNotBlank(),
+                        onPlay = { onPlayRadioStation(station) },
+                    )
+                }
+            }
+            state.isSearchingRadio -> {
+                item {
+                    LoadingPanel("Searching stations...")
+                }
+            }
+            state.hasSearchedRadio -> {
+                item {
+                    EmptyPanel(
+                        title = "No stations found",
+                        body = "Try a broader station name, a different country code, or leave country blank.",
+                    )
+                }
+            }
+            else -> {
+                item {
+                    EmptyPanel(
+                        title = "Find a station",
+                        body = "Search by station name, genre, or leave the search box blank for popular stations.",
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RadioStationRow(
+    station: RadioStationDto,
+    canPlay: Boolean,
+    onPlay: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ArtworkSquare(
+                url = station.artworkUrl,
+                modifier = Modifier.size(64.dp),
+                fallbackText = station.name.ifBlank { "Radio" },
+                contentHeight = 64.dp,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    station.name.ifBlank { "Untitled station" },
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    radioStationMeta(station),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (station.tags.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        station.tags.take(3).forEach { tag ->
+                            AssistChip(onClick = {}, label = { Text(tag, maxLines = 1) })
+                        }
+                    }
+                }
+            }
+            FilledIconButton(onClick = onPlay, enabled = canPlay) {
+                Icon(Icons.Rounded.PlayArrow, contentDescription = "Play station")
+            }
+        }
+    }
+}
+
+private fun radioStationMeta(station: RadioStationDto): String =
+    listOfNotNull(
+        station.countryCode?.takeIf { it.isNotBlank() },
+        station.language?.takeIf { it.isNotBlank() },
+        station.codec?.takeIf { it.isNotBlank() },
+        station.bitrate?.takeIf { it > 0 }?.let { "$it kbps" },
+    ).joinToString(" · ").ifBlank { station.streamUrl }
 
 @Composable
 private fun LibraryScreen(
@@ -3289,7 +3477,27 @@ private fun canRequestPlaybackResume(state: MusicdUiState): Boolean =
                 entry.entryStatus.equals("pending", ignoreCase = true) ||
                 entry.entryStatus.equals("queued", ignoreCase = true)
         } == true ||
-        state.nowPlaying?.currentTrack != null
+        state.nowPlaying?.currentTrack != null ||
+        state.nowPlaying?.session?.currentTrackUri?.isNotBlank() == true
+
+private fun playbackTitle(state: MusicdUiState): String =
+    state.nowPlaying?.currentTrack?.title
+        ?: state.nowPlaying?.session?.title?.takeIf { it.isNotBlank() }
+        ?: "Nothing playing"
+
+private fun playbackSubtitle(state: MusicdUiState): String {
+    val track = state.nowPlaying?.currentTrack
+    if (track != null) {
+        return listOfNotNull(track.artist, track.album).joinToString(" · ")
+    }
+    val session = state.nowPlaying?.session
+    return listOfNotNull(
+        session?.artist?.takeIf { it.isNotBlank() },
+        session?.album?.takeIf { it.isNotBlank() },
+    ).joinToString(" · ").ifBlank {
+        humanizeTransportState(session?.transportState)
+    }
+}
 
 private fun humanizeTransportState(state: String?): String =
     when (state?.trim()?.uppercase()) {
@@ -3325,9 +3533,9 @@ private fun NowPlayingContent(
             fallbackText = track?.album?.ifBlank { track?.title.orEmpty() }.orEmpty(),
         )
         Column(modifier = Modifier.weight(0.66f)) {
-            Text(track?.title ?: "Nothing playing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(playbackTitle(state), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                listOfNotNull(track?.artist, track?.album).joinToString(" · ").ifBlank { "Choose a renderer and start playback." },
+                playbackSubtitle(state).ifBlank { "Choose a renderer and start playback." },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(10.dp))
@@ -3595,7 +3803,9 @@ private fun formatDuration(totalSeconds: Long): String {
 }
 
 private fun shouldShowMiniPlayer(state: MusicdUiState): Boolean =
-    state.nowPlaying?.currentTrack != null || !state.queue?.entries.isNullOrEmpty()
+    state.nowPlaying?.currentTrack != null ||
+        !state.queue?.entries.isNullOrEmpty() ||
+        state.nowPlaying?.session?.currentTrackUri?.isNotBlank() == true
 
 private fun sessionProgress(session: io.musicd.android.data.SessionDto?): Float? {
     val position = session?.positionSeconds?.toFloat() ?: return null
@@ -3634,8 +3844,31 @@ private fun ElevatedPanel(content: @Composable ColumnScope.() -> Unit) {
     }
 }
 
+@Composable
+private fun EmptyPanel(
+    title: String,
+    body: String,
+) {
+    ElevatedPanel {
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun LoadingPanel(message: String) {
+    ElevatedPanel {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 private fun currentTitle(tab: MusicdTab): String = when (tab) {
     MusicdTab.Home -> "Home"
     MusicdTab.Library -> "Library"
+    MusicdTab.Radio -> "Radio"
     MusicdTab.Queue -> "Queue"
 }

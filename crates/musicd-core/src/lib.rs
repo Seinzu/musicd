@@ -59,6 +59,7 @@ pub struct AppConfig {
     pub discovery_timeout_ms: u64,
     pub server_discovery_enabled: bool,
     pub default_renderer_location: Option<String>,
+    pub radio_browser_base_url: String,
     pub debug_mode: bool,
     pub skip_startup_scan: bool,
 }
@@ -90,6 +91,11 @@ impl AppConfig {
                 .unwrap_or(1500),
             server_discovery_enabled: parse_bool_env_default("MUSICD_SERVER_DISCOVERY", true),
             default_renderer_location: std::env::var("MUSICD_DEFAULT_RENDERER_LOCATION").ok(),
+            radio_browser_base_url: std::env::var("MUSICD_RADIO_BROWSER_BASE_URL")
+                .ok()
+                .map(|value| value.trim().trim_end_matches('/').to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "https://de1.api.radio-browser.info".to_string()),
             debug_mode: parse_bool_env("MUSICD_DEBUG"),
             skip_startup_scan: parse_bool_env("MUSICD_SKIP_STARTUP_SCAN"),
         }
@@ -201,6 +207,7 @@ mod tests {
             discovery_timeout_ms: 1500,
             server_discovery_enabled: true,
             default_renderer_location: None,
+            radio_browser_base_url: "https://de1.api.radio-browser.info".to_string(),
             debug_mode: false,
             skip_startup_scan: false,
         };

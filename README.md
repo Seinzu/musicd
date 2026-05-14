@@ -95,6 +95,7 @@ The service also exposes:
 - `GET /api/albums`
 - `GET /api/queue?renderer_location=<location>`
 - `GET /api/events?renderer_location=<location>`
+- `GET /api/radio/stations?query=<name>&countrycode=<ISO2>`
 - `GET /api/tracks`
 - `GET /api/tracks/<track_id>`
 - `GET /artwork/track/<track_id>`
@@ -102,7 +103,7 @@ The service also exposes:
 - `GET /api/renderers/discover`
 - `GET /stream/track/<track_id>`
 
-There are also mutation endpoints for queue editing, transport actions, Android local renderer registration/session reporting, and manual album-art selection. The current app-facing contract is documented in [docs/android-api-contract.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-api-contract.md).
+There are also mutation endpoints for queue editing, transport actions, internet radio playback, Android local renderer registration/session reporting, and manual album-art selection. The current app-facing contract is documented in [docs/android-api-contract.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-api-contract.md).
 
 ## Android app
 
@@ -185,6 +186,8 @@ http://localhost:8787/
 ```
 
 Set `MUSICD_LIBRARY_HOST_PATH` in `.env` to point at a real music folder on your machine. If you are testing playback against a real LAN renderer, also set `MUSICD_PUBLIC_BASE_URL` to your computer's LAN URL, for example `http://192.168.1.84:8787`, because the renderer cannot fetch `localhost` from your laptop.
+
+Internet radio discovery uses Radio Browser and defaults to `https://de1.api.radio-browser.info`. Override `MUSICD_RADIO_BROWSER_BASE_URL` if you want to use another Radio Browser mirror.
 
 For large or network-mounted libraries, keep `RAYON_NUM_THREADS` low in `.env` while developing. The scanner reads metadata in parallel, and a small value such as `2` is friendlier to Docker Desktop memory and remote filesystems.
 

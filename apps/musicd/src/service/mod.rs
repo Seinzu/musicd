@@ -9,8 +9,8 @@ use crate::library::{Library, ScanProgressEvent, scan_library, scan_library_with
 use crate::metrics;
 use crate::renderer::{RendererBackend, RendererBackends};
 use crate::types::{
-    AlbumSummary, ArtistSummary, LibraryTrack, LikeResult, PlaybackQueue, PlaybackSession,
-    RendererRecord,
+    AlbumSummary, ArtistSummary, DirectStreamMetadata, LibraryTrack, LikeResult, PlaybackQueue,
+    PlaybackSession, RendererRecord,
 };
 use crate::util::now_unix_timestamp;
 
@@ -19,6 +19,7 @@ pub(crate) mod events;
 mod groups;
 mod poll;
 mod queue;
+mod radio;
 mod recommendations;
 mod renderers;
 mod transport;
@@ -305,6 +306,20 @@ impl ServiceState {
             .load_playback_session(renderer_location)
             .ok()
             .flatten()
+    }
+
+    pub(crate) fn direct_stream_metadata(
+        &self,
+        renderer_location: &str,
+    ) -> Option<DirectStreamMetadata> {
+        let session = self.playback_session(renderer_location)?;
+        let metadata = self
+            .database
+            .load_direct_stream_metadata(renderer_location)
+            .ok()
+            .flatten()?;
+        (session.current_track_uri.as_deref() == Some(metadata.current_track_uri.as_str()))
+            .then_some(metadata)
     }
 
     fn begin_rescan(&self) -> io::Result<RescanGuard<'_>> {

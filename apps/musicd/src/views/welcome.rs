@@ -40,6 +40,7 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
     );
 
     let spotlight_html = render_spotlight(&library, &ctx.renderer_location, &renderer_input_hidden);
+    let radio_card_html = render_radio_card(&renderer_input_hidden);
 
     let stats_card_html = format!(
         r#"<section class="card stats-card">
@@ -80,6 +81,7 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
 {now_playing_html}
 <div class="welcome-grid">
   {renderer_card_html}
+  {radio_card_html}
   {stats_card_html}
 </div>
 {spotlight_html}"#,
@@ -87,6 +89,36 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
     );
 
     render_layout(PageTab::Welcome, &body, &ctx)
+}
+
+fn render_radio_card(renderer_input_hidden: &str) -> String {
+    format!(
+        r#"<section class="card radio-card">
+  <div class="card-header">
+    <h2>Internet Radio</h2>
+    <p class="meta">Search Radio Browser or start a direct stream URL.</p>
+  </div>
+  <form class="control-row" id="radio_search_form" onsubmit="searchRadioStations(event)">
+    {renderer_input_hidden}
+    <label for="radio_query" class="visually-hidden">Station search</label>
+    <input id="radio_query" name="query" type="search" placeholder="BBC, jazz, KEXP">
+    <label for="radio_country" class="visually-hidden">Country code</label>
+    <input id="radio_country" name="countrycode" type="text" maxlength="2" placeholder="GB">
+    <button type="submit" class="secondary">Search</button>
+  </form>
+  <form class="control-row" id="radio_direct_form" onsubmit="playDirectRadioStream(event)">
+    {renderer_input_hidden}
+    <label for="radio_stream_url" class="visually-hidden">Stream URL</label>
+    <input id="radio_stream_url" name="stream_url" type="url" placeholder="https://station.example/live.mp3">
+    <label for="radio_stream_name" class="visually-hidden">Station name</label>
+    <input id="radio_stream_name" name="station_name" type="text" placeholder="Station name">
+    <button type="submit">Play</button>
+  </form>
+  <div id="radio_status" class="meta" aria-live="polite"></div>
+  <div id="radio_results" class="radio-results"></div>
+</section>"#,
+        renderer_input_hidden = renderer_input_hidden,
+    )
 }
 
 fn render_spotlight(

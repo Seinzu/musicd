@@ -244,6 +244,15 @@ pub(crate) struct PlaybackSession {
     pub(crate) last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectStreamMetadata {
+    pub(crate) renderer_location: String,
+    pub(crate) current_track_uri: String,
+    pub(crate) title: String,
+    pub(crate) artwork_url: Option<String>,
+    pub(crate) updated_unix: i64,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrackPlayRecord {
@@ -269,6 +278,22 @@ pub(crate) struct QueueMutationEntry {
     pub(crate) album_id: Option<String>,
     pub(crate) source_kind: String,
     pub(crate) source_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct RadioStation {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) stream_url: String,
+    pub(crate) homepage_url: Option<String>,
+    pub(crate) artwork_url: Option<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) country_code: Option<String>,
+    pub(crate) language: Option<String>,
+    pub(crate) codec: Option<String>,
+    pub(crate) bitrate: Option<u32>,
+    pub(crate) votes: Option<u32>,
+    pub(crate) click_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

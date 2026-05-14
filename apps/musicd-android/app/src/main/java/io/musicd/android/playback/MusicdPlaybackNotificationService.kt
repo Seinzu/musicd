@@ -291,15 +291,18 @@ class MusicdPlaybackNotificationService : Service() {
         val subtitle = listOfNotNull(currentTrack?.artist, currentTrack?.album)
             .filter { it.isNotBlank() }
             .joinToString(" • ")
+            .ifBlank {
+                event.nowPlaying.session?.artist.orEmpty()
+            }
         val durationMs = playbackDurationMillis(event)
 
         val metadata = MediaMetadataCompat.Builder()
             .putString(
                 MediaMetadataCompat.METADATA_KEY_TITLE,
-                currentTrack?.title ?: "musicd",
+                currentTrack?.title ?: event.nowPlaying.session?.title ?: "musicd",
             )
-            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentTrack?.artist)
-            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, currentTrack?.album)
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentTrack?.artist ?: event.nowPlaying.session?.artist)
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, currentTrack?.album ?: event.nowPlaying.session?.album)
             .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, subtitle)
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationMs)
         artworkBitmap?.let { bitmap ->
@@ -394,6 +397,7 @@ class MusicdPlaybackNotificationService : Service() {
 
     private fun notificationTitle(event: PlaybackEventDto): String =
         event.nowPlaying.currentTrack?.title
+            ?: event.nowPlaying.session?.title
             ?: event.queue.entries.firstOrNull()?.title
             ?: currentServerName
             ?: "musicd"
@@ -405,6 +409,10 @@ class MusicdPlaybackNotificationService : Service() {
                 .filter { it.isNotBlank() }
                 .joinToString(" • ")
                 .ifBlank { currentRendererLocation }
+        }
+
+        event.nowPlaying.session?.artist?.takeIf { it.isNotBlank() }?.let {
+            return it
         }
 
         return when {
@@ -457,8 +465,9 @@ class MusicdPlaybackNotificationService : Service() {
             return
         }
 
-        val track = event.nowPlaying.currentTrack ?: run {
-            stopLocalPlayer()
+        val track = event.nowPlaying.currentTrack
+        if (track == null) {
+            syncDirectLocalPlayback(event)
             return
         }
         val streamUrl = currentTrackStreamUrl(track.id) ?: return
@@ -511,6 +520,43 @@ class MusicdPlaybackNotificationService : Service() {
             ) {
                 localPlayer.seekTo(serverPositionMs ?: 0L)
                 lastAppliedServerSeekPositionMs = serverPositionMs
+            }
+
+            when (transportState) {
+                "PLAYING", "TRANSITIONING" -> localPlayer.play()
+                "PAUSED_PLAYBACK" -> {
+                    if (localPlayer.playbackState == Player.STATE_IDLE) {
+                        localPlayer.prepare()
+                    }
+                    localPlayer.pause()
+                }
+                "STOPPED", "NO_MEDIA_PRESENT", "COMPLETED" -> stopLocalPlayer()
+            }
+        } finally {
+            suppressLocalPlayerSync = false
+        }
+        updateLocalPlaybackReportingLoop()
+    }
+
+    private fun syncDirectLocalPlayback(event: PlaybackEventDto) {
+        val streamUrl = event.nowPlaying.session?.currentTrackUri?.takeIf { it.isNotBlank() } ?: run {
+            stopLocalPlayer()
+            return
+        }
+        val transportState = event.nowPlaying.session?.transportState.orEmpty()
+        val currentUri = localPlayer.currentMediaItem?.localConfiguration?.uri?.toString()
+
+        suppressLocalPlayerSync = true
+        try {
+            if (currentUri != streamUrl || localPlayer.mediaItemCount != 1) {
+                localPlayer.setMediaItem(
+                    MediaItem.Builder()
+                        .setMediaId("direct-radio")
+                        .setUri(streamUrl)
+                        .build(),
+                )
+                localPlayer.prepare()
+                lastAppliedServerSeekPositionMs = null
             }
 
             when (transportState) {
@@ -1098,6 +1144,7 @@ class MusicdPlaybackNotificationService : Service() {
 
         private fun hasDisplayablePlayback(event: PlaybackEventDto): Boolean =
             event.nowPlaying.currentTrack != null ||
+                event.nowPlaying.session?.currentTrackUri?.isNotBlank() == true ||
                 event.queue.entries.any { entry ->
                     when (entry.entryStatus.trim().lowercase()) {
                         "", "pending", "queued", "playing" -> true

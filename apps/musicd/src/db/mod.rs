@@ -177,6 +177,14 @@ impl Database {
                     last_error TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS direct_stream_metadata (
+                    renderer_location TEXT PRIMARY KEY,
+                    current_track_uri TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    artwork_url TEXT,
+                    updated_unix INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS track_play_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     track_id TEXT NOT NULL,

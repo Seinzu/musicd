@@ -560,6 +560,127 @@ function setupRescanProgress() {
   });
 }
 
+/* ------------------------------------------------------------ Radio */
+function radioRendererLocation(form) {
+  return new FormData(form).get('renderer_location') || document.getElementById('renderer_location')?.value || '';
+}
+
+function setRadioStatus(message, isError = false) {
+  const status = document.getElementById('radio_status');
+  if (!status) {
+    return;
+  }
+  status.textContent = message;
+  status.classList.toggle('error-text', isError);
+}
+
+function renderRadioStations(stations) {
+  const host = document.getElementById('radio_results');
+  if (!host) {
+    return;
+  }
+  if (!stations.length) {
+    host.innerHTML = '<p class="empty">No stations matched that search.</p>';
+    return;
+  }
+  host.innerHTML = stations.map((station) => {
+    const tags = (station.tags || []).slice(0, 3).map((tag) => `<span class="chip mini">${escapeHtml(tag)}</span>`).join('');
+    const meta = [
+      station.country_code,
+      station.language,
+      station.codec,
+      station.bitrate ? `${station.bitrate} kbps` : '',
+    ].filter(Boolean).join(' · ');
+    const art = station.artwork_url
+      ? `<img class="radio-art" src="${escapeHtml(station.artwork_url)}" alt="">`
+      : '<div class="radio-art placeholder">Radio</div>';
+    return `
+      <article class="radio-result">
+        ${art}
+        <div class="radio-result-main">
+          <h3>${escapeHtml(station.name || 'Untitled station')}</h3>
+          <p class="meta">${escapeHtml(meta || station.stream_url || '')}</p>
+          <div class="radio-tags">${tags}</div>
+        </div>
+        <button type="button" onclick='playRadioStation(${escapeHtml(JSON.stringify(station))})'>Play</button>
+      </article>
+    `;
+  }).join('');
+}
+
+async function searchRadioStations(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const params = new URLSearchParams(new FormData(form));
+  params.set('limit', '12');
+  setRadioStatus('Searching stations...');
+  try {
+    const response = await fetch(`/api/radio/stations?${params.toString()}`);
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || 'Station search failed');
+    }
+    renderRadioStations(payload);
+    setRadioStatus(`${payload.length} station${payload.length === 1 ? '' : 's'} found.`);
+  } catch (error) {
+    renderRadioStations([]);
+    setRadioStatus(error.message || 'Station search failed.', true);
+  }
+}
+
+async function playRadioStation(station) {
+  const rendererLocation = document.querySelector('.renderer-location-proxy')?.value || document.getElementById('renderer_location')?.value || '';
+  await submitRadioPlay({
+    renderer_location: rendererLocation,
+    stream_url: station.stream_url,
+    station_name: station.name,
+    station_id: station.id,
+    artwork_url: station.artwork_url || '',
+    codec: station.codec || '',
+  });
+}
+
+async function playDirectRadioStream(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form).entries());
+  data.renderer_location = radioRendererLocation(form);
+  await submitRadioPlay(data);
+}
+
+async function submitRadioPlay(data) {
+  if (!data.renderer_location) {
+    setRadioStatus('Pick a renderer before starting radio.', true);
+    return;
+  }
+  if (!data.stream_url) {
+    setRadioStatus('Enter a stream URL first.', true);
+    return;
+  }
+  const form = new URLSearchParams();
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      form.set(key, value);
+    }
+  }
+  setRadioStatus('Starting radio...');
+  try {
+    const response = await fetch('/api/radio/play', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || 'Radio playback failed');
+    }
+    setRadioStatus(payload.message || 'Radio started.');
+    startQueueRefresh();
+  } catch (error) {
+    setRadioStatus(error.message || 'Radio playback failed.', true);
+  }
+}
+
 /* --------------------------------------------------------------- Boot */
 document.addEventListener('change', (event) => {
   if (event.target instanceof HTMLInputElement && event.target.name === 'track_id') {

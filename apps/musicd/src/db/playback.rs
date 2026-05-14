@@ -2,7 +2,7 @@ use std::io;
 
 use rusqlite::{OptionalExtension, params};
 
-use crate::types::{PlaybackSession, TrackPlayRecord};
+use crate::types::{DirectStreamMetadata, PlaybackSession, TrackPlayRecord};
 use crate::util::now_unix_timestamp;
 
 use super::{Database, db_error};
@@ -31,6 +31,31 @@ impl Database {
                         duration_seconds: row.get::<_, Option<u64>>(6)?,
                         last_observed_unix: row.get(7)?,
                         last_error: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db_error)
+    }
+
+    pub(crate) fn load_direct_stream_metadata(
+        &self,
+        renderer_location: &str,
+    ) -> io::Result<Option<DirectStreamMetadata>> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT renderer_location, current_track_uri, title, artwork_url, updated_unix
+                 FROM direct_stream_metadata
+                 WHERE renderer_location = ?",
+                [renderer_location],
+                |row| {
+                    Ok(DirectStreamMetadata {
+                        renderer_location: row.get(0)?,
+                        current_track_uri: row.get(1)?,
+                        title: row.get(2)?,
+                        artwork_url: row.get(3)?,
+                        updated_unix: row.get(4)?,
                     })
                 },
             )
@@ -180,6 +205,12 @@ impl Database {
             .map_err(db_error)?;
         transaction
             .execute(
+                "DELETE FROM direct_stream_metadata WHERE renderer_location = ?",
+                [renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
                 "INSERT INTO track_play_history
                  (track_id, renderer_location, queue_entry_id, played_unix)
                  VALUES (?, ?, ?, ?)",
@@ -276,6 +307,12 @@ impl Database {
             .map_err(db_error)?;
         transaction
             .execute(
+                "DELETE FROM direct_stream_metadata WHERE renderer_location = ?",
+                [renderer_location],
+            )
+            .map_err(db_error)?;
+        transaction
+            .execute(
                 "INSERT INTO track_play_history
                  (track_id, renderer_location, queue_entry_id, played_unix)
                  VALUES (?, ?, ?, ?)",
@@ -322,6 +359,63 @@ impl Database {
                  SET status = 'error', updated_unix = ?, version = version + 1
                  WHERE renderer_location = ?",
                 params![now_unix_timestamp(), renderer_location],
+            )
+            .map_err(db_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn mark_direct_stream_play_started(
+        &self,
+        renderer_location: &str,
+        current_track_uri: &str,
+        title: &str,
+        artwork_url: Option<&str>,
+    ) -> io::Result<()> {
+        let connection = self.connection()?;
+        let now = now_unix_timestamp();
+        connection
+            .execute(
+                "INSERT INTO playback_sessions
+                 (renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
+                  position_seconds, duration_seconds, last_observed_unix, last_error)
+                 VALUES (?, NULL, NULL, 'PLAYING', ?, 0, NULL, ?, NULL)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    queue_entry_id = NULL,
+                    next_queue_entry_id = NULL,
+                    transport_state = excluded.transport_state,
+                    current_track_uri = excluded.current_track_uri,
+                    position_seconds = excluded.position_seconds,
+                    duration_seconds = excluded.duration_seconds,
+                    last_observed_unix = excluded.last_observed_unix,
+                    last_error = excluded.last_error",
+                params![renderer_location, current_track_uri, now],
+            )
+            .map_err(db_error)?;
+        connection
+            .execute(
+                "INSERT INTO direct_stream_metadata
+                 (renderer_location, current_track_uri, title, artwork_url, updated_unix)
+                 VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT(renderer_location) DO UPDATE SET
+                    current_track_uri = excluded.current_track_uri,
+                    title = excluded.title,
+                    artwork_url = excluded.artwork_url,
+                    updated_unix = excluded.updated_unix",
+                params![
+                    renderer_location,
+                    current_track_uri,
+                    title,
+                    artwork_url,
+                    now
+                ],
+            )
+            .map_err(db_error)?;
+        connection
+            .execute(
+                "UPDATE playback_queues
+                 SET status = 'ready', updated_unix = ?, version = version + 1
+                 WHERE renderer_location = ? AND status = 'playing'",
+                params![now, renderer_location],
             )
             .map_err(db_error)?;
         Ok(())

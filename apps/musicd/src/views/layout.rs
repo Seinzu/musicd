@@ -257,6 +257,11 @@ pub(crate) fn render_now_playing_card(
     let session = state.playback_session(renderer_location);
     let queue = state.queue_snapshot(renderer_location);
     let current_track: Option<LibraryTrack> = current_track_for_renderer(state, renderer_location);
+    let direct_stream = if current_track.is_none() {
+        state.direct_stream_metadata(renderer_location)
+    } else {
+        None
+    };
 
     let (title_html, artist_html, album_html, artwork_html) = match current_track.as_ref() {
         Some(track) => {
@@ -283,6 +288,25 @@ pub(crate) fn render_now_playing_card(
                 "<div class=\"now-playing-art placeholder\">No Art</div>".to_string()
             };
             (title, artist, album, artwork)
+        }
+        None if direct_stream.is_some() => {
+            let stream = direct_stream.as_ref().expect("direct stream exists");
+            let artwork = stream.artwork_url.as_ref().map_or_else(
+                || "<div class=\"now-playing-art placeholder\">Radio</div>".to_string(),
+                |url| {
+                    format!(
+                        "<img class=\"now-playing-art\" loading=\"lazy\" src=\"{}\" alt=\"Artwork for {}\">",
+                        EscapeHtml(url),
+                        EscapeHtml(&stream.title)
+                    )
+                },
+            );
+            (
+                html_escape(&stream.title),
+                "Internet radio".to_string(),
+                String::new(),
+                artwork,
+            )
         }
         None => (
             "Nothing playing".to_string(),

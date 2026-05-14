@@ -2483,6 +2483,7 @@ mod tests {
                 discovery_timeout_ms: 1500,
                 server_discovery_enabled: true,
                 default_renderer_location: None,
+                radio_browser_base_url: "https://de1.api.radio-browser.info".to_string(),
                 debug_mode: false,
                 skip_startup_scan: false,
             },

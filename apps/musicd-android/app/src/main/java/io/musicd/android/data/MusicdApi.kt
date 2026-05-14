@@ -176,6 +176,22 @@ data class AlbumRecommendationsResponseDto(
 )
 
 @Serializable
+data class RadioStationDto(
+    val id: String,
+    val name: String,
+    @SerialName("stream_url") val streamUrl: String,
+    @SerialName("homepage_url") val homepageUrl: String? = null,
+    @SerialName("artwork_url") val artworkUrl: String? = null,
+    val tags: List<String> = emptyList(),
+    @SerialName("country_code") val countryCode: String? = null,
+    val language: String? = null,
+    val codec: String? = null,
+    val bitrate: Int? = null,
+    val votes: Int? = null,
+    @SerialName("click_count") val clickCount: Int? = null,
+)
+
+@Serializable
 data class ArtistDetailDto(
     val id: String,
     val name: String,
@@ -337,6 +353,24 @@ class MusicdApi(
     ): AlbumRecommendationsResponseDto =
         get("$baseUrl/api/recommendations?exclude_library=true&status=suggested&random=true&limit=$limit")
 
+    suspend fun searchRadioStations(
+        baseUrl: String,
+        query: String,
+        countryCode: String,
+        limit: Int,
+    ): List<RadioStationDto> =
+        get(
+            buildString {
+                append("$baseUrl/api/radio/stations?limit=$limit")
+                query.takeIf { it.isNotBlank() }?.let {
+                    append("&query=${it.encodeForUrl()}")
+                }
+                countryCode.takeIf { it.isNotBlank() }?.let {
+                    append("&countrycode=${it.encodeForUrl()}")
+                }
+            },
+        )
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String, clientId: String): ArtistDetailDto =
         get("$baseUrl/api/artists/${artistId.encodeForUrl()}?client_id=${clientId.encodeForUrl()}")
 
@@ -485,6 +519,24 @@ class MusicdApi(
             "client_id" to clientId,
             "album_id" to albumId,
         ),
+    )
+
+    suspend fun playRadioStation(
+        baseUrl: String,
+        rendererLocation: String,
+        station: RadioStationDto,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/radio/play",
+        buildMap {
+            put("renderer_location", rendererLocation)
+            put("client_id", clientId)
+            put("stream_url", station.streamUrl)
+            put("station_name", station.name)
+            station.id.takeIf { it.isNotBlank() }?.let { put("station_id", it) }
+            station.codec?.takeIf { it.isNotBlank() }?.let { put("codec", it) }
+            station.artworkUrl?.takeIf { it.isNotBlank() }?.let { put("artwork_url", it) }
+        },
     )
 
     suspend fun selectAlbumArtwork(

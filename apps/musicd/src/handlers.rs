@@ -1063,6 +1063,98 @@ pub(crate) fn handle_api_play_album_request(
     }
 }
 
+pub(crate) fn handle_api_radio_stations_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let query = request_value(request, "query");
+    let country_code =
+        request_value(request, "countrycode").or_else(|| request_value(request, "country_code"));
+    let tag = request_value(request, "tag");
+    let limit = request_value(request, "limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20);
+
+    match state.search_radio_stations(query, country_code, tag, limit) {
+        Ok(stations) => {
+            let body = serde_json::to_string(&stations)
+                .map_err(|error| io::Error::other(format!("radio JSON failed: {error}")))?;
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "502 Bad Gateway",
+            &format!("station discovery failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_radio_play_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
+    let stream_url = match request_value(request, "stream_url")
+        .or_else(|| request_value(request, "url"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value,
+        None => return api_error(writer, "400 Bad Request", "missing stream_url"),
+    };
+    let station_name = request_value(request, "station_name")
+        .or_else(|| request_value(request, "name"))
+        .unwrap_or("Internet radio");
+    let codec = request_value(request, "codec");
+    let artwork_url = request_value(request, "artwork_url")
+        .or_else(|| request_value(request, "favicon"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let station_id = request_value(request, "station_id")
+        .or_else(|| request_value(request, "id"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let _ = state.remember_renderer_location(&renderer_location);
+    match state.play_radio_stream(
+        &renderer_location,
+        stream_url,
+        station_name,
+        codec,
+        artwork_url,
+        station_id,
+    ) {
+        Ok(renderer_name) => api_renderer_state_response(
+            writer,
+            state,
+            &renderer_location,
+            &format!(
+                "Now playing radio station '{}' on {}.",
+                station_name, renderer_name
+            ),
+        ),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("radio playback failed: {error}"),
+        ),
+    }
+}
+
 pub(crate) fn handle_api_like_request(
     writer: &mut ResponseWriter,
     request: &HttpRequest,

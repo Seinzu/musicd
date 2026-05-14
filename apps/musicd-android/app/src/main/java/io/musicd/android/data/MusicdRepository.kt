@@ -86,6 +86,15 @@ class MusicdRepository(
         api.getCollectionRecommendations(baseUrl.normalizeBaseUrl(), limit)
     }
 
+    suspend fun searchRadioStations(
+        baseUrl: String,
+        query: String,
+        countryCode: String,
+        limit: Int = 24,
+    ): List<RadioStationDto> = withContext(Dispatchers.IO) {
+        api.searchRadioStations(baseUrl.normalizeBaseUrl(), query, countryCode, limit)
+    }
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
         withContext(Dispatchers.IO) {
             api.getArtistDetail(baseUrl.normalizeBaseUrl(), artistId, loadClientId())
@@ -217,6 +226,14 @@ class MusicdRepository(
         albumId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
         api.playAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, albumId, loadClientId())
+    }
+
+    suspend fun playRadioStation(
+        baseUrl: String,
+        rendererLocation: String,
+        station: RadioStationDto,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.playRadioStation(baseUrl.normalizeBaseUrl(), rendererLocation, station, loadClientId())
     }
 
     suspend fun selectAlbumArtwork(

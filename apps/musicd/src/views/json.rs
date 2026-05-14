@@ -648,6 +648,11 @@ pub(crate) fn render_session_payload_json(
     session: PlaybackSession,
 ) -> String {
     let current_track = current_track_for_renderer(state, renderer_location);
+    let direct_stream = if current_track.is_none() {
+        state.direct_stream_metadata(renderer_location)
+    } else {
+        None
+    };
     format!(
         r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"server_unix":{},"last_error":{},"title":{},"artist":{},"album":{}}}"#,
         json_escape(&session.transport_state),
@@ -659,8 +664,18 @@ pub(crate) fn render_session_payload_json(
         session.last_observed_unix,
         now_unix_timestamp(),
         option_string_json(session.last_error.as_deref()),
-        option_string_json(current_track.as_ref().map(|track| track.title.as_str())),
-        option_string_json(current_track.as_ref().map(|track| track.artist.as_str())),
+        option_string_json(
+            current_track
+                .as_ref()
+                .map(|track| track.title.as_str())
+                .or_else(|| direct_stream.as_ref().map(|stream| stream.title.as_str()))
+        ),
+        option_string_json(
+            current_track
+                .as_ref()
+                .map(|track| track.artist.as_str())
+                .or_else(|| direct_stream.as_ref().map(|_| "Internet radio"))
+        ),
         option_string_json(current_track.as_ref().map(|track| track.album.as_str())),
     )
 }
@@ -720,8 +735,14 @@ pub(crate) fn current_track_for_renderer(
     state: &ServiceState,
     renderer_location: &str,
 ) -> Option<LibraryTrack> {
+    let session_entry_id = state
+        .playback_session(renderer_location)
+        .and_then(|session| session.queue_entry_id)?;
     let queue = state.queue_snapshot(renderer_location)?;
     let queue_entry_id = queue.current_entry_id?;
+    if session_entry_id != queue_entry_id {
+        return None;
+    }
     let entry = queue
         .entries
         .into_iter()

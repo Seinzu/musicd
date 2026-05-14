@@ -19,6 +19,7 @@ import io.musicd.android.data.MutationResponseDto
 import io.musicd.android.data.NowPlayingDto
 import io.musicd.android.data.PlaybackEventDto
 import io.musicd.android.data.QueueDto
+import io.musicd.android.data.RadioStationDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.ServerInfoDto
 import io.musicd.android.data.TrackSummaryDto
@@ -35,6 +36,7 @@ import kotlinx.coroutines.launch
 enum class MusicdTab {
     Home,
     Library,
+    Radio,
     Queue,
 }
 
@@ -60,6 +62,11 @@ data class MusicdUiState(
     val libraryBrowseMode: LibraryBrowseMode = LibraryBrowseMode.Artists,
     val librarySearchFacet: LibrarySearchFacet = LibrarySearchFacet.All,
     val searchQuery: String = "",
+    val radioQuery: String = "",
+    val radioCountryCode: String = "",
+    val radioStations: List<RadioStationDto> = emptyList(),
+    val isSearchingRadio: Boolean = false,
+    val hasSearchedRadio: Boolean = false,
     val selectedRendererLocation: String = "",
     val renderers: List<RendererDto> = emptyList(),
     val nowPlaying: NowPlayingDto? = null,
@@ -385,6 +392,11 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 suppressedSpotlightAlbumIds = emptySet(),
                 homeRecommendations = emptyList(),
                 tracks = emptyList(),
+                radioStations = emptyList(),
+                radioQuery = "",
+                radioCountryCode = "",
+                isSearchingRadio = false,
+                hasSearchedRadio = false,
                 artists = emptyList(),
                 selectedArtistDetail = null,
                 selectedAlbumDetail = null,
@@ -402,6 +414,58 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(selectedTab = tab) }
         if (tab == MusicdTab.Library) {
             ensureTracksLoaded()
+        }
+    }
+
+    fun updateRadioQuery(value: String) {
+        _uiState.update { it.copy(radioQuery = value) }
+    }
+
+    fun updateRadioCountryCode(value: String) {
+        _uiState.update { it.copy(radioCountryCode = value.take(2).uppercase()) }
+    }
+
+    fun searchRadioStations() {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        if (baseUrl.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isSearchingRadio = true,
+                    hasSearchedRadio = true,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching {
+                repository.searchRadioStations(
+                    baseUrl = baseUrl,
+                    query = uiState.value.radioQuery.trim(),
+                    countryCode = uiState.value.radioCountryCode.trim(),
+                )
+            }.onSuccess { stations ->
+                _uiState.update {
+                    it.copy(
+                        radioStations = stations,
+                        isSearchingRadio = false,
+                        warningMessage = null,
+                        infoMessage = if (stations.isEmpty()) {
+                            "No radio stations matched that search."
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isSearchingRadio = false,
+                        errorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
         }
     }
 
@@ -1054,6 +1118,32 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                                 errorMessage = connectionErrorMessage(error),
                             )
                         }
+                    }
+                }
+        }
+    }
+
+    fun playRadioStation(station: RadioStationDto) {
+        val baseUrl = uiState.value.baseUrl
+        val rendererLocation = uiState.value.selectedRendererLocation
+        if (baseUrl.isBlank() || rendererLocation.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Choose a renderer first.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
+            runCatching { repository.playRadioStation(baseUrl, rendererLocation, station) }
+                .onSuccess { response ->
+                    _uiState.update { it.copy(infoMessage = response.message ?: "Radio started.") }
+                    syncPlaybackNotificationService()
+                    refreshPlaybackSurfaces()
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = connectionErrorMessage(error),
+                        )
                     }
                 }
         }
