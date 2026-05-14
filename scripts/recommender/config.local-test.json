@@ -1,0 +1,26 @@
+{
+  "collection": "seed.json",
+  "artifacts": {
+    "profile": "tmp-profile.json",
+    "catalog": "test-external-catalog.json",
+    "embeddings": "tmp-embeddings.json",
+    "recommendations": "tmp-recommendations.json"
+  },
+  "catalog": {
+    "enabled": false
+  },
+  "embeddings": {
+    "enabled": false
+  },
+  "recommendations": {
+    "enabled": true,
+    "seeds": [
+      "AIR - Moon Safari",
+      "A Tribe Called Quest - Midnight Marauders"
+    ],
+    "ownedCount": 0,
+    "discoveryCount": 1,
+    "recentDiscoveryCount": 1,
+    "poolSize": 10
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "catalog_schema_version": "external_catalog_v1",
+  "albums": [
+    {
+      "album_id": "test:hip-hop-1993",
+      "artist": "Sample Circle",
+      "title": "Dusty Loops",
+      "release_date": "1993",
+      "genres": ["Jazz Rap"],
+      "tags": ["hip-hop", "sample-based", "jazz rap"],
+      "source": "test"
+    },
+    {
+      "album_id": "test:ambient-1998",
+      "artist": "Low Orbit",
+      "title": "Soft Machine Room",
+      "release_date": "1998",
+      "genres": ["Downtempo"],
+      "tags": ["ambient", "electronic", "textural"],
+      "source": "test"
+    },
+    {
+      "album_id": "test:indie-1997",
+      "artist": "Basement Frequency",
+      "title": "Loose Wires",
+      "release_date": "1997",
+      "genres": ["Indie Rock"],
+      "tags": ["indie", "guitar-driven", "college rock"],
+      "source": "test"
+    },
+    {
+      "album_id": "test:ambient-2026",
+      "artist": "New Signal",
+      "title": "This Year's Weather",
+      "release_date": "2026",
+      "genres": ["Ambient"],
+      "tags": ["ambient", "electronic", "textural"],
+      "source": "test"
+    },
+    {
+      "album_id": "test:jazz-rap-2025",
+      "artist": "Fresh Cut Ensemble",
+      "title": "Last Year's Breaks",
+      "release_date": "2025",
+      "genres": ["Jazz Rap"],
+      "tags": ["hip-hop", "sample-based", "jazz rap"],
+      "source": "test"
+    }
+  ]
+}

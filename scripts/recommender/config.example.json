@@ -1,0 +1,40 @@
+{
+  "collection": "seed.json",
+  "artifacts": {
+    "profile": "profile.json",
+    "catalog": "external-catalog.json",
+    "embeddings": "embeddings.json",
+    "recommendations": "recommendations.json"
+  },
+  "catalog": {
+    "enabled": true,
+    "reuseExisting": true,
+    "limit": 250,
+    "topGenres": 8,
+    "topArtists": 10,
+    "perQuery": 25,
+    "recentPerQuery": 10,
+    "musicBrainzUserAgent": "musicd-recommender/0.1 (you@example.com)",
+    "musicBrainzDelayMs": 1100,
+    "lastfmDelayMs": 250
+  },
+  "embeddings": {
+    "enabled": true,
+    "reuseExisting": true,
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "text-embedding-3-small",
+    "batchSize": 64
+  },
+  "recommendations": {
+    "enabled": true,
+    "seeds": [
+      "AIR - Moon Safari",
+      "A Tribe Called Quest - Midnight Marauders"
+    ],
+    "ownedCount": 5,
+    "discoveryCount": 5,
+    "recentDiscoveryCount": 2,
+    "poolSize": 60,
+    "format": "recommendations"
+  }
+}
