@@ -1255,6 +1255,44 @@ mod tests {
     }
 
     #[test]
+    fn deletes_album_recommendations() {
+        let config_path = temp_config_path("album-recommendations-delete");
+        let database = Database::open(&config_path).expect("database should open");
+        let items = vec![RecommendationImportItem {
+            recommendation_key: None,
+            source: None,
+            batch_id: None,
+            seed_album_id: "seed-album".to_string(),
+            seed_musicbrainz_release_id: None,
+            suggested_artist: "Talk Talk".to_string(),
+            suggested_title: "Spirit of Eden".to_string(),
+            suggested_musicbrainz_release_id: None,
+            suggested_musicbrainz_release_group_id: Some("suggested-group".to_string()),
+            confidence: Some(0.92),
+            rationale: None,
+            external_url: None,
+            artwork_url: None,
+            status: None,
+        }];
+
+        database
+            .upsert_album_recommendations("llm-test", Some("batch-1"), &items)
+            .expect("recommendation import should succeed");
+        let deleted = database
+            .delete_album_recommendations()
+            .expect("recommendations should delete");
+        assert_eq!(deleted, 1);
+        assert!(
+            database
+                .list_album_recommendations(None)
+                .expect("recommendations should load")
+                .is_empty()
+        );
+
+        let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
     fn renderer_group_lifecycle_updates_members_and_queue_name() {
         let state = sample_state(Vec::new());
         let group = create_sample_renderer_group(

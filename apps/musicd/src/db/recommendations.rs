@@ -131,6 +131,13 @@ impl Database {
         transaction.commit().map_err(db_error)?;
         Ok(imported)
     }
+
+    pub(crate) fn delete_album_recommendations(&self) -> io::Result<usize> {
+        let connection = self.connection()?;
+        connection
+            .execute("DELETE FROM album_recommendations", [])
+            .map_err(db_error)
+    }
 }
 
 fn recommendation_select_sql(filtered: bool) -> &'static str {

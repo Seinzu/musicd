@@ -1181,6 +1181,27 @@ pub(crate) fn handle_api_recommendations_import_request(
     }
 }
 
+pub(crate) fn handle_api_recommendations_delete_request(
+    writer: &mut ResponseWriter,
+    _request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    match state.delete_album_recommendations() {
+        Ok(deleted) => {
+            let body = format!(
+                r#"{{"ok":true,"message":"Deleted {} recommendation(s).","deleted":{}}}"#,
+                deleted, deleted,
+            );
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("recommendation delete failed: {error}"),
+        ),
+    }
+}
+
 pub(crate) fn handle_api_events_request(
     writer: &mut ResponseWriter,
     request: &HttpRequest,

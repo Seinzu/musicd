@@ -11,7 +11,8 @@ use crate::handlers::{
     handle_api_queue_append_track_request, handle_api_queue_clear_request,
     handle_api_queue_move_request, handle_api_queue_play_next_album_request,
     handle_api_queue_play_next_track_request, handle_api_queue_remove_request,
-    handle_api_recommendations_import_request, handle_api_register_android_local_renderer_request,
+    handle_api_recommendations_delete_request, handle_api_recommendations_import_request,
+    handle_api_register_android_local_renderer_request,
     handle_api_register_cli_local_renderer_request, handle_api_renderer_discover_request,
     handle_api_renderer_group_create_request, handle_api_renderer_group_delete_request,
     handle_api_renderer_group_update_request, handle_api_transport_next_request,
@@ -186,6 +187,9 @@ pub(crate) fn handle_service_request(
                 body.as_bytes(),
                 request.method == "HEAD",
             )
+        }
+        ("DELETE", "/api/recommendations") => {
+            handle_api_recommendations_delete_request(writer, request, &state)
         }
         ("GET", "/api/renderers") | ("HEAD", "/api/renderers") => {
             let body = render_renderers_json(&state, request);

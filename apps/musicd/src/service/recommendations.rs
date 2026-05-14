@@ -74,4 +74,8 @@ impl ServiceState {
             &request.recommendations,
         )
     }
+
+    pub(crate) fn delete_album_recommendations(&self) -> io::Result<usize> {
+        self.database.delete_album_recommendations()
+    }
 }
