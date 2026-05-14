@@ -2898,6 +2898,9 @@ private fun AlbumRecommendationRow(
 ) {
     val uriHandler = LocalUriHandler.current
     val externalUrl = recommendation.externalUrl?.takeIf(::isWebUrl)
+    var isContextExpanded by remember(recommendation.recommendationKey, supportingText) {
+        mutableStateOf(false)
+    }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(
             modifier = Modifier
@@ -2914,7 +2917,7 @@ private fun AlbumRecommendationRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ArtworkSquare(
-                url = resolveUrl(baseUrl, recommendation.artworkUrl),
+                url = recommendationArtworkUrl(baseUrl, recommendation),
                 modifier = Modifier.size(72.dp),
                 fallbackText = recommendation.suggestedTitle,
                 contentHeight = 72.dp,
@@ -2962,9 +2965,12 @@ private fun AlbumRecommendationRow(
                     Spacer(Modifier.height(6.dp))
                     Text(
                         text,
+                        modifier = Modifier.clickable {
+                            isContextExpanded = !isContextExpanded
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
+                        maxLines = if (isContextExpanded) Int.MAX_VALUE else 3,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -2978,8 +2984,22 @@ private fun recommendationHomeReason(
     albums: List<AlbumSummaryDto>,
 ): String? {
     val seedAlbum = albums.firstOrNull { it.id == recommendation.seedAlbumId } ?: return null
-    return "Because you have ${seedAlbum.title} by ${seedAlbum.artist}"
+    val reason = "Because you have ${seedAlbum.title} by ${seedAlbum.artist}"
+    val rationale = recommendation.rationale?.takeIf { it.isNotBlank() }
+    return listOfNotNull(reason, rationale).joinToString("\n")
 }
+
+private fun recommendationArtworkUrl(
+    baseUrl: String,
+    recommendation: AlbumRecommendationDto,
+): String? =
+    resolveUrl(baseUrl, recommendation.artworkUrl)
+        ?: recommendation.suggestedMusicbrainzReleaseId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "https://coverartarchive.org/release/$it/front-250" }
+        ?: recommendation.suggestedMusicbrainzReleaseGroupId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "https://coverartarchive.org/release-group/$it/front-250" }
 
 @Composable
 private fun AlbumArtworkPickerSheet(

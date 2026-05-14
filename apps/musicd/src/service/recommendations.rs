@@ -90,6 +90,7 @@ impl ServiceState {
                 random_recommendation_key(&recommendation.recommendation_key, seed)
             });
         }
+        recommendations = dedupe_album_recommendations(recommendations);
         if let Some(limit) = limit {
             recommendations.truncate(limit);
         }
@@ -202,6 +203,41 @@ fn random_recommendation_key(recommendation_key: &str, seed: i64) -> u64 {
     hasher.finish()
 }
 
+fn dedupe_album_recommendations(
+    recommendations: Vec<AlbumRecommendation>,
+) -> Vec<AlbumRecommendation> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::with_capacity(recommendations.len());
+    for recommendation in recommendations {
+        if seen.insert(recommendation_identity_key(&recommendation)) {
+            unique.push(recommendation);
+        }
+    }
+    unique
+}
+
+fn recommendation_identity_key(recommendation: &AlbumRecommendation) -> String {
+    if let Some(release_group_id) = recommendation
+        .suggested_musicbrainz_release_group_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return format!("musicbrainz-release-group:{release_group_id}");
+    }
+    if let Some(release_id) = recommendation
+        .suggested_musicbrainz_release_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        return format!("musicbrainz-release:{release_id}");
+    }
+    format!(
+        "artist-title:{}:{}",
+        normalize_recommendation_match_text(&recommendation.suggested_artist),
+        relaxed_album_title_match_text(&recommendation.suggested_title),
+    )
+}
+
 fn album_id_from_artwork_url(url: &str) -> Option<&str> {
     if !url.contains("/artwork/album/") {
         return None;
@@ -277,7 +313,11 @@ fn is_edition_word(word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_recommendation_match_text, relaxed_album_title_match_text};
+    use super::{
+        dedupe_album_recommendations, normalize_recommendation_match_text,
+        relaxed_album_title_match_text,
+    };
+    use crate::types::AlbumRecommendation;
 
     #[test]
     fn normalizes_recommendation_artist_text_for_matching() {
@@ -298,5 +338,60 @@ mod tests {
             relaxed_album_title_match_text("Kid A [20th Anniversary Remastered]"),
             "kid a"
         );
+    }
+
+    #[test]
+    fn dedupes_recommendations_by_album_identity() {
+        let recommendations = dedupe_album_recommendations(vec![
+            recommendation("first", "Talk Talk", "Spirit of Eden", None),
+            recommendation(
+                "second",
+                "Talk Talk",
+                "Spirit of Eden (Deluxe Edition)",
+                None,
+            ),
+            recommendation(
+                "third",
+                "Talk Talk",
+                "Spirit of Eden",
+                Some("release-group-id"),
+            ),
+            recommendation(
+                "fourth",
+                "Talk Talk",
+                "Spirit of Eden",
+                Some("release-group-id"),
+            ),
+        ]);
+
+        assert_eq!(recommendations.len(), 2);
+        assert_eq!(recommendations[0].recommendation_key, "first");
+        assert_eq!(recommendations[1].recommendation_key, "third");
+    }
+
+    fn recommendation(
+        key: &str,
+        artist: &str,
+        title: &str,
+        release_group_id: Option<&str>,
+    ) -> AlbumRecommendation {
+        AlbumRecommendation {
+            recommendation_key: key.to_string(),
+            source: "test".to_string(),
+            batch_id: None,
+            seed_album_id: "seed".to_string(),
+            seed_musicbrainz_release_id: None,
+            suggested_artist: artist.to_string(),
+            suggested_title: title.to_string(),
+            suggested_musicbrainz_release_id: None,
+            suggested_musicbrainz_release_group_id: release_group_id.map(ToString::to_string),
+            confidence: None,
+            rationale: None,
+            external_url: None,
+            artwork_url: None,
+            status: "suggested".to_string(),
+            created_unix: 0,
+            updated_unix: 0,
+        }
     }
 }
