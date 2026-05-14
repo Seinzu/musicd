@@ -1,5 +1,6 @@
 package io.musicd.android.playback
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -161,10 +162,7 @@ class MusicdPlaybackNotificationService : Service() {
                         }
                         reportLocalSession(force = true)
                         latestPlaybackEvent?.let { event ->
-                            startForeground(
-                                NOTIFICATION_ID,
-                                buildPlaybackNotification(event, latestArtworkBitmap),
-                            )
+                            promoteToForeground(buildPlaybackNotification(event, latestArtworkBitmap))
                         }
                     }
                 },
@@ -186,7 +184,10 @@ class MusicdPlaybackNotificationService : Service() {
                     return START_NOT_STICKY
                 }
 
-                startForeground(NOTIFICATION_ID, buildBootstrapNotification())
+                if (!promoteToForeground(buildBootstrapNotification())) {
+                    stopServiceNow()
+                    return START_NOT_STICKY
+                }
                 startObserving()
                 return START_STICKY
             }
@@ -256,7 +257,9 @@ class MusicdPlaybackNotificationService : Service() {
             syncLocalPlayback(event)
             val artworkBitmap = loadArtworkBitmap(event)
             updateMediaSession(event, artworkBitmap)
-            startForeground(NOTIFICATION_ID, buildPlaybackNotification(event, artworkBitmap))
+            if (!promoteToForeground(buildPlaybackNotification(event, artworkBitmap))) {
+                stopServiceNow()
+            }
         }
     }
 
@@ -1005,9 +1008,14 @@ class MusicdPlaybackNotificationService : Service() {
     private fun stopServiceNow() {
         observerJob?.cancel()
         observerJob = null
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
+
+    private fun promoteToForeground(notification: Notification): Boolean =
+        runCatching {
+            startForeground(NOTIFICATION_ID, notification)
+        }.isSuccess
 
     private fun isLocalRendererActive(): Boolean =
         isLocalRendererLocation(currentRendererLocation) ||
@@ -1066,7 +1074,7 @@ class MusicdPlaybackNotificationService : Service() {
             rendererLocation: String,
             localRendererLocation: String,
             serverName: String?,
-        ) {
+        ): Boolean {
             val intent = Intent(context, MusicdPlaybackNotificationService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_BASE_URL, baseUrl)
@@ -1074,14 +1082,18 @@ class MusicdPlaybackNotificationService : Service() {
                 putExtra(EXTRA_LOCAL_RENDERER_LOCATION, localRendererLocation)
                 putExtra(EXTRA_SERVER_NAME, serverName)
             }
-            ContextCompat.startForegroundService(context, intent)
+            return runCatching {
+                ContextCompat.startForegroundService(context, intent)
+            }.isSuccess
         }
 
-        fun stop(context: Context) {
+        fun stop(context: Context): Boolean {
             val intent = Intent(context, MusicdPlaybackNotificationService::class.java).apply {
                 action = ACTION_STOP_SERVICE
             }
-            context.startService(intent)
+            return runCatching {
+                context.startService(intent)
+            }.isSuccess
         }
 
         private fun hasDisplayablePlayback(event: PlaybackEventDto): Boolean =

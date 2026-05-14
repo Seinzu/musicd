@@ -631,7 +631,7 @@ class MusicdApi(
                                 if (eventName == "playback" && dataLines.isNotEmpty()) {
                                     val payload = dataLines.joinToString("\n")
                                     onEvent(
-                                        decodeBody<PlaybackEventDto>(payload)
+                                        decodeBody<PlaybackEventDto>(payload, "$baseUrl/api/events")
                                     )
                                 }
                                 eventName = null
@@ -683,7 +683,7 @@ class MusicdApi(
     private suspend inline fun <reified T> get(url: String): T {
         val request = Request.Builder().url(url).get().build()
         val body = executeRequest(request)
-        return decodeBody(body)
+        return decodeBody(body, url)
     }
 
     private suspend inline fun <reified T> post(
@@ -699,7 +699,7 @@ class MusicdApi(
             .post(bodyBuilder.build())
             .build()
         val body = executeRequest(request)
-        return decodeBody(body)
+        return decodeBody(body, url)
     }
 
     private fun executeRequest(request: Request): String {
@@ -739,12 +739,12 @@ class MusicdApi(
         }
     }
 
-    private inline fun <reified T> decodeBody(body: String): T =
+    private inline fun <reified T> decodeBody(body: String, sourceUrl: String): T =
         try {
             json.decodeFromString(body)
         } catch (error: SerializationException) {
             throw MusicdApiException.InvalidResponse(
-                "musicd returned an unexpected response.",
+                "musicd returned unexpected JSON from ${sourceUrl.musicdEndpointLabel()}.",
                 error,
             )
         }
@@ -784,3 +784,11 @@ private fun friendlyHttpMessage(statusCode: Int, serverMessage: String?): String
         in 500..599 -> serverMessage ?: "musicd responded with a server error."
         else -> serverMessage ?: "musicd request failed ($statusCode)."
     }
+
+private fun String.musicdEndpointLabel(): String =
+    substringAfter("://", this)
+        .substringAfter('/', missingDelimiterValue = "")
+        .substringBefore('?')
+        .takeIf { it.isNotBlank() }
+        ?.let { "/$it" }
+        ?: this

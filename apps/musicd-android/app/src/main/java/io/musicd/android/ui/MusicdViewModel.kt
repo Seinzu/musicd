@@ -1307,13 +1307,22 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             MusicdPlaybackNotificationService.stop(getApplication())
             return
         }
-        MusicdPlaybackNotificationService.start(
+        val notificationStarted = MusicdPlaybackNotificationService.start(
             context = getApplication(),
             baseUrl = baseUrl,
             rendererLocation = rendererLocation,
             localRendererLocation = androidLocalRendererLocation(),
             serverName = state.serverName,
         )
+        if (!notificationStarted) {
+            _uiState.update {
+                if (it.connected && it.baseUrl == baseUrl && it.selectedRendererLocation == rendererLocation) {
+                    it.copy(warningMessage = PLAYBACK_NOTIFICATION_UNAVAILABLE_MESSAGE)
+                } else {
+                    it
+                }
+            }
+        }
     }
 
     private fun applyPlaybackEvent(
@@ -1456,6 +1465,8 @@ private fun isUnavailableAlbumError(
 
 private const val TRACKS_WARNING_MESSAGE = "Track library unavailable right now."
 private const val PLAYBACK_EVENT_RECONNECTING_MESSAGE = "Reconnecting live playback updates…"
+private const val PLAYBACK_NOTIFICATION_UNAVAILABLE_MESSAGE =
+    "Connected, but Android blocked the playback notification service."
 private const val PLAYBACK_EVENT_WARNING_THRESHOLD = 3
 
 private data class Quintuple<A, B, C, D, E>(
