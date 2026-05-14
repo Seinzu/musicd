@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Close
@@ -77,6 +78,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
@@ -92,6 +94,7 @@ import androidx.lifecycle.compose.currentStateAsState
 import coil.compose.AsyncImage
 import io.musicd.android.data.AlbumDetailDto
 import io.musicd.android.data.AlbumArtworkCandidateDto
+import io.musicd.android.data.AlbumRecommendationDto
 import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
@@ -887,9 +890,12 @@ private fun LibraryScreen(
         AlbumDetailScreen(
             baseUrl = state.baseUrl,
             album = album,
+            libraryAlbums = state.albums,
+            recommendations = state.selectedAlbumRecommendations,
             onBack = onCloseAlbumDetail,
             backLabel = if (state.selectedArtistDetail != null) "Back to artist" else "Back to library",
             onOpenArtist = { onOpenArtistByName(album.artist) },
+            onOpenAlbum = onOpenAlbum,
             onPlayAlbum = { onPlayAlbum(album.id) },
             onLikeAlbum = { onLikeAlbum(album.id) },
             onAppendAlbum = { onAppendAlbum(album.id) },
@@ -2528,9 +2534,12 @@ private fun ArtistDetailScreen(
 private fun AlbumDetailScreen(
     baseUrl: String,
     album: AlbumDetailDto,
+    libraryAlbums: List<AlbumSummaryDto>,
+    recommendations: List<AlbumRecommendationDto>,
     onBack: () -> Unit,
     backLabel: String,
     onOpenArtist: (() -> Unit)?,
+    onOpenAlbum: (String) -> Unit,
     onOpenArtworkPicker: () -> Unit,
     onPlayAlbum: () -> Unit,
     onLikeAlbum: () -> Unit,
@@ -2597,7 +2606,11 @@ private fun AlbumDetailScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = listOf(album.artist, album.metadata.releaseDate, "${album.trackCount} tracks").joinToString(" · "),
+                        text = listOfNotNull(
+                            album.artist.takeIf { it.isNotBlank() },
+                            album.metadata.releaseDate?.takeIf { it.isNotBlank() },
+                            "${album.trackCount} tracks",
+                        ).joinToString(" · "),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -2647,6 +2660,106 @@ private fun AlbumDetailScreen(
                 onPlayNextTrack = { onPlayNextTrack(track.id) },
                 onOpenArtist = { onOpenArtistByName(track.artist) },
             )
+        }
+        if (recommendations.isNotEmpty()) {
+            item {
+                Text(
+                    "Recommended from this album",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            items(recommendations, key = { it.recommendationKey }) { recommendation ->
+                val localAlbum = findLibraryAlbumForRecommendation(recommendation, libraryAlbums)
+                AlbumRecommendationRow(
+                    baseUrl = baseUrl,
+                    recommendation = recommendation,
+                    localAlbum = localAlbum,
+                    onOpenAlbum = { localAlbum?.id?.let(onOpenAlbum) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlbumRecommendationRow(
+    baseUrl: String,
+    recommendation: AlbumRecommendationDto,
+    localAlbum: AlbumSummaryDto?,
+    onOpenAlbum: () -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+    val externalUrl = recommendation.externalUrl?.takeIf(::isWebUrl)
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (localAlbum != null) {
+                        Modifier.clickable(onClick = onOpenAlbum)
+                    } else {
+                        Modifier
+                    }
+                )
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ArtworkSquare(
+                url = resolveUrl(baseUrl, recommendation.artworkUrl),
+                modifier = Modifier.size(72.dp),
+                fallbackText = recommendation.suggestedTitle,
+                contentHeight = 72.dp,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            recommendation.suggestedTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            recommendation.suggestedArtist,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    externalUrl?.let { url ->
+                        IconButton(onClick = { uriHandler.openUri(url) }) {
+                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = "Open recommendation")
+                        }
+                    }
+                }
+                val meta = recommendationMetaLabel(recommendation, localAlbum != null)
+                if (meta.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        meta,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
+                recommendation.rationale?.takeIf { it.isNotBlank() }?.let { rationale ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        rationale,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 }
@@ -3322,6 +3435,53 @@ private fun albumTotalDurationLabel(album: AlbumDetailDto): String? {
     return formatDuration(durations.sum())
 }
 
+private fun recommendationMetaLabel(
+    recommendation: AlbumRecommendationDto,
+    isInLibrary: Boolean,
+): String =
+    listOfNotNull(
+        "In library".takeIf { isInLibrary },
+        recommendation.confidence?.let(::confidenceLabel),
+        recommendation.status.takeUnless { it.equals("suggested", ignoreCase = true) },
+    ).joinToString(" · ")
+
+private fun confidenceLabel(confidence: Double): String {
+    val percentage = if (confidence <= 1.0) confidence * 100.0 else confidence
+    return "%.0f%% match".format(percentage.coerceIn(0.0, 100.0))
+}
+
+private fun findLibraryAlbumForRecommendation(
+    recommendation: AlbumRecommendationDto,
+    albums: List<AlbumSummaryDto>,
+): AlbumSummaryDto? {
+    recommendation.suggestedMusicbrainzReleaseId?.takeIf { it.isNotBlank() }?.let { releaseId ->
+        albums.firstOrNull { it.metadata?.musicbrainzReleaseId == releaseId }?.let { return it }
+    }
+    recommendation.suggestedMusicbrainzReleaseGroupId?.takeIf { it.isNotBlank() }?.let { releaseGroupId ->
+        albums.firstOrNull { it.metadata?.musicbrainzReleaseGroupId == releaseGroupId }?.let { return it }
+    }
+    recommendation.artworkUrl?.let(::albumIdFromArtworkUrl)?.let { albumId ->
+        albums.firstOrNull { it.id == albumId }?.let { return it }
+    }
+
+    val recommendedArtist = normalizeRecommendationMatchText(recommendation.suggestedArtist)
+    val recommendedTitle = normalizeRecommendationMatchText(recommendation.suggestedTitle)
+    return albums.firstOrNull {
+        normalizeRecommendationMatchText(it.artist) == recommendedArtist &&
+            normalizeRecommendationMatchText(it.title) == recommendedTitle
+    }
+}
+
+private fun albumIdFromArtworkUrl(url: String): String? =
+    url
+        .substringBefore('?')
+        .trimEnd('/')
+        .substringAfterLast('/')
+        .takeIf { url.contains("/artwork/album/") && it.isNotBlank() }
+
+private fun normalizeRecommendationMatchText(value: String): String =
+    value.trim().lowercase().replace(Regex("""\s+"""), " ")
+
 @Composable
 private fun HighlightedText(
     text: String,
@@ -3424,6 +3584,9 @@ private fun resolveUrl(baseUrl: String, path: String?): String? {
     }
     return "${baseUrl.trimEnd('/')}/${path.trimStart('/')}"
 }
+
+private fun isWebUrl(value: String): Boolean =
+    value.startsWith("http://") || value.startsWith("https://")
 
 private fun serverLabel(serverName: String?, baseUrl: String): String =
     serverName?.takeIf { it.isNotBlank() } ?: if (baseUrl.isBlank()) {

@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.musicd.android.data.AlbumDetailDto
 import io.musicd.android.data.AlbumArtworkCandidateDto
+import io.musicd.android.data.AlbumRecommendationDto
 import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
@@ -68,6 +69,7 @@ data class MusicdUiState(
     val tracks: List<TrackSummaryDto> = emptyList(),
     val selectedArtistDetail: ArtistDetailDto? = null,
     val selectedAlbumDetail: AlbumDetailDto? = null,
+    val selectedAlbumRecommendations: List<AlbumRecommendationDto> = emptyList(),
     val showAlbumArtworkPicker: Boolean = false,
     val albumArtworkCandidates: List<AlbumArtworkCandidateDto> = emptyList(),
     val isSearchingAlbumArtwork: Boolean = false,
@@ -169,6 +171,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 libraryBrowseMode = mode,
                 selectedArtistDetail = null,
                 selectedAlbumDetail = null,
+                selectedAlbumRecommendations = emptyList(),
             )
         }
     }
@@ -370,6 +373,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 artists = emptyList(),
                 selectedArtistDetail = null,
                 selectedAlbumDetail = null,
+                selectedAlbumRecommendations = emptyList(),
                 queue = null,
                 isConnecting = false,
                 errorMessage = null,
@@ -717,15 +721,29 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         val baseUrl = uiState.value.baseUrl
         if (baseUrl.isBlank()) return
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
-            runCatching { repository.getAlbumDetail(baseUrl, albumId) }
-                .onSuccess { album ->
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    errorMessage = null,
+                    warningMessage = null,
+                    selectedAlbumRecommendations = emptyList(),
+                )
+            }
+            runCatching {
+                val album = repository.getAlbumDetail(baseUrl, albumId)
+                val recommendations = runCatching {
+                    repository.getAlbumRecommendations(baseUrl, albumId).recommendations
+                }.getOrDefault(emptyList())
+                album to recommendations
+            }
+                .onSuccess { (album, recommendations) ->
                     _uiState.update {
                         val artistContext = if (preserveArtistContext) it.selectedArtistDetail else null
                         it.copy(
                             selectedTab = MusicdTab.Library,
                             selectedArtistDetail = artistContext,
                             selectedAlbumDetail = album,
+                            selectedAlbumRecommendations = recommendations,
                             isLoading = false,
                             warningMessage = null,
                         )
@@ -747,7 +765,12 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun closeAlbumDetail() {
-        _uiState.update { it.copy(selectedAlbumDetail = null) }
+        _uiState.update {
+            it.copy(
+                selectedAlbumDetail = null,
+                selectedAlbumRecommendations = emptyList(),
+            )
+        }
     }
 
     fun openAlbumArtworkPicker() {
@@ -862,6 +885,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             selectedTab = MusicdTab.Library,
                             selectedArtistDetail = artist,
                             selectedAlbumDetail = null,
+                            selectedAlbumRecommendations = emptyList(),
                             isLoading = false,
                             warningMessage = null,
                         )
@@ -1192,6 +1216,11 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                         state.tracks
                     },
                     selectedAlbumDetail = state.selectedAlbumDetail?.takeUnless { it.id == albumId },
+                    selectedAlbumRecommendations = if (state.selectedAlbumDetail?.id == albumId) {
+                        emptyList()
+                    } else {
+                        state.selectedAlbumRecommendations
+                    },
                     selectedArtistDetail = selectedArtistDetail,
                     suppressedSpotlightAlbumIds = state.suppressedSpotlightAlbumIds + albumId,
                     isLoading = false,

@@ -131,6 +131,27 @@ Each candidate includes:
 - `image_url`
 - `source`
 
+### `GET /api/recommendations?album_id=<album_id>`
+
+Returns album recommendations for a seed album.
+
+Response:
+
+- `recommendations[]`
+
+Each recommendation includes:
+
+- `recommendation_key`
+- `source`
+- `seed_album_id`
+- `suggested_artist`
+- `suggested_title`
+- `confidence`
+- `rationale`
+- `external_url`
+- `artwork_url`
+- `status`
+
 ### `GET /api/artists`
 
 Returns artist summaries.

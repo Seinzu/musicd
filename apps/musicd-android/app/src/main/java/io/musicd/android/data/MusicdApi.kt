@@ -80,7 +80,14 @@ data class TrackSummaryDto(
 
 @Serializable
 data class AlbumMetadataDto(
-    @SerialName("release_date") val releaseDate: String,
+    @SerialName("release_date") val releaseDate: String? = null,
+    @SerialName("musicbrainz_release_id") val musicbrainzReleaseId: String? = null,
+    @SerialName("musicbrainz_release_group_id") val musicbrainzReleaseGroupId: String? = null,
+    @SerialName("original_release_date") val originalReleaseDate: String? = null,
+    @SerialName("release_country") val releaseCountry: String? = null,
+    @SerialName("release_type") val releaseType: String? = null,
+    val genres: List<String> = emptyList(),
+    @SerialName("source_track_id") val sourceTrackId: String? = null,
 )
 
 @Serializable
@@ -91,6 +98,7 @@ data class AlbumSummaryDto(
     @SerialName("track_count") val trackCount: Int,
     @SerialName("first_track_id") val firstTrackId: String,
     @SerialName("artwork_url") val artworkUrl: String = "",
+    val metadata: AlbumMetadataDto? = null,
     @SerialName("like_count") val likeCount: Long = 0L,
     @SerialName("liked_by_client") val likedByClient: Boolean = false,
 )
@@ -140,6 +148,31 @@ data class AlbumArtworkCandidatesResponseDto(
     val album: AlbumSummaryDto? = null,
     val candidates: List<AlbumArtworkCandidateDto> = emptyList(),
     val error: String? = null,
+)
+
+@Serializable
+data class AlbumRecommendationDto(
+    @SerialName("recommendation_key") val recommendationKey: String,
+    val source: String,
+    @SerialName("batch_id") val batchId: String? = null,
+    @SerialName("seed_album_id") val seedAlbumId: String,
+    @SerialName("seed_musicbrainz_release_id") val seedMusicbrainzReleaseId: String? = null,
+    @SerialName("suggested_artist") val suggestedArtist: String,
+    @SerialName("suggested_title") val suggestedTitle: String,
+    @SerialName("suggested_musicbrainz_release_id") val suggestedMusicbrainzReleaseId: String? = null,
+    @SerialName("suggested_musicbrainz_release_group_id") val suggestedMusicbrainzReleaseGroupId: String? = null,
+    val confidence: Double? = null,
+    val rationale: String? = null,
+    @SerialName("external_url") val externalUrl: String? = null,
+    @SerialName("artwork_url") val artworkUrl: String? = null,
+    val status: String = "suggested",
+    @SerialName("created_unix") val createdUnix: Long = 0L,
+    @SerialName("updated_unix") val updatedUnix: Long = 0L,
+)
+
+@Serializable
+data class AlbumRecommendationsResponseDto(
+    val recommendations: List<AlbumRecommendationDto> = emptyList(),
 )
 
 @Serializable
@@ -291,6 +324,12 @@ class MusicdApi(
         albumId: String,
     ): AlbumArtworkCandidatesResponseDto =
         get("$baseUrl/api/albums/${albumId.encodeForUrl()}/artwork/candidates")
+
+    suspend fun getAlbumRecommendations(
+        baseUrl: String,
+        albumId: String,
+    ): AlbumRecommendationsResponseDto =
+        get("$baseUrl/api/recommendations?album_id=${albumId.encodeForUrl()}")
 
     suspend fun getArtistDetail(baseUrl: String, artistId: String, clientId: String): ArtistDetailDto =
         get("$baseUrl/api/artists/${artistId.encodeForUrl()}?client_id=${clientId.encodeForUrl()}")

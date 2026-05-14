@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.core.content.edit
 import io.musicd.android.data.AlbumDetailDto
 import io.musicd.android.data.AlbumArtworkCandidatesResponseDto
+import io.musicd.android.data.AlbumRecommendationsResponseDto
 import io.musicd.android.data.ArtistDetailDto
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -69,6 +70,13 @@ class MusicdRepository(
         albumId: String,
     ): AlbumArtworkCandidatesResponseDto = withContext(Dispatchers.IO) {
         api.getAlbumArtworkCandidates(baseUrl.normalizeBaseUrl(), albumId)
+    }
+
+    suspend fun getAlbumRecommendations(
+        baseUrl: String,
+        albumId: String,
+    ): AlbumRecommendationsResponseDto = withContext(Dispatchers.IO) {
+        api.getAlbumRecommendations(baseUrl.normalizeBaseUrl(), albumId)
     }
 
     suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
