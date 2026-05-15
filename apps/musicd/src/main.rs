@@ -503,6 +503,64 @@ mod tests {
     }
 
     #[test]
+    fn resume_sleeping_renderer_restarts_track_at_last_known_position() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![playing_snapshot(&track, 0, 180)],
+        ));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Manual",
+                &[queue_entry_for_track(&track)],
+            )
+            .expect("queue should be created");
+        let resource = state.stream_resource_for_track(&track);
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                queue.entries[0].id,
+                &track.id,
+                &resource.stream_url,
+                track.duration_seconds,
+            )
+            .expect("queue session should be marked started");
+        state
+            .database
+            .record_transport_snapshot(
+                renderer_location,
+                "STOPPED",
+                Some(&resource.stream_url),
+                Some(42),
+                track.duration_seconds,
+            )
+            .expect("sleeping renderer snapshot should be recorded");
+
+        state
+            .resume_renderer(renderer_location)
+            .expect("sleeping renderer should resume");
+
+        let played = backend.played_streams();
+        assert_eq!(played.len(), 1);
+        assert_eq!(played[0].stream_url, resource.stream_url);
+        assert_eq!(backend.seek_positions(), vec![42]);
+        let session = state
+            .database
+            .load_playback_session(renderer_location)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(session.transport_state, "PLAYING");
+        assert_eq!(session.position_seconds, Some(42));
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn queue_poll_clears_final_completed_track_without_restarting_it() {
         let renderer_location = "http://renderer.local/description.xml";
         let track = sample_track("track-1", Some(1), Some(1), "Track 1");
@@ -2608,6 +2666,7 @@ mod tests {
         snapshots: Mutex<VecDeque<TransportSnapshot>>,
         played_streams: Mutex<Vec<StreamResource>>,
         preloaded_streams: Mutex<Vec<StreamResource>>,
+        seek_positions: Mutex<Vec<u64>>,
         cleared_next_count: Mutex<usize>,
         play_count: Mutex<usize>,
     }
@@ -2626,6 +2685,7 @@ mod tests {
                             "Play".to_string(),
                             "Pause".to_string(),
                             "Stop".to_string(),
+                            "Seek".to_string(),
                             "SetNextAVTransportURI".to_string(),
                         ]),
                         has_playlist_extension_service: Some(false),
@@ -2640,6 +2700,7 @@ mod tests {
                 snapshots: Mutex::new(VecDeque::from(snapshots)),
                 played_streams: Mutex::new(Vec::new()),
                 preloaded_streams: Mutex::new(Vec::new()),
+                seek_positions: Mutex::new(Vec::new()),
                 cleared_next_count: Mutex::new(0),
                 play_count: Mutex::new(0),
             }
@@ -2664,6 +2725,13 @@ mod tests {
                 .play_count
                 .lock()
                 .expect("play count should not be poisoned")
+        }
+
+        fn seek_positions(&self) -> Vec<u64> {
+            self.seek_positions
+                .lock()
+                .expect("seek positions should not be poisoned")
+                .clone()
         }
     }
 
@@ -2732,7 +2800,11 @@ mod tests {
             Ok(())
         }
 
-        fn seek(&self, _renderer: &RendererRecord, _position_seconds: u64) -> std::io::Result<()> {
+        fn seek(&self, _renderer: &RendererRecord, position_seconds: u64) -> std::io::Result<()> {
+            self.seek_positions
+                .lock()
+                .expect("seek positions should not be poisoned")
+                .push(position_seconds);
             Ok(())
         }
 

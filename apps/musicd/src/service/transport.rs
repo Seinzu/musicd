@@ -143,8 +143,22 @@ impl ServiceState {
                 .unwrap_or(true)
                 && queue.current_entry_id.is_some()
             {
-                let (track, _, renderer_name, _) =
+                let resume_position_seconds = session
+                    .as_ref()
+                    .filter(|session| session.queue_entry_id == queue.current_entry_id)
+                    .and_then(|session| {
+                        resumable_position_seconds(
+                            session.position_seconds,
+                            session.duration_seconds,
+                        )
+                    });
+                let (track, _, renderer_name, resolved_renderer_location) =
                     self.start_current_queue_entry(renderer_location)?;
+                self.seek_restarted_renderer_to_position(
+                    &resolved_renderer_location,
+                    &track,
+                    resume_position_seconds,
+                );
                 return Ok(format!(
                     "Now playing '{}' on {}.",
                     track.title, renderer_name
@@ -709,6 +723,94 @@ impl ServiceState {
         Ok(self.group_fanout_message("resumed", &fanout))
     }
 
+    fn seek_restarted_renderer_to_position(
+        &self,
+        renderer_location: &str,
+        track: &LibraryTrack,
+        position_seconds: Option<u64>,
+    ) {
+        let Some(position_seconds) = position_seconds else {
+            return;
+        };
+        let renderer = match self.resolve_renderer(renderer_location) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                self.debug_log(
+                    "resume-seek-failed",
+                    format!(
+                        "renderer={} target={} reason=resolve error={}",
+                        renderer_location, position_seconds, error
+                    ),
+                );
+                return;
+            }
+        };
+        if renderer.capabilities.supports_seek() == Some(false) {
+            self.debug_log(
+                "resume-seek-skipped",
+                format!(
+                    "renderer={} target={} reason=unsupported",
+                    renderer_location, position_seconds
+                ),
+            );
+            return;
+        }
+
+        let waited = self.wait_for_transport_state(
+            renderer_location,
+            &["PLAYING", "PAUSED_PLAYBACK"],
+            8,
+            Duration::from_millis(150),
+        );
+        match waited {
+            Ok(snapshot) => self.debug_log(
+                "resume-seek-wait",
+                format!(
+                    "renderer={} state={} target={}",
+                    renderer_location, snapshot.transport_info.transport_state, position_seconds
+                ),
+            ),
+            Err(error) => self.debug_log(
+                "resume-seek-wait-failed",
+                format!(
+                    "renderer={} target={} error={}",
+                    renderer_location, position_seconds, error
+                ),
+            ),
+        }
+
+        match self
+            .renderer_backend(renderer_location)
+            .and_then(|backend| backend.seek(&renderer, position_seconds))
+        {
+            Ok(()) => {
+                let _ = self.mark_renderer_reachable(&renderer);
+                let resource = self.stream_resource_for_track(track);
+                let _ = self.database.record_transport_snapshot(
+                    renderer_location,
+                    "PLAYING",
+                    Some(&resource.stream_url),
+                    Some(position_seconds),
+                    track.duration_seconds,
+                );
+                self.debug_log(
+                    "resume-seek",
+                    format!(
+                        "renderer={} target={} track_id={} uri={}",
+                        renderer_location, position_seconds, track.id, resource.stream_url
+                    ),
+                );
+            }
+            Err(error) => self.debug_log(
+                "resume-seek-failed",
+                format!(
+                    "renderer={} target={} reason=seek error={}",
+                    renderer_location, position_seconds, error
+                ),
+            ),
+        }
+    }
+
     fn debug_log_current_queue_file(
         &self,
         event: &str,
@@ -778,5 +880,21 @@ impl ServiceState {
                 track.mime_type
             ),
         );
+    }
+}
+
+fn resumable_position_seconds(
+    position_seconds: Option<u64>,
+    duration_seconds: Option<u64>,
+) -> Option<u64> {
+    let position_seconds = position_seconds.filter(|seconds| *seconds > 0)?;
+    match duration_seconds {
+        Some(duration_seconds) if duration_seconds <= 1 && position_seconds >= duration_seconds => {
+            None
+        }
+        Some(duration_seconds) if position_seconds >= duration_seconds => {
+            Some(duration_seconds.saturating_sub(1))
+        }
+        _ => Some(position_seconds),
     }
 }
