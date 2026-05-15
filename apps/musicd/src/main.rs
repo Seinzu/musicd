@@ -2341,6 +2341,49 @@ mod tests {
     }
 
     #[test]
+    fn incremental_library_changes_update_snapshot_and_database() {
+        let mut updated = sample_track("track-updated", Some(1), Some(1), "Old title");
+        updated.relative_path = "Artist/Album/01.flac".to_string();
+        updated.path = PathBuf::from("/music/Artist/Album/01.flac");
+        let mut removed = sample_track("track-removed", Some(1), Some(2), "Removed");
+        removed.relative_path = "Artist/Album/02.flac".to_string();
+        removed.path = PathBuf::from("/music/Artist/Album/02.flac");
+
+        let state = sample_state(vec![updated.clone(), removed.clone()]);
+
+        updated.title = "New title".to_string();
+        updated.file_size = 456;
+        updated.modified_unix_millis = 99;
+        let mut added = sample_track("track-added", Some(1), Some(3), "Added");
+        added.relative_path = "Artist/Album/03.flac".to_string();
+        added.path = PathBuf::from("/music/Artist/Album/03.flac");
+
+        let summary = state
+            .apply_library_file_changes(
+                vec![updated.clone(), added.clone()],
+                vec![removed.relative_path.clone()],
+            )
+            .expect("incremental changes should apply");
+
+        assert_eq!(summary.upserted, 2);
+        assert_eq!(summary.removed, 1);
+        assert_eq!(state.track_count(), 2);
+        assert_eq!(
+            state.find_track(&updated.id).map(|track| track.title),
+            Some("New title".to_string())
+        );
+        assert!(state.find_track(&removed.id).is_none());
+
+        let persisted = state
+            .database
+            .load_library(PathBuf::from("/music"))
+            .expect("library should reload");
+        assert_eq!(persisted.tracks.len(), 2);
+        assert!(persisted.track_index.contains_key(&updated.id));
+        assert!(persisted.track_index.contains_key(&added.id));
+    }
+
+    #[test]
     fn persists_renderer_capabilities_and_health() {
         let config_path = temp_config_path("renderer-capabilities");
         let database = Database::open(&config_path).expect("database should open");
@@ -2465,6 +2508,7 @@ mod tests {
             path: PathBuf::from(format!("/music/{title}.flac")),
             mime_type: "audio/flac".to_string(),
             file_size: 123,
+            modified_unix_millis: 0,
             artwork: None,
             metadata: Default::default(),
         }
@@ -2486,6 +2530,9 @@ mod tests {
                 radio_browser_base_url: "https://de1.api.radio-browser.info".to_string(),
                 debug_mode: false,
                 skip_startup_scan: false,
+                library_watch_enabled: true,
+                library_watch_interval_ms: 10_000,
+                library_watch_settle_ms: 3_000,
             },
             database,
             library: arc_swap::ArcSwap::from_pointee(Library::build(

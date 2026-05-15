@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
 use lofty::picture::PictureType;
@@ -23,9 +24,12 @@ use super::sort::compare_library_tracks;
 
 type AlbumArtworkCache = Arc<Mutex<HashMap<String, Arc<OnceLock<Option<TrackArtwork>>>>>>;
 
-struct AudioFileEntry {
-    path: PathBuf,
-    file_size: u64,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LibraryFileState {
+    pub(crate) path: PathBuf,
+    pub(crate) relative_path: String,
+    pub(crate) file_size: u64,
+    pub(crate) modified_unix_millis: i64,
 }
 
 #[derive(Default)]
@@ -98,29 +102,70 @@ pub(crate) fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<Li
     Ok(tracks)
 }
 
+pub(crate) fn discover_audio_files(root: &Path) -> io::Result<Vec<LibraryFileState>> {
+    if !root.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("library path does not exist: {}", root.display()),
+        ));
+    }
+
+    let mut audio_files = Vec::new();
+    let mut progress = ScanProgress::default();
+    collect_audio_files(root, &mut audio_files, &mut progress)?;
+    Ok(audio_files)
+}
+
+pub(crate) fn scan_library_file(
+    root: &Path,
+    path: &Path,
+    config_path: &Path,
+) -> io::Result<Option<LibraryTrack>> {
+    if !is_supported_audio_file(path) {
+        return Ok(None);
+    }
+
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+
+    let file = file_state(root, path, &metadata)?;
+    let artwork_cache_dir = config_path.join("artwork");
+    fs::create_dir_all(&artwork_cache_dir)?;
+    let artwork_cache: AlbumArtworkCache = Arc::new(Mutex::new(HashMap::new()));
+    Ok(build_library_track(
+        root,
+        &file,
+        &artwork_cache_dir,
+        &artwork_cache,
+    ))
+}
+
 fn collect_audio_files(
     root: &Path,
-    output: &mut Vec<AudioFileEntry>,
+    output: &mut Vec<LibraryFileState>,
     progress: &mut ScanProgress,
 ) -> io::Result<()> {
-    walk_dir(root, output, progress)
+    walk_dir(root, root, output, progress)
 }
 
 fn collect_audio_files_with_progress<F>(
     root: &Path,
-    output: &mut Vec<AudioFileEntry>,
+    output: &mut Vec<LibraryFileState>,
     progress: &mut ScanProgress,
     report_progress: &F,
 ) -> io::Result<()>
 where
     F: Fn(ScanProgressEvent) -> io::Result<()> + Sync,
 {
-    walk_dir_with_progress(root, output, progress, report_progress)
+    walk_dir_with_progress(root, root, output, progress, report_progress)
 }
 
 fn walk_dir(
+    root: &Path,
     dir: &Path,
-    output: &mut Vec<AudioFileEntry>,
+    output: &mut Vec<LibraryFileState>,
     progress: &mut ScanProgress,
 ) -> io::Result<()> {
     progress.visited_dirs += 1;
@@ -146,7 +191,7 @@ fn walk_dir(
         }
 
         if metadata.is_dir() {
-            walk_dir(&path, output, progress)?;
+            walk_dir(root, &path, output, progress)?;
             continue;
         }
 
@@ -161,17 +206,15 @@ fn walk_dir(
                 progress.audio_files
             );
         }
-        output.push(AudioFileEntry {
-            path,
-            file_size: metadata.len(),
-        });
+        output.push(file_state(root, &path, &metadata)?);
     }
     Ok(())
 }
 
 fn walk_dir_with_progress<F>(
+    root: &Path,
     dir: &Path,
-    output: &mut Vec<AudioFileEntry>,
+    output: &mut Vec<LibraryFileState>,
     progress: &mut ScanProgress,
     report_progress: &F,
 ) -> io::Result<()>
@@ -202,7 +245,7 @@ where
         }
 
         if metadata.is_dir() {
-            walk_dir_with_progress(&path, output, progress, report_progress)?;
+            walk_dir_with_progress(root, &path, output, progress, report_progress)?;
             continue;
         }
 
@@ -218,12 +261,32 @@ where
             );
             report_discovery_progress(progress, report_progress)?;
         }
-        output.push(AudioFileEntry {
-            path,
-            file_size: metadata.len(),
-        });
+        output.push(file_state(root, &path, &metadata)?);
     }
     Ok(())
+}
+
+fn file_state(root: &Path, path: &Path, metadata: &fs::Metadata) -> io::Result<LibraryFileState> {
+    let relative_path = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .filter_map(component_to_string)
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(LibraryFileState {
+        path: path.to_path_buf(),
+        relative_path,
+        file_size: metadata.len(),
+        modified_unix_millis: modified_unix_millis(metadata.modified().ok()),
+    })
+}
+
+fn modified_unix_millis(modified: Option<SystemTime>) -> i64 {
+    modified
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn report_discovery_progress<F>(progress: &ScanProgress, report_progress: &F) -> io::Result<()>
@@ -251,7 +314,7 @@ fn discovery_percent(progress: &ScanProgress) -> u8 {
 
 fn build_library_track(
     root: &Path,
-    file: &AudioFileEntry,
+    file: &LibraryFileState,
     artwork_cache_dir: &Path,
     artwork_cache: &AlbumArtworkCache,
 ) -> Option<LibraryTrack> {
@@ -357,6 +420,7 @@ fn build_library_track(
         path: path.clone(),
         mime_type,
         file_size: file.file_size,
+        modified_unix_millis: file.modified_unix_millis,
         artwork,
         metadata: parsed_tags.metadata,
     })

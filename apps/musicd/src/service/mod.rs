@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::sync::{Arc, OnceLock};
 
@@ -5,7 +6,9 @@ use arc_swap::ArcSwap;
 use musicd_core::AppConfig;
 
 use crate::db::Database;
-use crate::library::{Library, ScanProgressEvent, scan_library, scan_library_with_progress};
+use crate::library::{
+    Library, ScanProgressEvent, compare_library_tracks, scan_library, scan_library_with_progress,
+};
 use crate::metrics;
 use crate::renderer::{RendererBackend, RendererBackends};
 use crate::types::{
@@ -23,6 +26,7 @@ mod radio;
 mod recommendations;
 mod renderers;
 mod transport;
+mod watcher;
 
 pub(crate) use events::PlaybackEvents;
 pub(crate) use poll::{
@@ -31,6 +35,7 @@ pub(crate) use poll::{
 };
 #[cfg(test)]
 pub(crate) use poll::{should_adopt_preloaded_next_entry, should_auto_advance};
+pub(crate) use watcher::spawn_library_watcher;
 
 #[derive(Debug)]
 pub(crate) struct ServiceState {
@@ -48,6 +53,12 @@ pub(crate) struct ServiceState {
 #[derive(Debug)]
 pub(crate) struct RescanState {
     is_scanning: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LibraryChangeSummary {
+    pub(crate) upserted: usize,
+    pub(crate) removed: usize,
 }
 
 impl RescanState {
@@ -393,6 +404,52 @@ impl ServiceState {
         self.library.store(Arc::new(library));
         eprintln!("library scan: in-memory library index updated");
         Ok(())
+    }
+
+    pub(crate) fn apply_library_file_changes(
+        &self,
+        upsert_tracks: Vec<LibraryTrack>,
+        deleted_relative_paths: Vec<String>,
+    ) -> io::Result<LibraryChangeSummary> {
+        let _guard = self.begin_rescan()?;
+        if upsert_tracks.is_empty() && deleted_relative_paths.is_empty() {
+            return Ok(LibraryChangeSummary::default());
+        }
+
+        let deleted: HashSet<String> = deleted_relative_paths.into_iter().collect();
+        let upserted: HashSet<String> = upsert_tracks
+            .iter()
+            .map(|track| track.relative_path.clone())
+            .collect();
+        let current = self.library_snapshot();
+        let mut tracks = current
+            .tracks
+            .iter()
+            .filter(|track| {
+                !deleted.contains(&track.relative_path) && !upserted.contains(&track.relative_path)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        tracks.extend(upsert_tracks);
+        tracks.sort_by(compare_library_tracks);
+
+        let removed = current
+            .tracks
+            .iter()
+            .filter(|track| deleted.contains(&track.relative_path))
+            .count();
+        let added_or_updated = upserted.len();
+        let overrides = self
+            .database
+            .list_album_artwork_overrides()
+            .unwrap_or_default();
+        let library = Library::build(self.config.library_path.clone(), tracks, &overrides);
+        self.database.save_library(&library)?;
+        self.library.store(Arc::new(library));
+        Ok(LibraryChangeSummary {
+            upserted: added_or_updated,
+            removed,
+        })
     }
 
     pub(crate) fn refresh_album_artwork_overrides(&self) -> io::Result<()> {

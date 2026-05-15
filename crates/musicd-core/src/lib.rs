@@ -62,6 +62,9 @@ pub struct AppConfig {
     pub radio_browser_base_url: String,
     pub debug_mode: bool,
     pub skip_startup_scan: bool,
+    pub library_watch_enabled: bool,
+    pub library_watch_interval_ms: u64,
+    pub library_watch_settle_ms: u64,
 }
 
 impl AppConfig {
@@ -98,6 +101,9 @@ impl AppConfig {
                 .unwrap_or_else(|| "https://de1.api.radio-browser.info".to_string()),
             debug_mode: parse_bool_env("MUSICD_DEBUG"),
             skip_startup_scan: parse_bool_env("MUSICD_SKIP_STARTUP_SCAN"),
+            library_watch_enabled: parse_bool_env_default("MUSICD_LIBRARY_WATCH", true),
+            library_watch_interval_ms: parse_u64_env("MUSICD_LIBRARY_WATCH_INTERVAL_MS", 10_000),
+            library_watch_settle_ms: parse_u64_env("MUSICD_LIBRARY_WATCH_SETTLE_MS", 3_000),
         }
     }
 
@@ -129,6 +135,13 @@ fn parse_bool_env_default(name: &str, default: bool) -> bool {
                 "1" | "true" | "yes" | "on"
             )
         })
+        .unwrap_or(default)
+}
+
+fn parse_u64_env(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(default)
 }
 
@@ -210,6 +223,9 @@ mod tests {
             radio_browser_base_url: "https://de1.api.radio-browser.info".to_string(),
             debug_mode: false,
             skip_startup_scan: false,
+            library_watch_enabled: true,
+            library_watch_interval_ms: 10_000,
+            library_watch_settle_ms: 3_000,
         };
 
         assert_eq!(config.resolved_base_url(), "http://192.168.1.20:8787");

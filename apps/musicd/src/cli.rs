@@ -11,7 +11,7 @@ use musicd_upnp::{StreamResource, discover_renderers, inspect_renderer, play_str
 use crate::discovery::{discover_musicd_servers, spawn_server_discovery_advertiser};
 use crate::http::{ServerMode, serve_tcp};
 use crate::metrics;
-use crate::service::{ServiceState, spawn_queue_worker};
+use crate::service::{ServiceState, spawn_library_watcher, spawn_queue_worker};
 use crate::util::{infer_mime_type, inferred_title};
 
 pub(crate) fn run() -> io::Result<()> {
@@ -87,6 +87,7 @@ fn run_serve() -> io::Result<()> {
     let track_count = state.track_count();
 
     spawn_queue_worker(Arc::clone(&state));
+    spawn_library_watcher(Arc::clone(&state));
     spawn_server_discovery_advertiser(config.clone());
 
     println!("{} service", config.instance_name);
@@ -102,6 +103,14 @@ fn run_serve() -> io::Result<()> {
     println!(
         "Debug mode: {}",
         if config.debug_mode {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "Library watcher: {}",
+        if config.library_watch_enabled {
             "enabled"
         } else {
             "disabled"
@@ -271,6 +280,14 @@ fn print_status() {
     println!(
         "Debug mode: {}",
         if config.debug_mode {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "Library watcher: {}",
+        if config.library_watch_enabled {
             "enabled"
         } else {
             "disabled"

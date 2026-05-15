@@ -32,6 +32,7 @@ impl Database {
             .prepare(
                 "SELECT id, album_id, title, artist, album, album_artist, disc_number, track_number,
                         duration_seconds, relative_path, path, mime_type, file_size,
+                        modified_unix_millis,
                         artwork_cache_key, artwork_source, artwork_mime_type,
                         musicbrainz_release_id, musicbrainz_release_group_id,
                         musicbrainz_recording_id, musicbrainz_release_track_id,
@@ -60,10 +61,11 @@ impl Database {
                     path: PathBuf::from(row.get::<_, String>(10)?),
                     mime_type: row.get(11)?,
                     file_size: row.get(12)?,
+                    modified_unix_millis: row.get(13)?,
                     artwork: match (
-                        row.get::<_, Option<String>>(13)?,
                         row.get::<_, Option<String>>(14)?,
                         row.get::<_, Option<String>>(15)?,
+                        row.get::<_, Option<String>>(16)?,
                     ) {
                         (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
                             cache_key,
@@ -73,15 +75,15 @@ impl Database {
                         _ => None,
                     },
                     metadata: TrackMetadata {
-                        musicbrainz_release_id: row.get(16)?,
-                        musicbrainz_release_group_id: row.get(17)?,
-                        musicbrainz_recording_id: row.get(18)?,
-                        musicbrainz_release_track_id: row.get(19)?,
-                        release_date: row.get(20)?,
-                        original_release_date: row.get(21)?,
-                        release_country: row.get(22)?,
-                        release_type: row.get(23)?,
-                        genres: parse_genres_json(row.get(24)?),
+                        musicbrainz_release_id: row.get(17)?,
+                        musicbrainz_release_group_id: row.get(18)?,
+                        musicbrainz_recording_id: row.get(19)?,
+                        musicbrainz_release_track_id: row.get(20)?,
+                        release_date: row.get(21)?,
+                        original_release_date: row.get(22)?,
+                        release_country: row.get(23)?,
+                        release_type: row.get(24)?,
+                        genres: parse_genres_json(row.get(25)?),
                     },
                 })
             })
@@ -117,12 +119,13 @@ impl Database {
                     "INSERT INTO tracks
                      (id, album_id, title, artist, album, album_artist, disc_number, track_number,
                       duration_seconds, relative_path, path, mime_type, file_size,
+                      modified_unix_millis,
                       artwork_cache_key, artwork_source, artwork_mime_type,
                       musicbrainz_release_id, musicbrainz_release_group_id,
                       musicbrainz_recording_id, musicbrainz_release_track_id,
                       release_date, original_release_date, release_country,
                       release_type, genres_json)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .map_err(db_error)?;
 
@@ -152,6 +155,7 @@ impl Database {
                         track.path.display().to_string(),
                         track.mime_type,
                         track.file_size,
+                        track.modified_unix_millis,
                         artwork_cache_key,
                         artwork_source,
                         artwork_mime_type,
@@ -352,6 +356,7 @@ pub(super) fn load_tracks_from_connection(
         .prepare(
             "SELECT id, album_id, title, artist, album, album_artist, disc_number, track_number,
                     duration_seconds, relative_path, path, mime_type, file_size,
+                    modified_unix_millis,
                     artwork_cache_key, artwork_source, artwork_mime_type,
                     musicbrainz_release_id, musicbrainz_release_group_id,
                     musicbrainz_recording_id, musicbrainz_release_track_id,
@@ -380,10 +385,11 @@ pub(super) fn load_tracks_from_connection(
                 path: PathBuf::from(row.get::<_, String>(10)?),
                 mime_type: row.get(11)?,
                 file_size: row.get(12)?,
+                modified_unix_millis: row.get(13)?,
                 artwork: match (
-                    row.get::<_, Option<String>>(13)?,
                     row.get::<_, Option<String>>(14)?,
                     row.get::<_, Option<String>>(15)?,
+                    row.get::<_, Option<String>>(16)?,
                 ) {
                     (Some(cache_key), Some(source), Some(mime_type)) => Some(TrackArtwork {
                         cache_key,
@@ -393,15 +399,15 @@ pub(super) fn load_tracks_from_connection(
                     _ => None,
                 },
                 metadata: TrackMetadata {
-                    musicbrainz_release_id: row.get(16)?,
-                    musicbrainz_release_group_id: row.get(17)?,
-                    musicbrainz_recording_id: row.get(18)?,
-                    musicbrainz_release_track_id: row.get(19)?,
-                    release_date: row.get(20)?,
-                    original_release_date: row.get(21)?,
-                    release_country: row.get(22)?,
-                    release_type: row.get(23)?,
-                    genres: parse_genres_json(row.get(24)?),
+                    musicbrainz_release_id: row.get(17)?,
+                    musicbrainz_release_group_id: row.get(18)?,
+                    musicbrainz_recording_id: row.get(19)?,
+                    musicbrainz_release_track_id: row.get(20)?,
+                    release_date: row.get(21)?,
+                    original_release_date: row.get(22)?,
+                    release_country: row.get(23)?,
+                    release_type: row.get(24)?,
+                    genres: parse_genres_json(row.get(25)?),
                 },
             })
         })

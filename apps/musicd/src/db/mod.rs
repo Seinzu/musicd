@@ -62,6 +62,7 @@ impl Database {
                     path TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
                     file_size INTEGER NOT NULL,
+                    modified_unix_millis INTEGER NOT NULL DEFAULT 0,
                     artwork_cache_key TEXT,
                     artwork_source TEXT,
                     artwork_mime_type TEXT,
@@ -272,6 +273,12 @@ impl Database {
         ensure_column(&connection, "tracks", "release_country", "TEXT")?;
         ensure_column(&connection, "tracks", "release_type", "TEXT")?;
         ensure_column(&connection, "tracks", "genres_json", "TEXT")?;
+        ensure_column(
+            &connection,
+            "tracks",
+            "modified_unix_millis",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         ensure_column(
             &connection,
             "tracks",

@@ -19,6 +19,7 @@ pub(crate) struct LibraryTrack {
     pub(crate) path: PathBuf,
     pub(crate) mime_type: String,
     pub(crate) file_size: u64,
+    pub(crate) modified_unix_millis: i64,
     pub(crate) artwork: Option<TrackArtwork>,
     pub(crate) metadata: TrackMetadata,
 }
