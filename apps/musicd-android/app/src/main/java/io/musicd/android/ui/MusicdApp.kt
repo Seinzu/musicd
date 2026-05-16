@@ -2897,7 +2897,9 @@ private fun AlbumRecommendationRow(
     onOpenAlbum: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
-    val externalUrl = recommendation.externalUrl?.takeIf(::isWebUrl)
+    val tidalUrl = recommendation.tidalUrl?.takeIf(::isWebUrl)
+    val externalUrl = tidalUrl ?: recommendation.externalUrl?.takeIf(::isWebUrl)
+    val openDescription = if (tidalUrl != null) "Open in TIDAL" else "Open recommendation"
     var isContextExpanded by remember(recommendation.recommendationKey, supportingText) {
         mutableStateOf(false)
     }
@@ -2946,7 +2948,7 @@ private fun AlbumRecommendationRow(
                     }
                     externalUrl?.let { url ->
                         IconButton(onClick = { uriHandler.openUri(url) }) {
-                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = "Open recommendation")
+                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = openDescription)
                         }
                     }
                 }

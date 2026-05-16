@@ -157,6 +157,7 @@ Each recommendation includes:
 - `confidence`
 - `rationale`
 - `external_url`
+- `tidal_url`
 - `artwork_url`
 - `status`
 

@@ -388,6 +388,7 @@ mod tests {
             confidence: None,
             rationale: None,
             external_url: None,
+            tidal_url: None,
             artwork_url: None,
             status: "suggested".to_string(),
             created_unix: 0,

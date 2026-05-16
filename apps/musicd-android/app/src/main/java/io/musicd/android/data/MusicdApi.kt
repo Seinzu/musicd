@@ -164,6 +164,7 @@ data class AlbumRecommendationDto(
     val confidence: Double? = null,
     val rationale: String? = null,
     @SerialName("external_url") val externalUrl: String? = null,
+    @SerialName("tidal_url") val tidalUrl: String? = null,
     @SerialName("artwork_url") val artworkUrl: String? = null,
     val status: String = "suggested",
     @SerialName("created_unix") val createdUnix: Long = 0L,

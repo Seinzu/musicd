@@ -88,9 +88,9 @@ impl Database {
                      (recommendation_key, source, batch_id, seed_album_id,
                       seed_musicbrainz_release_id, suggested_artist, suggested_title,
                       suggested_musicbrainz_release_id, suggested_musicbrainz_release_group_id,
-                      confidence, rationale, external_url, artwork_url, status,
+                      confidence, rationale, external_url, tidal_url, artwork_url, status,
                       created_unix, updated_unix)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(recommendation_key) DO UPDATE SET
                        source = excluded.source,
                        batch_id = excluded.batch_id,
@@ -103,6 +103,7 @@ impl Database {
                        confidence = excluded.confidence,
                        rationale = excluded.rationale,
                        external_url = excluded.external_url,
+                       tidal_url = excluded.tidal_url,
                        artwork_url = excluded.artwork_url,
                        status = excluded.status,
                        updated_unix = excluded.updated_unix",
@@ -119,6 +120,7 @@ impl Database {
                         item.confidence,
                         normalized_text(item.rationale.as_deref()),
                         normalized_text(item.external_url.as_deref()),
+                        normalized_text(item.tidal_url.as_deref()),
                         normalized_text(item.artwork_url.as_deref()),
                         status,
                         existing_created_unix.unwrap_or(now),
@@ -145,7 +147,7 @@ fn recommendation_select_sql(filtered: bool) -> &'static str {
         "SELECT recommendation_key, source, batch_id, seed_album_id,
                 seed_musicbrainz_release_id, suggested_artist, suggested_title,
                 suggested_musicbrainz_release_id, suggested_musicbrainz_release_group_id,
-                confidence, rationale, external_url, artwork_url, status,
+                confidence, rationale, external_url, tidal_url, artwork_url, status,
                 created_unix, updated_unix
          FROM album_recommendations
          WHERE seed_album_id = ?
@@ -154,7 +156,7 @@ fn recommendation_select_sql(filtered: bool) -> &'static str {
         "SELECT recommendation_key, source, batch_id, seed_album_id,
                 seed_musicbrainz_release_id, suggested_artist, suggested_title,
                 suggested_musicbrainz_release_id, suggested_musicbrainz_release_group_id,
-                confidence, rationale, external_url, artwork_url, status,
+                confidence, rationale, external_url, tidal_url, artwork_url, status,
                 created_unix, updated_unix
          FROM album_recommendations
          ORDER BY seed_album_id ASC, status ASC, confidence DESC, updated_unix DESC"
@@ -175,10 +177,11 @@ fn recommendation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AlbumRec
         confidence: row.get(9)?,
         rationale: row.get(10)?,
         external_url: row.get(11)?,
-        artwork_url: row.get(12)?,
-        status: row.get(13)?,
-        created_unix: row.get(14)?,
-        updated_unix: row.get(15)?,
+        tidal_url: row.get(12)?,
+        artwork_url: row.get(13)?,
+        status: row.get(14)?,
+        created_unix: row.get(15)?,
+        updated_unix: row.get(16)?,
     })
 }
 

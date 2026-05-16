@@ -1287,6 +1287,7 @@ mod tests {
             confidence: Some(0.92),
             rationale: Some("Shared spacious late-night pacing.".to_string()),
             external_url: Some("https://musicbrainz.org/release-group/suggested-group".to_string()),
+            tidal_url: Some("https://tidal.com/browse/album/12345".to_string()),
             artwork_url: None,
             status: None,
         }];
@@ -1307,6 +1308,10 @@ mod tests {
         assert_eq!(recommendations[0].batch_id.as_deref(), Some("batch-1"));
         assert_eq!(recommendations[0].suggested_artist, "Talk Talk");
         assert_eq!(recommendations[0].suggested_title, "Spirit of Eden");
+        assert_eq!(
+            recommendations[0].tidal_url.as_deref(),
+            Some("https://tidal.com/browse/album/12345")
+        );
         assert_eq!(recommendations[0].status, "suggested");
 
         let _ = std::fs::remove_dir_all(config_path);
@@ -1329,6 +1334,7 @@ mod tests {
             confidence: Some(0.92),
             rationale: None,
             external_url: None,
+            tidal_url: None,
             artwork_url: None,
             status: None,
         }];

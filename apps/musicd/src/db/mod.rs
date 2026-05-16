@@ -224,6 +224,7 @@ impl Database {
                     confidence REAL,
                     rationale TEXT,
                     external_url TEXT,
+                    tidal_url TEXT,
                     artwork_url TEXT,
                     status TEXT NOT NULL DEFAULT 'suggested',
                     created_unix INTEGER NOT NULL,
@@ -366,6 +367,7 @@ impl Database {
             "musicbrainz_release_id",
             "TEXT",
         )?;
+        ensure_column(&connection, "album_recommendations", "tidal_url", "TEXT")?;
         if table_is_empty(&connection, "albums")? && !table_is_empty(&connection, "tracks")? {
             library::rebuild_normalized_library_tables(&connection)?;
         }

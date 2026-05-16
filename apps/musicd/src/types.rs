@@ -326,6 +326,7 @@ pub(crate) struct AlbumRecommendation {
     pub(crate) confidence: Option<f64>,
     pub(crate) rationale: Option<String>,
     pub(crate) external_url: Option<String>,
+    pub(crate) tidal_url: Option<String>,
     pub(crate) artwork_url: Option<String>,
     pub(crate) status: String,
     pub(crate) created_unix: i64,
@@ -365,6 +366,8 @@ pub(crate) struct RecommendationImportItem {
     pub(crate) rationale: Option<String>,
     #[serde(default)]
     pub(crate) external_url: Option<String>,
+    #[serde(default)]
+    pub(crate) tidal_url: Option<String>,
     #[serde(default)]
     pub(crate) artwork_url: Option<String>,
     #[serde(default)]
