@@ -19,3 +19,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "musicd-android"
 include(":app")
+include(":companion")

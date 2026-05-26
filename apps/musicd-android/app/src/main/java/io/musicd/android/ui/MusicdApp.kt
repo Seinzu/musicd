@@ -99,6 +99,7 @@ import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.DiscoveredServer
+import io.musicd.android.data.MusicSourceKind
 import io.musicd.android.data.QueueEntryDto
 import io.musicd.android.data.RadioStationDto
 import io.musicd.android.data.RendererDto
@@ -147,6 +148,8 @@ fun MusicdApp(viewModel: MusicdViewModel) {
             discoveredServers = state.discoveredServers,
             onServerInputChange = viewModel::updateServerInput,
             onConnect = { viewModel.connect() },
+            onUseLocalCompanion = { viewModel.connectLocalCompanion() },
+            onOpenLocalCompanion = viewModel::openLocalCompanion,
             onDiscoverServers = { viewModel.discoverServers() },
             onSelectDiscoveredServer = viewModel::selectDiscoveredServer,
         )
@@ -163,6 +166,8 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onOpenServerEditor = { viewModel.toggleServerEditor(true) },
         onDismissServerEditor = { viewModel.toggleServerEditor(false) },
         onConnect = { viewModel.connect() },
+        onUseLocalCompanion = { viewModel.connectLocalCompanion() },
+        onOpenLocalCompanion = viewModel::openLocalCompanion,
         onRetryConnection = viewModel::retryConnection,
         onDisconnectServer = viewModel::disconnectServer,
         onDiscoverServers = { viewModel.discoverServers() },
@@ -222,6 +227,8 @@ private fun MusicdRoot(
     onOpenServerEditor: () -> Unit,
     onDismissServerEditor: () -> Unit,
     onConnect: () -> Unit,
+    onUseLocalCompanion: () -> Unit,
+    onOpenLocalCompanion: () -> Unit,
     onRetryConnection: () -> Unit,
     onDisconnectServer: () -> Unit,
     onDiscoverServers: () -> Unit,
@@ -282,7 +289,8 @@ private fun MusicdRoot(
             ServerEditorSheet(
                 serverInput = state.serverInput,
                 serverName = state.serverName,
-                connectedBaseUrl = state.baseUrl,
+                connectedBaseUrl = if (state.sourceKind == MusicSourceKind.LocalCompanion) "" else state.baseUrl,
+                isLocalCompanion = state.sourceKind == MusicSourceKind.LocalCompanion,
                 isConnecting = state.isConnecting,
                 errorMessage = state.errorMessage,
                 isDiscoveringServers = state.isDiscoveringServers,
@@ -290,6 +298,7 @@ private fun MusicdRoot(
                 discoveredServers = state.discoveredServers,
                 onServerInputChange = onServerInputChange,
                 onConnect = onConnect,
+                onUseLocalCompanion = onUseLocalCompanion,
                 onRetry = onRetryConnection,
                 onDisconnect = onDisconnectServer,
                 onDiscoverServers = onDiscoverServers,
@@ -388,12 +397,14 @@ private fun MusicdRoot(
                         icon = { Icon(Icons.Rounded.Album, contentDescription = null) },
                         label = { Text("Library") },
                     )
-                    NavigationBarItem(
-                        selected = state.selectedTab == MusicdTab.Radio,
-                        onClick = { onSelectTab(MusicdTab.Radio) },
-                        icon = { Icon(Icons.Rounded.Wifi, contentDescription = null) },
-                        label = { Text("Radio") },
-                    )
+                    if (state.sourceKind != MusicSourceKind.LocalCompanion) {
+                        NavigationBarItem(
+                            selected = state.selectedTab == MusicdTab.Radio,
+                            onClick = { onSelectTab(MusicdTab.Radio) },
+                            icon = { Icon(Icons.Rounded.Wifi, contentDescription = null) },
+                            label = { Text("Radio") },
+                        )
+                    }
                     NavigationBarItem(
                         selected = state.selectedTab == MusicdTab.Queue,
                         onClick = { onSelectTab(MusicdTab.Queue) },
@@ -422,7 +433,11 @@ private fun MusicdRoot(
                     label = { Text(serverLabel(state.serverName, state.baseUrl)) },
                 )
                 AssistChip(
-                    onClick = onOpenRendererPicker,
+                    onClick = if (state.sourceKind == MusicSourceKind.LocalCompanion) {
+                        onOpenLocalCompanion
+                    } else {
+                        onOpenRendererPicker
+                    },
                     modifier = Modifier.weight(1f),
                     label = {
                         Text(
@@ -488,6 +503,7 @@ private fun MusicdRoot(
                     onOpenAlbumPreservingArtist = onOpenAlbumPreservingArtist,
                     onCloseAlbumDetail = onCloseAlbumDetail,
                     onOpenAlbumArtworkPicker = onOpenAlbumArtworkPicker,
+                    onOpenLocalCompanion = onOpenLocalCompanion,
                     onPlayTrack = onPlayTrack,
                     onPlayAlbum = onPlayAlbum,
                     onLikeAlbum = onLikeAlbum,
@@ -573,7 +589,7 @@ private fun MiniPlayerBar(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                val isPlaying = session?.transportState == "PLAYING"
+                val isPlaying = session?.transportState == "PLAYING" || session?.transportState == "TRANSITIONING"
                 FilledIconButton(
                     onClick = if (isPlaying) onPause else onPlay,
                     enabled = isPlaying || canResumePlayback,
@@ -609,6 +625,8 @@ private fun ServerSetupScreen(
     discoveredServers: List<DiscoveredServer>,
     onServerInputChange: (String) -> Unit,
     onConnect: () -> Unit,
+    onUseLocalCompanion: () -> Unit,
+    onOpenLocalCompanion: () -> Unit,
     onDiscoverServers: () -> Unit,
     onSelectDiscoveredServer: (String) -> Unit,
 ) {
@@ -650,6 +668,15 @@ private fun ServerSetupScreen(
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = onConnect, modifier = Modifier.fillMaxWidth(), enabled = !isConnecting) {
                     Text(if (isConnecting) "Connecting..." else "Connect")
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = onUseLocalCompanion, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(8.dp))
+                    Text("Use local companion")
+                }
+                TextButton(onClick = onOpenLocalCompanion, modifier = Modifier.fillMaxWidth()) {
+                    Text("Open musicd Companion")
                 }
                 Spacer(Modifier.height(20.dp))
                 DiscoveredServersSection(
@@ -1053,6 +1080,7 @@ private fun LibraryScreen(
     onOpenAlbumPreservingArtist: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
     onOpenAlbumArtworkPicker: () -> Unit,
+    onOpenLocalCompanion: () -> Unit,
     onPlayTrack: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
     onLikeAlbum: (String) -> Unit,
@@ -1173,6 +1201,16 @@ private fun LibraryScreen(
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (
+                state.sourceKind == MusicSourceKind.LocalCompanion &&
+                state.artists.isEmpty() &&
+                state.albums.isEmpty() &&
+                state.tracks.isEmpty()
+            ) {
+                item {
+                    LocalCompanionLibraryPanel(onOpenLocalCompanion = onOpenLocalCompanion)
+                }
             }
             if (isSearching) {
                 if (searchResults.isEmpty()) {
@@ -1707,6 +1745,7 @@ private fun ServerEditorSheet(
     serverInput: String,
     serverName: String?,
     connectedBaseUrl: String,
+    isLocalCompanion: Boolean,
     isConnecting: Boolean,
     errorMessage: String?,
     isDiscoveringServers: Boolean,
@@ -1714,6 +1753,7 @@ private fun ServerEditorSheet(
     discoveredServers: List<DiscoveredServer>,
     onServerInputChange: (String) -> Unit,
     onConnect: () -> Unit,
+    onUseLocalCompanion: () -> Unit,
     onRetry: () -> Unit,
     onDisconnect: () -> Unit,
     onDiscoverServers: () -> Unit,
@@ -1723,7 +1763,11 @@ private fun ServerEditorSheet(
         Text("Server", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(6.dp))
         Text(
-            "Point the app at your musicd server on the local network.",
+            if (isLocalCompanion) {
+                "Switch from the local companion to a musicd server on the local network."
+            } else {
+                "Point the app at your musicd server on the local network."
+            },
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
@@ -1759,9 +1803,17 @@ private fun ServerEditorSheet(
         Button(onClick = onConnect, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
             Text(if (isConnecting) "Connecting..." else "Save and reconnect")
         }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onRetry, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
-            Text("Retry current server")
+        if (!isLocalCompanion) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onRetry, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
+                Text("Retry current server")
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onUseLocalCompanion, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(8.dp))
+                Text("Use local companion")
+            }
         }
         Spacer(Modifier.height(16.dp))
         DiscoveredServersSection(
@@ -3850,7 +3902,9 @@ private fun isWebUrl(value: String): Boolean =
     value.startsWith("http://") || value.startsWith("https://")
 
 private fun serverLabel(serverName: String?, baseUrl: String): String =
-    serverName?.takeIf { it.isNotBlank() } ?: if (baseUrl.isBlank()) {
+    serverName?.takeIf { it.isNotBlank() } ?: if (baseUrl == "http://127.0.0.1:8788") {
+        "Local companion"
+    } else if (baseUrl.isBlank()) {
         "Set Server"
     } else {
         baseUrl.removePrefix("http://").removePrefix("https://")
@@ -3875,6 +3929,26 @@ private fun EmptyPanel(
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(6.dp))
         Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun LocalCompanionLibraryPanel(onOpenLocalCompanion: () -> Unit) {
+    ElevatedPanel {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.PhoneAndroid, contentDescription = null, modifier = Modifier.size(28.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Local companion library", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Open musicd Companion, add a music folder, run Scan music folders, then return here. The controller refreshes local tracks when it comes back into focus.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = onOpenLocalCompanion, modifier = Modifier.fillMaxWidth()) {
+            Text("Open musicd Companion")
+        }
     }
 }
 

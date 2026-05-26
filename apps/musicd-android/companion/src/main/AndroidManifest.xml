@@ -1,40 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <queries>
-        <package android:name="io.musicd.android.companion" />
-        <provider android:authorities="io.musicd.android.companion.pairing" />
-    </queries>
+    <permission
+        android:name="io.musicd.android.companion.permission.PAIR"
+        android:protectionLevel="signature" />
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
-    <uses-permission android:name="io.musicd.android.companion.permission.PAIR" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
         android:enableOnBackInvokedCallback="true"
-        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.MusicdAndroid">
+        android:theme="@style/Theme.MusicdCompanion">
         <activity
             android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
         <service
-            android:name=".playback.MusicdPlaybackNotificationService"
+            android:name=".MusicdCompanionService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
-    </application>
 
+        <provider
+            android:name=".CompanionPairingProvider"
+            android:authorities="io.musicd.android.companion.pairing"
+            android:exported="true"
+            android:readPermission="io.musicd.android.companion.permission.PAIR"
+            android:writePermission="io.musicd.android.companion.permission.PAIR" />
+    </application>
 </manifest>

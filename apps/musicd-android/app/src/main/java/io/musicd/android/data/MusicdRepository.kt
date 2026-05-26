@@ -14,7 +14,9 @@ class MusicdRepository(
     context: Context,
     private val api: MusicdApi = MusicdApi(),
     private val discovery: MusicdDiscovery = MusicdDiscovery(context),
-) {
+) : MusicSourceRepository {
+    override val sourceKind: MusicSourceKind = MusicSourceKind.RemoteServer
+
     private val prefs = context.getSharedPreferences("musicd_android", Context.MODE_PRIVATE)
 
     suspend fun discoverServers(timeoutMillis: Long = MusicdDiscovery.DEFAULT_TIMEOUT_MS): List<DiscoveredServer> =
@@ -23,6 +25,16 @@ class MusicdRepository(
     fun loadBaseUrl(): String = prefs.getString(KEY_BASE_URL, "").orEmpty()
 
     fun loadRendererLocation(): String = prefs.getString(KEY_RENDERER_LOCATION, "").orEmpty()
+
+    fun loadSourceKind(): MusicSourceKind =
+        when (prefs.getString(KEY_SOURCE_KIND, MusicSourceKind.RemoteServer.name)) {
+            MusicSourceKind.LocalCompanion.name -> MusicSourceKind.LocalCompanion
+            else -> MusicSourceKind.RemoteServer
+        }
+
+    fun saveSourceKind(sourceKind: MusicSourceKind) {
+        prefs.edit { putString(KEY_SOURCE_KIND, sourceKind.name) }
+    }
 
     fun loadClientId(): String {
         val existing = prefs.getString(KEY_CLIENT_ID, "").orEmpty()
@@ -346,6 +358,7 @@ class MusicdRepository(
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_RENDERER_LOCATION = "renderer_location"
         private const val KEY_CLIENT_ID = "client_id"
+        private const val KEY_SOURCE_KIND = "source_kind"
     }
 }
 

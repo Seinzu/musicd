@@ -839,6 +839,11 @@ private fun parseApiError(json: Json, body: String): String? =
 private fun friendlyHttpMessage(statusCode: Int, serverMessage: String?): String =
     when (statusCode) {
         400 -> serverMessage ?: "musicd rejected that request."
+        403 -> if (serverMessage?.contains("pairing", ignoreCase = true) == true) {
+            "The local companion pairing is stale. Re-select local companion mode or reset pairing in the companion app."
+        } else {
+            serverMessage ?: "musicd rejected this controller."
+        }
         404 -> serverMessage ?: "That server responded, but it does not look like a musicd instance."
         in 500..599 -> serverMessage ?: "musicd responded with a server error."
         else -> serverMessage ?: "musicd request failed ($statusCode)."

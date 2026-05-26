@@ -13,8 +13,10 @@ import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.DiscoveredServer
 import io.musicd.android.data.LikeResponseDto
+import io.musicd.android.data.LocalCompanionRepository
 import io.musicd.android.data.MusicdApiException
 import io.musicd.android.data.MusicdRepository
+import io.musicd.android.data.MusicSourceKind
 import io.musicd.android.data.MutationResponseDto
 import io.musicd.android.data.NowPlayingDto
 import io.musicd.android.data.PlaybackEventDto
@@ -53,6 +55,7 @@ enum class LibrarySearchFacet {
 }
 
 data class MusicdUiState(
+    val sourceKind: MusicSourceKind = MusicSourceKind.RemoteServer,
     val serverInput: String = "",
     val baseUrl: String = "",
     val serverName: String? = null,
@@ -100,6 +103,7 @@ data class MusicdUiState(
 
 class MusicdViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = MusicdRepository(application)
+    private val localCompanionRepository = LocalCompanionRepository(application)
     private var playbackEventsJob: Job? = null
     private var playbackEventsKey: String? = null
     private var tracksLoadJob: Job? = null
@@ -111,14 +115,89 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         val savedBaseUrl = repository.loadBaseUrl()
-        if (savedBaseUrl.isNotBlank()) {
+        if (repository.loadSourceKind() == MusicSourceKind.LocalCompanion) {
+            connectLocalCompanion(auto = true)
+        } else if (savedBaseUrl.isNotBlank()) {
             connect(savedBaseUrl)
         } else {
             discoverServers(auto = true)
         }
     }
 
+    fun connectLocalCompanion(auto: Boolean = false) {
+        stopPlaybackEventSubscription()
+        MusicdPlaybackNotificationService.stop(getApplication())
+        repository.saveSourceKind(MusicSourceKind.LocalCompanion)
+        repository.clearBaseUrl()
+        repository.saveRendererLocation(LocalCompanionRepository.LOCAL_COMPANION_RENDERER)
+        val companionInstalled = localCompanionRepository.isInstalled()
+        val paired = companionInstalled && localCompanionRepository.pairController(repository.loadClientId())
+        _uiState.update {
+            it.copy(
+                sourceKind = MusicSourceKind.LocalCompanion,
+                serverInput = "",
+                baseUrl = LocalCompanionRepository.LOCAL_COMPANION_BASE_URL,
+                serverName = "musicd Companion",
+                connected = true,
+                showServerEditor = false,
+                selectedTab = MusicdTab.Library,
+                selectedRendererLocation = LocalCompanionRepository.LOCAL_COMPANION_RENDERER,
+                renderers = listOf(localCompanionRenderer()),
+                nowPlaying = null,
+                artists = emptyList(),
+                albums = emptyList(),
+                homeRecommendations = emptyList(),
+                tracks = emptyList(),
+                selectedArtistDetail = null,
+                selectedAlbumDetail = null,
+                selectedAlbumRecommendations = emptyList(),
+                queue = null,
+                isConnecting = false,
+                isLoading = false,
+                isDiscovering = false,
+                isDiscoveringServers = false,
+                discoveredServers = emptyList(),
+                errorMessage = null,
+                warningMessage = if (!companionInstalled) {
+                    "Install or run the musicd Companion app to add local music folders."
+                } else if (!paired) {
+                    "Open or reinstall the musicd Companion app to finish local pairing."
+                } else {
+                    null
+                },
+                infoMessage = if (auto) {
+                    "Using local companion mode."
+                } else {
+                    "Local companion mode is ready."
+                },
+            )
+        }
+        refreshLocalCompanionLibrary(openCompanionOnFailure = !auto)
+    }
+
+    fun openLocalCompanion() {
+        val launched = localCompanionRepository.launchCompanion()
+        _uiState.update {
+            it.copy(
+                errorMessage = if (launched) null else "musicd Companion is not installed on this device.",
+                infoMessage = if (launched) {
+                    "Opened musicd Companion. Return here after scanning to refresh the local library."
+                } else {
+                    it.infoMessage
+                },
+            )
+        }
+    }
+
+    fun onAppForegrounded() {
+        val state = uiState.value
+        if (state.sourceKind == MusicSourceKind.LocalCompanion && state.connected && !state.isLoading) {
+            refreshLocalCompanionLibrary(openCompanionOnFailure = false)
+        }
+    }
+
     fun discoverServers(auto: Boolean = false) {
+        if (auto && uiState.value.sourceKind == MusicSourceKind.LocalCompanion) return
         if (uiState.value.isDiscoveringServers) return
         if (auto && uiState.value.hasRunServerDiscovery) return
         viewModelScope.launch {
@@ -213,8 +292,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 baseUrl = normalized,
                 onSuccess = { serverInfo, renderers, artists, albums, homeRecommendations, nowPlaying, queue ->
                     repository.saveBaseUrl(normalized)
+                    repository.saveSourceKind(MusicSourceKind.RemoteServer)
                     _uiState.update {
                         it.copy(
+                            sourceKind = MusicSourceKind.RemoteServer,
                             baseUrl = normalized,
                             serverName = serverInfo.name,
                             connected = true,
@@ -260,6 +341,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun refreshAll() {
+        if (uiState.value.sourceKind == MusicSourceKind.LocalCompanion) {
+            refreshLocalCompanionLibrary(openCompanionOnFailure = false)
+            return
+        }
         val baseUrl = uiState.value.baseUrl
         if (baseUrl.isBlank()) return
         viewModelScope.launch {
@@ -358,6 +443,83 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }.onFailure(onFailure)
     }
 
+    private fun refreshLocalCompanionLibrary(openCompanionOnFailure: Boolean) {
+        val baseUrl = LocalCompanionRepository.LOCAL_COMPANION_BASE_URL
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
+            runCatching {
+                loadLocalCompanionData(baseUrl)
+            }.recoverCatching {
+                prepareLocalCompanionControlSurface(waitForStartup = true)
+                loadLocalCompanionData(baseUrl)
+            }.onSuccess { (serverInfo, renderers, artists, albums, tracks, nowPlaying, queue) ->
+                _uiState.update {
+                    it.copy(
+                        sourceKind = MusicSourceKind.LocalCompanion,
+                        baseUrl = baseUrl,
+                        serverName = serverInfo.name,
+                        connected = true,
+                        selectedRendererLocation = LocalCompanionRepository.LOCAL_COMPANION_RENDERER,
+                        renderers = renderers.ifEmpty { listOf(localCompanionRenderer()) },
+                        artists = artists,
+                        albums = albums,
+                        tracks = tracks,
+                        nowPlaying = nowPlaying,
+                        queue = queue,
+                        isLoading = false,
+                        warningMessage = if (albums.isEmpty() && tracks.isEmpty()) {
+                            "No local tracks indexed yet. Open musicd Companion to add folders and scan."
+                        } else {
+                            null
+                        },
+                        infoMessage = if (tracks.isEmpty()) it.infoMessage else "Loaded ${tracks.size} local tracks.",
+                    )
+                }
+            }.onFailure { error ->
+                if (openCompanionOnFailure) {
+                    localCompanionRepository.launchCompanion()
+                }
+                _uiState.update {
+                    it.copy(
+                        renderers = listOf(localCompanionRenderer()),
+                        isLoading = false,
+                        warningMessage = "Open musicd Companion, add folders, then scan. ${connectionErrorMessage(error)}",
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun loadLocalCompanionData(
+        baseUrl: String,
+    ): Septuple<
+        ServerInfoDto,
+        List<RendererDto>,
+        List<ArtistSummaryDto>,
+        List<AlbumSummaryDto>,
+        List<TrackSummaryDto>,
+        NowPlayingDto,
+        QueueDto,
+    > {
+        prepareLocalCompanionControlSurface(waitForStartup = false)
+        val serverInfo = repository.getServerInfo(baseUrl)
+        val renderers = repository.getRenderers(baseUrl)
+        val artists = repository.getArtists(baseUrl)
+        val albums = repository.getAlbums(baseUrl)
+        val tracks = repository.getTracks(baseUrl)
+        val nowPlaying = repository.getNowPlaying(baseUrl, LocalCompanionRepository.LOCAL_COMPANION_RENDERER)
+        val queue = repository.getQueue(baseUrl, LocalCompanionRepository.LOCAL_COMPANION_RENDERER)
+        return Septuple(serverInfo, renderers, artists, albums, tracks, nowPlaying, queue)
+    }
+
+    private suspend fun prepareLocalCompanionControlSurface(waitForStartup: Boolean): Boolean {
+        val prepared = localCompanionRepository.pairController(repository.loadClientId())
+        if (prepared && waitForStartup) {
+            delay(350)
+        }
+        return prepared
+    }
+
     private fun connectionErrorMessage(error: Throwable): String {
         return when (error) {
             is MusicdApiException -> error.userMessage
@@ -376,11 +538,13 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     fun disconnectServer() {
         stopPlaybackEventSubscription()
         MusicdPlaybackNotificationService.stop(getApplication())
+        repository.saveSourceKind(MusicSourceKind.RemoteServer)
         repository.clearBaseUrl()
         repository.clearRendererLocation()
         _uiState.update {
             it.copy(
                 connected = false,
+                sourceKind = MusicSourceKind.RemoteServer,
                 baseUrl = "",
                 serverName = null,
                 serverInput = "",
@@ -427,6 +591,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun searchRadioStations() {
         val state = uiState.value
+        if (state.sourceKind == MusicSourceKind.LocalCompanion) {
+            _uiState.update { it.copy(infoMessage = "Internet radio is not part of local companion mode yet.") }
+            return
+        }
         val baseUrl = state.baseUrl
         if (baseUrl.isBlank()) return
         viewModelScope.launch {
@@ -471,6 +639,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun ensureTracksLoaded(force: Boolean = false) {
         val state = uiState.value
+        if (state.sourceKind == MusicSourceKind.LocalCompanion) return
         val baseUrl = state.baseUrl
         if (!state.connected || baseUrl.isBlank()) return
         if (!force && state.tracks.isNotEmpty()) return
@@ -508,6 +677,14 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updatePlaybackEventSubscription(enabled: Boolean) {
         val state = uiState.value
+        if (state.sourceKind == MusicSourceKind.LocalCompanion) {
+            if (enabled) {
+                startLocalCompanionPlaybackPolling()
+            } else {
+                stopPlaybackEventSubscription()
+            }
+            return
+        }
         val shouldRun = enabled &&
             state.connected &&
             !state.isConnecting &&
@@ -558,6 +735,56 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                     delay(3_000)
+                }
+            }
+        }
+    }
+
+    private fun startLocalCompanionPlaybackPolling() {
+        val desiredKey = "local-companion"
+        if (playbackEventsKey == desiredKey && playbackEventsJob?.isActive == true) {
+            return
+        }
+        playbackEventsJob?.cancel()
+        playbackEventsKey = desiredKey
+        playbackEventsJob = viewModelScope.launch {
+            while (isActive && uiState.value.sourceKind == MusicSourceKind.LocalCompanion) {
+                refreshLocalPlaybackSurfacesOnce()
+                delay(1_000)
+            }
+        }
+    }
+
+    private suspend fun refreshLocalPlaybackSurfacesOnce() {
+        val baseUrl = LocalCompanionRepository.LOCAL_COMPANION_BASE_URL
+        val rendererLocation = LocalCompanionRepository.LOCAL_COMPANION_RENDERER
+        runCatching {
+            loadLocalPlaybackSurfaces(baseUrl, rendererLocation)
+        }.recoverCatching {
+            prepareLocalCompanionControlSurface(waitForStartup = true)
+            loadLocalPlaybackSurfaces(baseUrl, rendererLocation)
+        }.onSuccess { (nowPlaying, queue) ->
+            _uiState.update {
+                if (it.sourceKind == MusicSourceKind.LocalCompanion) {
+                    it.copy(
+                        nowPlaying = nowPlaying,
+                        queue = queue,
+                        isLoading = false,
+                        warningMessage = null,
+                    )
+                } else {
+                    it
+                }
+            }
+        }.onFailure { error ->
+            _uiState.update {
+                if (it.sourceKind == MusicSourceKind.LocalCompanion) {
+                    it.copy(
+                        isLoading = false,
+                        warningMessage = connectionErrorMessage(error),
+                    )
+                } else {
+                    it
                 }
             }
         }
@@ -1002,6 +1229,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun discoverRenderers() {
         val baseUrl = uiState.value.baseUrl
+        if (uiState.value.sourceKind == MusicSourceKind.LocalCompanion) {
+            _uiState.update { it.copy(infoMessage = "The local companion only plays on this phone for now.") }
+            return
+        }
         if (baseUrl.isBlank()) return
         viewModelScope.launch {
             _uiState.update { it.copy(isDiscovering = true, errorMessage = null, warningMessage = null) }
@@ -1180,6 +1411,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun likeItem(request: suspend (String) -> LikeResponseDto) {
+        if (uiState.value.sourceKind == MusicSourceKind.LocalCompanion) {
+            _uiState.update { it.copy(infoMessage = "Likes are not wired for local companion mode yet.") }
+            return
+        }
         val baseUrl = uiState.value.baseUrl
         if (baseUrl.isBlank()) return
         viewModelScope.launch {
@@ -1339,6 +1574,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     private fun refreshPlaybackSurfaces() {
         val baseUrl = uiState.value.baseUrl
         val rendererLocation = uiState.value.selectedRendererLocation
+        if (uiState.value.sourceKind == MusicSourceKind.LocalCompanion) {
+            refreshLocalPlaybackSurfaces()
+            return
+        }
         if (baseUrl.isBlank() || rendererLocation.isBlank() || uiState.value.isConnecting) {
             _uiState.update { it.copy(isLoading = false, warningMessage = null) }
             return
@@ -1369,6 +1608,22 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun refreshLocalPlaybackSurfaces() {
+        viewModelScope.launch {
+            refreshLocalPlaybackSurfacesOnce()
+        }
+    }
+
+    private suspend fun loadLocalPlaybackSurfaces(
+        baseUrl: String,
+        rendererLocation: String,
+    ): Pair<NowPlayingDto, QueueDto> {
+        prepareLocalCompanionControlSurface(waitForStartup = false)
+        val nowPlaying = repository.getNowPlaying(baseUrl, rendererLocation)
+        val queue = repository.getQueue(baseUrl, rendererLocation)
+        return nowPlaying to queue
+    }
+
     private fun chooseRendererLocation(
         currentSelection: String,
         savedSelection: String,
@@ -1382,6 +1637,17 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             else -> selectableRenderers.firstOrNull()?.location
         }?.also(repository::saveRendererLocation)
     }
+
+    private fun localCompanionRenderer(): RendererDto =
+        RendererDto(
+            location = LocalCompanionRepository.LOCAL_COMPANION_RENDERER,
+            name = "This phone",
+            manufacturer = Build.MANUFACTURER,
+            modelName = Build.MODEL,
+            selected = true,
+            kind = "android_local",
+            directAccess = true,
+        )
 
     private fun extractMutationMessage(result: Any): String? =
         when (result) {
