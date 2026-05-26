@@ -405,13 +405,7 @@ impl ServiceState {
         current_entry_id: i64,
     ) -> io::Result<()> {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
-            let had_preloaded_next = self
-                .playback_session(renderer_location)
-                .and_then(|session| session.next_queue_entry_id)
-                .is_some();
-            if had_preloaded_next {
-                self.clear_renderer_next_queue_entry(renderer_location, renderer, "no-successor");
-            }
+            self.clear_renderer_next_queue_entry(renderer_location, renderer, "no-successor");
             self.database
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
             return Ok(());

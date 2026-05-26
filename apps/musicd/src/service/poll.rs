@@ -317,7 +317,9 @@ impl ServiceState {
             }
         }
 
-        if self.adopt_renderer_advanced_entry(renderer_location, &queue, &snapshot)? {
+        let adopted_renderer_advance =
+            self.adopt_renderer_advanced_entry(renderer_location, &queue, &snapshot)?;
+        if adopted_renderer_advance {
             self.debug_log(
                 "queue-adopt-renderer-advance",
                 format!(
@@ -336,13 +338,17 @@ impl ServiceState {
                 "PLAYING" | "TRANSITIONING"
             )
         }) {
-            if let Err(error) = self.preload_next_queue_entry(
-                renderer_location,
-                &renderer,
-                &queue,
-                current_entry_id,
-            ) {
-                eprintln!("next-track preload refresh failed for {renderer_location}: {error}");
+            let adopted_final_entry = adopted_renderer_advance
+                && next_queue_entry_after(&queue, current_entry_id).is_none();
+            if !adopted_final_entry {
+                if let Err(error) = self.preload_next_queue_entry(
+                    renderer_location,
+                    &renderer,
+                    &queue,
+                    current_entry_id,
+                ) {
+                    eprintln!("next-track preload refresh failed for {renderer_location}: {error}");
+                }
             }
         }
 

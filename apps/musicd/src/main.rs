@@ -746,8 +746,8 @@ mod tests {
         );
         assert_eq!(
             backend.cleared_next_count(),
-            0,
-            "explicitly starting the next entry should not also clear a renderer next slot"
+            1,
+            "starting the final entry should clear any stale renderer-side next URI"
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
@@ -824,6 +824,90 @@ mod tests {
             backend.cleared_next_count(),
             1,
             "the renderer's native next URI should be cleared once the preloaded final track becomes current"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn start_current_single_track_clears_stale_renderer_next_slot() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(renderer_location, Vec::new()));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Single Track",
+                &[queue_entry_for_track(&track)],
+            )
+            .expect("queue replace should succeed");
+
+        state
+            .start_current_queue_entry(renderer_location)
+            .expect("single track should start");
+
+        assert_eq!(
+            backend.cleared_next_count(),
+            1,
+            "starting a queue with no successor should clear any stale renderer-side next URI"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn queue_poll_retries_final_track_next_clear_even_when_session_has_no_next() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![playing_snapshot(&track_2, 21, 180)],
+        ));
+        let state =
+            sample_state_with_backend(vec![track_1.clone(), track_2.clone()], backend.clone());
+        let second_stream_url = state.stream_resource_for_track(&track_2).stream_url;
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let second_entry_id = queue.entries[1].id;
+        state
+            .database
+            .select_queue_entry(renderer_location, second_entry_id)
+            .expect("final entry should be selected");
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                second_entry_id,
+                &track_2.id,
+                &second_stream_url,
+                track_2.duration_seconds,
+            )
+            .expect("final entry should be marked playing");
+        state
+            .database
+            .mark_next_queue_entry_preloaded(renderer_location, None)
+            .expect("session should not remember a preloaded next entry");
+
+        state
+            .poll_renderer_queue(renderer_location)
+            .expect("queue poll should refresh final track state");
+
+        assert_eq!(
+            backend.cleared_next_count(),
+            1,
+            "final-track polling should retry renderer next-slot clearing even after the DB session is already clear"
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());

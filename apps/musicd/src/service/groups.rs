@@ -324,13 +324,7 @@ impl ServiceState {
         current_entry_id: i64,
     ) -> io::Result<()> {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
-            let had_preloaded_next = self
-                .playback_session(group_location)
-                .and_then(|session| session.next_queue_entry_id)
-                .is_some();
-            if had_preloaded_next {
-                self.clear_group_next_queue_entry(group_location, group, "no-successor");
-            }
+            self.clear_group_next_queue_entry(group_location, group, "no-successor");
             self.database
                 .mark_next_queue_entry_preloaded(group_location, None)?;
             return Ok(());
@@ -564,7 +558,9 @@ impl ServiceState {
             );
         }
 
-        if self.adopt_group_advanced_entry(group_location, &queue, &snapshot)? {
+        let adopted_renderer_advance =
+            self.adopt_group_advanced_entry(group_location, &queue, &snapshot)?;
+        if adopted_renderer_advance {
             self.debug_log(
                 "group-queue-adopt-renderer-advance",
                 format!(
@@ -583,13 +579,19 @@ impl ServiceState {
                 "PLAYING" | "TRANSITIONING"
             )
         }) {
-            if let Err(error) = self.preload_next_group_queue_entry(
-                group_location,
-                &group,
-                &queue,
-                current_entry_id,
-            ) {
-                eprintln!("group next-track preload refresh failed for {group_location}: {error}");
+            let adopted_final_entry = adopted_renderer_advance
+                && next_queue_entry_after(&queue, current_entry_id).is_none();
+            if !adopted_final_entry {
+                if let Err(error) = self.preload_next_group_queue_entry(
+                    group_location,
+                    &group,
+                    &queue,
+                    current_entry_id,
+                ) {
+                    eprintln!(
+                        "group next-track preload refresh failed for {group_location}: {error}"
+                    );
+                }
             }
         }
 
