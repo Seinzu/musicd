@@ -1,0 +1,22 @@
+{
+  "seeds": [
+    {
+      "album_id": "sample:air-moon-safari",
+      "artist": "AIR",
+      "title": "Moon Safari",
+      "release_date": "1998",
+      "genres": ["Ambient"],
+      "tags": ["downtempo", "electronic", "spacious"],
+      "source": "sample-fixture"
+    },
+    {
+      "album_id": "sample:tribe-midnight-marauders",
+      "artist": "A Tribe Called Quest",
+      "title": "Midnight Marauders",
+      "release_date": "1993",
+      "genres": ["Hip-Hop"],
+      "tags": ["jazz rap", "sample-based", "rhythmic"],
+      "source": "sample-fixture"
+    }
+  ]
+}

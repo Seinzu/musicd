@@ -12,21 +12,20 @@
   "catalog": {
     "enabled": true,
     "reuseExisting": true,
-    "limit": 250,
-    "topGenres": 8,
-    "topArtists": 10,
+    "candidateCatalog": "mb-candidate-catalog.jsonl",
+    "limit": 50000,
+    "topGenres": 12,
+    "topArtists": 20,
     "perQuery": 25,
-    "recentPerQuery": 10,
-    "musicBrainzUserAgent": "musicd-recommender/0.1 (you@example.com)",
-    "musicBrainzDelayMs": 1100,
+    "recentPerQuery": 25,
     "lastfmDelayMs": 250
   },
   "embeddings": {
     "enabled": true,
     "reuseExisting": true,
-    "baseUrl": "https://api.openai.com/v1",
-    "model": "text-embedding-3-small",
-    "batchSize": 64,
+    "baseUrl": "http://127.0.0.1:1234/v1",
+    "model": "text-embedding-qwen3-embedding-8b",
+    "batchSize": 32,
     "dimensions": 1536
   },
   "recommendations": {
@@ -38,14 +37,7 @@
     "ownedCount": 5,
     "discoveryCount": 5,
     "recentDiscoveryCount": 2,
-    "poolSize": 60,
-    "format": "recommendations"
-  },
-  "tidal": {
-    "enabled": false,
-    "countryCode": "US",
-    "minConfidence": 0.82,
-    "maxCandidates": 6,
-    "overwriteExternalUrl": true
+    "poolSize": 120,
+    "format": "import"
   }
 }
