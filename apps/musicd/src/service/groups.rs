@@ -322,11 +322,21 @@ impl ServiceState {
         group: &RendererGroup,
         queue: &PlaybackQueue,
         current_entry_id: i64,
+        force_clear_no_successor: bool,
     ) -> io::Result<()> {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
-            self.clear_group_next_queue_entry(group_location, group, "no-successor");
-            self.database
-                .mark_next_queue_entry_preloaded(group_location, None)?;
+            let had_preloaded_next = self
+                .playback_session(group_location)
+                .and_then(|session| session.next_queue_entry_id)
+                .is_some();
+            if force_clear_no_successor || had_preloaded_next {
+                let cleared =
+                    self.clear_group_next_queue_entry(group_location, group, "no-successor");
+                if cleared {
+                    self.database
+                        .mark_next_queue_entry_preloaded(group_location, None)?;
+                }
+            }
             return Ok(());
         };
 
@@ -390,12 +400,14 @@ impl ServiceState {
         group_location: &str,
         group: &RendererGroup,
         reason: &str,
-    ) {
+    ) -> bool {
+        let mut failed = false;
         for member in &group.members {
             let renderer_location = &member.renderer_location;
             let renderer = match self.resolve_renderer(renderer_location) {
                 Ok(renderer) => renderer,
                 Err(error) => {
+                    failed = true;
                     self.debug_log(
                         "group-clear-next-failed",
                         format!(
@@ -422,6 +434,7 @@ impl ServiceState {
                         );
                     }
                     Err(error) => {
+                        failed = true;
                         self.debug_log(
                             "group-clear-next-failed",
                             format!(
@@ -432,6 +445,7 @@ impl ServiceState {
                     }
                 },
                 Err(error) => {
+                    failed = true;
                     self.debug_log(
                         "group-clear-next-failed",
                         format!(
@@ -442,6 +456,7 @@ impl ServiceState {
                 }
             }
         }
+        !failed
     }
 
     pub(crate) fn poll_renderer_group_queue(&self, group_location: &str) -> io::Result<()> {
@@ -587,6 +602,7 @@ impl ServiceState {
                     &group,
                     &queue,
                     current_entry_id,
+                    false,
                 ) {
                     eprintln!(
                         "group next-track preload refresh failed for {group_location}: {error}"
@@ -940,7 +956,7 @@ impl ServiceState {
         if next_queue_entry_after(queue, next_entry.id).is_none() {
             match self.load_renderer_group_for_queue(group_location) {
                 Ok(group) => {
-                    self.clear_group_next_queue_entry(group_location, &group, "adopted-final")
+                    self.clear_group_next_queue_entry(group_location, &group, "adopted-final");
                 }
                 Err(error) => self.debug_log(
                     "group-clear-next-failed",

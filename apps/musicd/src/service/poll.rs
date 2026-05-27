@@ -346,6 +346,7 @@ impl ServiceState {
                     &renderer,
                     &queue,
                     current_entry_id,
+                    false,
                 ) {
                     eprintln!("next-track preload refresh failed for {renderer_location}: {error}");
                 }

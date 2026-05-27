@@ -38,6 +38,39 @@ impl Database {
             .map_err(db_error)
     }
 
+    pub(crate) fn load_playback_sessions(&self) -> io::Result<Vec<PlaybackSession>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT renderer_location, queue_entry_id, next_queue_entry_id, transport_state, current_track_uri,
+                        position_seconds, duration_seconds, last_observed_unix, last_error
+                 FROM playback_sessions
+                 ORDER BY renderer_location",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(PlaybackSession {
+                    renderer_location: row.get(0)?,
+                    queue_entry_id: row.get(1)?,
+                    next_queue_entry_id: row.get(2)?,
+                    transport_state: row.get(3)?,
+                    current_track_uri: row.get(4)?,
+                    position_seconds: row.get::<_, Option<u64>>(5)?,
+                    duration_seconds: row.get::<_, Option<u64>>(6)?,
+                    last_observed_unix: row.get(7)?,
+                    last_error: row.get(8)?,
+                })
+            })
+            .map_err(db_error)?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row.map_err(db_error)?);
+        }
+        Ok(sessions)
+    }
+
     pub(crate) fn load_direct_stream_metadata(
         &self,
         renderer_location: &str,

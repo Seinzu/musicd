@@ -403,11 +403,24 @@ impl ServiceState {
         renderer: &RendererRecord,
         queue: &PlaybackQueue,
         current_entry_id: i64,
+        force_clear_no_successor: bool,
     ) -> io::Result<()> {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
-            self.clear_renderer_next_queue_entry(renderer_location, renderer, "no-successor");
-            self.database
-                .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            let had_preloaded_next = self
+                .playback_session(renderer_location)
+                .and_then(|session| session.next_queue_entry_id)
+                .is_some();
+            if force_clear_no_successor || had_preloaded_next {
+                let cleared = self.clear_renderer_next_queue_entry(
+                    renderer_location,
+                    renderer,
+                    "no-successor",
+                );
+                if cleared {
+                    self.database
+                        .mark_next_queue_entry_preloaded(renderer_location, None)?;
+                }
+            }
             return Ok(());
         };
 
@@ -481,11 +494,13 @@ impl ServiceState {
         )?;
         if next_queue_entry_after(queue, next_entry.id).is_none() {
             match self.resolve_renderer(renderer_location) {
-                Ok(renderer) => self.clear_renderer_next_queue_entry(
-                    renderer_location,
-                    &renderer,
-                    "adopted-final",
-                ),
+                Ok(renderer) => {
+                    self.clear_renderer_next_queue_entry(
+                        renderer_location,
+                        &renderer,
+                        "adopted-final",
+                    );
+                }
                 Err(error) => self.debug_log(
                     "clear-next-failed",
                     format!(
@@ -510,9 +525,9 @@ impl ServiceState {
         renderer_location: &str,
         renderer: &RendererRecord,
         reason: &str,
-    ) {
+    ) -> bool {
         if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
-            return;
+            return true;
         }
         match self.renderer_backend(renderer_location) {
             Ok(backend) => match backend.clear_next(renderer) {
@@ -522,6 +537,7 @@ impl ServiceState {
                         "clear-next",
                         format!("renderer={} reason={}", renderer_location, reason),
                     );
+                    true
                 }
                 Err(error) => {
                     self.debug_log(
@@ -531,6 +547,7 @@ impl ServiceState {
                             renderer_location, reason, error
                         ),
                     );
+                    false
                 }
             },
             Err(error) => {
@@ -541,6 +558,7 @@ impl ServiceState {
                         renderer_location, reason, error
                     ),
                 );
+                false
             }
         }
     }
@@ -598,6 +616,7 @@ impl ServiceState {
                         &group,
                         &queue,
                         current_entry.id,
+                        true,
                     ) {
                         eprintln!(
                             "group next-track preload failed for {renderer_location}: {error}"
@@ -650,6 +669,7 @@ impl ServiceState {
                     &renderer,
                     &queue,
                     current_entry.id,
+                    true,
                 ) {
                     eprintln!("next-track preload failed for {renderer_location}: {error}");
                 }

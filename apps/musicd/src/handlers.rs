@@ -2157,14 +2157,17 @@ pub(crate) fn handle_track_stream_request(
     state.debug_log(
         "stream-file-open",
         format!(
-            "track_id={} title={} path={} method={} range={:?}",
+            "track_id={} title={} relative_path={:?} path={} uri={} method={} range={:?}",
             track.id,
             track.title,
+            track.relative_path,
             track.path.display(),
+            state.stream_resource_for_track(&track).stream_url,
             request.method,
             request.range_header
         ),
     );
+    debug_log_stream_session_context(state, &track);
     let result = respond_with_file(
         writer,
         &track.path,
@@ -2195,6 +2198,85 @@ pub(crate) fn handle_track_stream_request(
         ),
     }
     result
+}
+
+fn debug_log_stream_session_context(state: &ServiceState, requested_track: &LibraryTrack) {
+    if !state.debug_enabled() {
+        return;
+    }
+    let requested_uri = state.stream_resource_for_track(requested_track).stream_url;
+    let sessions = match state.database.load_playback_sessions() {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            state.debug_log(
+                "stream-session-context-error",
+                format!("track_id={} error={}", requested_track.id, error),
+            );
+            return;
+        }
+    };
+
+    for session in sessions {
+        if !matches!(
+            session.transport_state.as_str(),
+            "PLAYING" | "TRANSITIONING" | "PAUSED_PLAYBACK"
+        ) {
+            continue;
+        }
+        let queue = state.queue_snapshot(&session.renderer_location);
+        let queue_entry = queue.as_ref().and_then(|queue| {
+            queue
+                .current_entry_id
+                .and_then(|entry_id| queue.entries.iter().find(|entry| entry.id == entry_id))
+        });
+        let queue_track = queue_entry.and_then(|entry| state.find_track(&entry.track_id));
+        let session_track_id = session
+            .current_track_uri
+            .as_deref()
+            .and_then(stream_track_id_from_uri);
+        let session_matches_request = session.current_track_uri.as_deref()
+            == Some(requested_uri.as_str())
+            || session_track_id == Some(requested_track.id.as_str());
+        let queue_matches_request = queue_track
+            .as_ref()
+            .is_some_and(|track| track.id == requested_track.id);
+        let event = if session_matches_request || queue_matches_request {
+            "stream-session-match"
+        } else {
+            "stream-session-mismatch"
+        };
+        state.debug_log(
+            event,
+            format!(
+                "requested_track={} requested_title={:?} requested_uri={} renderer={} session_state={} session_entry={:?} session_uri={:?} session_uri_track={:?} queue_entry={:?} queue_track={:?} queue_title={:?} position={:?} duration={:?}",
+                requested_track.id,
+                requested_track.title,
+                requested_uri,
+                session.renderer_location,
+                session.transport_state,
+                session.queue_entry_id,
+                session.current_track_uri.as_deref(),
+                session_track_id,
+                queue.as_ref().and_then(|queue| queue.current_entry_id),
+                queue_track.as_ref().map(|track| track.id.as_str()),
+                queue_track.as_ref().map(|track| track.title.as_str()),
+                session.position_seconds,
+                session.duration_seconds
+            ),
+        );
+    }
+}
+
+fn stream_track_id_from_uri(uri: &str) -> Option<&str> {
+    let (_, track_id) = uri.split_once("/stream/track/")?;
+    Some(
+        track_id
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(track_id)
+            .trim_end_matches('/'),
+    )
+    .filter(|track_id| !track_id.is_empty())
 }
 
 pub(crate) fn handle_track_artwork_request(

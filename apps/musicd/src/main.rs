@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_poll_retries_final_track_next_clear_even_when_session_has_no_next() {
+    fn queue_poll_does_not_repeat_final_track_next_clear_when_session_has_no_next() {
         let renderer_location = "http://renderer.local/description.xml";
         let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
         let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
@@ -906,8 +906,8 @@ mod tests {
 
         assert_eq!(
             backend.cleared_next_count(),
-            1,
-            "final-track polling should retry renderer next-slot clearing even after the DB session is already clear"
+            0,
+            "final-track polling should not repeatedly clear the renderer next slot once the DB session is already clear"
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());

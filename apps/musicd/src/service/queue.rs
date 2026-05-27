@@ -239,6 +239,7 @@ impl ServiceState {
                 group,
                 queue,
                 current_entry_id,
+                false,
             ) {
                 eprintln!(
                     "group next-track preload refresh failed for {renderer_location}: {error}"
