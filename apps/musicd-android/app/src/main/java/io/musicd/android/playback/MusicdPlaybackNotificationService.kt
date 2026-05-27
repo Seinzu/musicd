@@ -27,6 +27,7 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import io.musicd.android.MainActivity
+import io.musicd.android.data.LastfmRepository
 import io.musicd.android.data.MusicdRepository
 import io.musicd.android.data.PlaybackEventDto
 import kotlinx.coroutines.CoroutineScope
@@ -50,6 +51,12 @@ private data class GroupPlaybackClock(
 class MusicdPlaybackNotificationService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val repository by lazy { MusicdRepository(applicationContext) }
+    private val lastfmScrobbler by lazy {
+        LastfmScrobbler(
+            repository = LastfmRepository(applicationContext),
+            scope = serviceScope,
+        )
+    }
 
     private lateinit var mediaSession: MediaSessionCompat
     private lateinit var localPlayer: ExoPlayer
@@ -248,6 +255,7 @@ class MusicdPlaybackNotificationService : Service() {
 
     private fun handlePlaybackEvent(event: PlaybackEventDto) {
         latestPlaybackEvent = event
+        lastfmScrobbler.handlePlaybackEvent(event)
         if (!hasDisplayablePlayback(event)) {
             stopServiceNow()
             return

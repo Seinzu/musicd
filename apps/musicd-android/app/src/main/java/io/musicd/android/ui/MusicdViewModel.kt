@@ -1,6 +1,8 @@
 package io.musicd.android.ui
 
 import android.app.Application
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
@@ -12,6 +14,9 @@ import io.musicd.android.data.AlbumSummaryDto
 import io.musicd.android.data.ArtistDetailDto
 import io.musicd.android.data.ArtistSummaryDto
 import io.musicd.android.data.DiscoveredServer
+import io.musicd.android.data.LastfmApiException
+import io.musicd.android.data.LastfmRepository
+import io.musicd.android.data.LastfmSettings
 import io.musicd.android.data.LikeResponseDto
 import io.musicd.android.data.LocalCompanionRepository
 import io.musicd.android.data.MusicdApiException
@@ -25,6 +30,7 @@ import io.musicd.android.data.RadioStationDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.ServerInfoDto
 import io.musicd.android.data.TrackSummaryDto
+import io.musicd.android.playback.LastfmScrobbler
 import io.musicd.android.playback.MusicdPlaybackNotificationService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -70,6 +76,11 @@ data class MusicdUiState(
     val radioStations: List<RadioStationDto> = emptyList(),
     val isSearchingRadio: Boolean = false,
     val hasSearchedRadio: Boolean = false,
+    val lastfmApiKey: String = "",
+    val lastfmSharedSecret: String = "",
+    val lastfmUsername: String = "",
+    val lastfmPendingToken: String = "",
+    val isLastfmBusy: Boolean = false,
     val selectedRendererLocation: String = "",
     val renderers: List<RendererDto> = emptyList(),
     val nowPlaying: NowPlayingDto? = null,
@@ -103,13 +114,15 @@ data class MusicdUiState(
 
 class MusicdViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = MusicdRepository(application)
+    private val lastfmRepository = LastfmRepository(application)
+    private val localCompanionLastfmScrobbler = LastfmScrobbler(lastfmRepository, viewModelScope)
     private val localCompanionRepository = LocalCompanionRepository(application)
     private var playbackEventsJob: Job? = null
     private var playbackEventsKey: String? = null
     private var tracksLoadJob: Job? = null
     private var playbackEventFailureCount: Int = 0
     private val _uiState = MutableStateFlow(
-        MusicdUiState(serverInput = repository.loadBaseUrl()),
+        MusicdUiState(serverInput = repository.loadBaseUrl()).withLastfmSettings(lastfmRepository.loadSettings()),
     )
     val uiState: StateFlow<MusicdUiState> = _uiState.asStateFlow()
 
@@ -527,6 +540,24 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun lastfmErrorMessage(error: Throwable): String =
+        when (error) {
+            is LastfmApiException -> error.userMessage
+            else -> error.message ?: "Could not connect to Last.fm."
+        }
+
+    private fun openExternalUrl(url: String) {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { getApplication<Application>().startActivity(intent) }
+            .onFailure {
+                _uiState.update { state ->
+                    state.copy(warningMessage = "Open this Last.fm sign-in URL in a browser: $url")
+                }
+            }
+    }
+
     private fun androidLocalRendererLocation(): String {
         val androidId = Settings.Secure.getString(
             getApplication<Application>().contentResolver,
@@ -587,6 +618,90 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateRadioCountryCode(value: String) {
         _uiState.update { it.copy(radioCountryCode = value.take(2).uppercase()) }
+    }
+
+    fun updateLastfmApiKey(value: String) {
+        _uiState.update { it.copy(lastfmApiKey = value) }
+        lastfmRepository.saveAppCredentials(value, uiState.value.lastfmSharedSecret)
+    }
+
+    fun updateLastfmSharedSecret(value: String) {
+        _uiState.update { it.copy(lastfmSharedSecret = value) }
+        lastfmRepository.saveAppCredentials(uiState.value.lastfmApiKey, value)
+    }
+
+    fun beginLastfmAuthentication() {
+        if (uiState.value.isLastfmBusy) return
+        lastfmRepository.saveAppCredentials(uiState.value.lastfmApiKey, uiState.value.lastfmSharedSecret)
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isLastfmBusy = true,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching { lastfmRepository.beginAuthentication() }
+                .onSuccess { token ->
+                    _uiState.update {
+                        it.withLastfmSettings(lastfmRepository.loadSettings()).copy(
+                            isLastfmBusy = false,
+                            infoMessage = "Authorize musicd in Last.fm, then return here to complete sign-in.",
+                        )
+                    }
+                    openExternalUrl(LastfmRepository.authUrl(uiState.value.lastfmApiKey, token))
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            isLastfmBusy = false,
+                            errorMessage = lastfmErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun completeLastfmAuthentication() {
+        if (uiState.value.isLastfmBusy) return
+        lastfmRepository.saveAppCredentials(uiState.value.lastfmApiKey, uiState.value.lastfmSharedSecret)
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isLastfmBusy = true,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching { lastfmRepository.completeAuthentication() }
+                .onSuccess { session ->
+                    _uiState.update {
+                        it.withLastfmSettings(lastfmRepository.loadSettings()).copy(
+                            isLastfmBusy = false,
+                            infoMessage = "Last.fm scrobbling enabled for ${session.name}.",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            isLastfmBusy = false,
+                            errorMessage = lastfmErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun disconnectLastfm() {
+        lastfmRepository.disconnect()
+        _uiState.update {
+            it.withLastfmSettings(lastfmRepository.loadSettings()).copy(
+                infoMessage = "Last.fm scrobbling disconnected.",
+            )
+        }
     }
 
     fun searchRadioStations() {
@@ -764,6 +879,13 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             prepareLocalCompanionControlSurface(waitForStartup = true)
             loadLocalPlaybackSurfaces(baseUrl, rendererLocation)
         }.onSuccess { (nowPlaying, queue) ->
+            localCompanionLastfmScrobbler.handlePlaybackEvent(
+                PlaybackEventDto(
+                    rendererLocation = rendererLocation,
+                    nowPlaying = nowPlaying,
+                    queue = queue,
+                ),
+            )
             _uiState.update {
                 if (it.sourceKind == MusicSourceKind.LocalCompanion) {
                     it.copy(
@@ -1718,6 +1840,14 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
 private fun normalizeLibraryName(value: String): String =
     value.trim().lowercase()
+
+private fun MusicdUiState.withLastfmSettings(settings: LastfmSettings): MusicdUiState =
+    copy(
+        lastfmApiKey = settings.apiKey,
+        lastfmSharedSecret = settings.sharedSecret,
+        lastfmUsername = settings.username,
+        lastfmPendingToken = settings.pendingToken,
+    )
 
 private fun canRequestPlaybackNavigation(state: MusicdUiState): Boolean =
     state.queue?.entries?.isNotEmpty() == true ||

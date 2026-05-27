@@ -84,6 +84,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -163,6 +164,11 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onSelectLibrarySearchFacet = viewModel::selectLibrarySearchFacet,
         onRefresh = viewModel::refreshAll,
         onServerInputChange = viewModel::updateServerInput,
+        onLastfmApiKeyChange = viewModel::updateLastfmApiKey,
+        onLastfmSharedSecretChange = viewModel::updateLastfmSharedSecret,
+        onBeginLastfmAuthentication = viewModel::beginLastfmAuthentication,
+        onCompleteLastfmAuthentication = viewModel::completeLastfmAuthentication,
+        onDisconnectLastfm = viewModel::disconnectLastfm,
         onOpenServerEditor = { viewModel.toggleServerEditor(true) },
         onDismissServerEditor = { viewModel.toggleServerEditor(false) },
         onConnect = { viewModel.connect() },
@@ -224,6 +230,11 @@ private fun MusicdRoot(
     onSelectLibrarySearchFacet: (LibrarySearchFacet) -> Unit,
     onRefresh: () -> Unit,
     onServerInputChange: (String) -> Unit,
+    onLastfmApiKeyChange: (String) -> Unit,
+    onLastfmSharedSecretChange: (String) -> Unit,
+    onBeginLastfmAuthentication: () -> Unit,
+    onCompleteLastfmAuthentication: () -> Unit,
+    onDisconnectLastfm: () -> Unit,
     onOpenServerEditor: () -> Unit,
     onDismissServerEditor: () -> Unit,
     onConnect: () -> Unit,
@@ -296,7 +307,17 @@ private fun MusicdRoot(
                 isDiscoveringServers = state.isDiscoveringServers,
                 hasRunServerDiscovery = state.hasRunServerDiscovery,
                 discoveredServers = state.discoveredServers,
+                lastfmApiKey = state.lastfmApiKey,
+                lastfmSharedSecret = state.lastfmSharedSecret,
+                lastfmUsername = state.lastfmUsername,
+                lastfmPendingToken = state.lastfmPendingToken,
+                isLastfmBusy = state.isLastfmBusy,
                 onServerInputChange = onServerInputChange,
+                onLastfmApiKeyChange = onLastfmApiKeyChange,
+                onLastfmSharedSecretChange = onLastfmSharedSecretChange,
+                onBeginLastfmAuthentication = onBeginLastfmAuthentication,
+                onCompleteLastfmAuthentication = onCompleteLastfmAuthentication,
+                onDisconnectLastfm = onDisconnectLastfm,
                 onConnect = onConnect,
                 onUseLocalCompanion = onUseLocalCompanion,
                 onRetry = onRetryConnection,
@@ -1751,7 +1772,17 @@ private fun ServerEditorSheet(
     isDiscoveringServers: Boolean,
     hasRunServerDiscovery: Boolean,
     discoveredServers: List<DiscoveredServer>,
+    lastfmApiKey: String,
+    lastfmSharedSecret: String,
+    lastfmUsername: String,
+    lastfmPendingToken: String,
+    isLastfmBusy: Boolean,
     onServerInputChange: (String) -> Unit,
+    onLastfmApiKeyChange: (String) -> Unit,
+    onLastfmSharedSecretChange: (String) -> Unit,
+    onBeginLastfmAuthentication: () -> Unit,
+    onCompleteLastfmAuthentication: () -> Unit,
+    onDisconnectLastfm: () -> Unit,
     onConnect: () -> Unit,
     onUseLocalCompanion: () -> Unit,
     onRetry: () -> Unit,
@@ -1823,11 +1854,89 @@ private fun ServerEditorSheet(
             onDiscoverServers = onDiscoverServers,
             onSelectDiscoveredServer = onSelectDiscoveredServer,
         )
+        Spacer(Modifier.height(18.dp))
+        LastfmSettingsSection(
+            apiKey = lastfmApiKey,
+            sharedSecret = lastfmSharedSecret,
+            username = lastfmUsername,
+            pendingToken = lastfmPendingToken,
+            isBusy = isLastfmBusy,
+            onApiKeyChange = onLastfmApiKeyChange,
+            onSharedSecretChange = onLastfmSharedSecretChange,
+            onBeginAuthentication = onBeginLastfmAuthentication,
+            onCompleteAuthentication = onCompleteLastfmAuthentication,
+            onDisconnect = onDisconnectLastfm,
+        )
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
             Text("Disconnect")
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun LastfmSettingsSection(
+    apiKey: String,
+    sharedSecret: String,
+    username: String,
+    pendingToken: String,
+    isBusy: Boolean,
+    onApiKeyChange: (String) -> Unit,
+    onSharedSecretChange: (String) -> Unit,
+    onBeginAuthentication: () -> Unit,
+    onCompleteAuthentication: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("Last.fm", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            if (username.isNotBlank()) {
+                "Scrobbling to $username."
+            } else {
+                "Add your Last.fm API app credentials, then authorize scrobbling."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = onApiKeyChange,
+            label = { Text("API key") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = sharedSecret,
+            onValueChange = onSharedSecretChange,
+            label = { Text("Shared secret") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onBeginAuthentication,
+                enabled = !isBusy && apiKey.isNotBlank() && sharedSecret.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(8.dp))
+                Text(if (pendingToken.isBlank()) "Sign in" else "Restart")
+            }
+            OutlinedButton(
+                onClick = onCompleteAuthentication,
+                enabled = !isBusy && pendingToken.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (isBusy) "Working" else "Complete")
+            }
+        }
+        if (username.isNotBlank()) {
+            OutlinedButton(onClick = onDisconnect, enabled = !isBusy, modifier = Modifier.fillMaxWidth()) {
+                Text("Disconnect Last.fm")
+            }
+        }
     }
 }
 
