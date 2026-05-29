@@ -156,6 +156,7 @@ MUSICD_INSTANCE_NAME=Living Room musicd
 MUSICD_DISCOVERY_TIMEOUT_MS=2000
 MUSICD_DEFAULT_RENDERER_LOCATION=http://192.168.1.55:49152/description.xml
 MUSICD_DEBUG=true
+MUSICD_NATIVE_NEXT_PRELOAD=false
 ```
 
 After the container starts, open the resolved URL from the logs or:
@@ -169,6 +170,8 @@ The discovered renderers and your last selected renderer are persisted in SQLite
 Albums are now grouped in the UI as well, and `Play Album` fills the queue and starts the first ordered track. A background worker now polls UPnP transport state and advances to the next queued track when track-end detection is confident.
 
 When `MUSICD_DEBUG=true`, `musicd` emits extra renderer and queue transition logs to the container output. This is useful for tracking pause/sleep edge cases, unexpected `STOPPED` or `NO_MEDIA_PRESENT` transitions, and auto-advance decisions.
+
+`MUSICD_NATIVE_NEXT_PRELOAD=false` is the default. In that mode musicd advances queued tracks itself instead of asking UPnP renderers to preload their native next slot with `SetNextAVTransportURI`. Set it to `true` only if you want renderer-native next-track preloading and your renderer handles that reliably.
 
 ## Monitoring and metrics
 

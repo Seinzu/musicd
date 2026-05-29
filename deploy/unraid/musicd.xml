@@ -34,4 +34,5 @@
   <Config Name="Discovery Timeout (ms)" Target="MUSICD_DISCOVERY_TIMEOUT_MS" Default="2000" Mode="" Description="Container Variable: SSDP discovery timeout in milliseconds." Type="Variable" Display="advanced" Required="false" Mask="false">2000</Config>
   <Config Name="Default Renderer Location" Target="MUSICD_DEFAULT_RENDERER_LOCATION" Default="" Mode="" Description="Container Variable: optional UPnP renderer LOCATION URL to preselect on startup." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="Debug Logging" Target="MUSICD_DEBUG" Default="false" Mode="" Description="Container Variable: set true for verbose queue and renderer transition logs." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="Native Next Preload" Target="MUSICD_NATIVE_NEXT_PRELOAD" Default="false" Mode="" Description="Container Variable: set true to let UPnP renderers use SetNextAVTransportURI for native next-track preloading. Keep false for renderers that repeat or jump around queues." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
 </Container>

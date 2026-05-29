@@ -117,6 +117,14 @@ fn run_serve() -> io::Result<()> {
         }
     );
     println!(
+        "Native next preload: {}",
+        if config.native_next_preload_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
         "Open {}/ in a browser to browse and play music.",
         config.resolved_base_url()
     );
