@@ -2,6 +2,7 @@ package io.musicd.android.playback
 
 import io.musicd.android.data.LastfmRepository
 import io.musicd.android.data.LastfmTrackPayload
+import io.musicd.android.data.LastfmActivePlay
 import io.musicd.android.data.PlaybackEventDto
 import io.musicd.android.data.TrackSummaryDto
 import kotlinx.coroutines.CoroutineScope
@@ -9,12 +10,14 @@ import kotlinx.coroutines.launch
 
 private data class PendingScrobble(
     val signature: String,
+    val trackId: String,
     val payload: LastfmTrackPayload,
     val durationSeconds: Long?,
     val startedAtUnix: Long,
     val nowPlayingSent: Boolean = false,
     val scrobbled: Boolean = false,
     val lastPositionSeconds: Long = 0L,
+    val lastSeenUnix: Long,
 )
 
 class LastfmScrobbler(
@@ -27,6 +30,7 @@ class LastfmScrobbler(
     fun handlePlaybackEvent(event: PlaybackEventDto) {
         if (!repository.loadSettings().isConnected) {
             pending = null
+            repository.clearActivePlay()
             return
         }
 
@@ -34,10 +38,12 @@ class LastfmScrobbler(
         if (track == null || !track.isScrobbleable()) {
             flushPendingIfReady()
             pending = null
+            repository.clearActivePlay()
             return
         }
 
         val session = event.nowPlaying.session
+        val nowUnix = clockUnixSeconds()
         val transportState = session?.transportState.orEmpty()
         val positionSeconds = session?.positionSeconds?.coerceAtLeast(0L) ?: 0L
         val durationSeconds = session?.durationSeconds ?: track.durationSeconds
@@ -48,23 +54,36 @@ class LastfmScrobbler(
         ).joinToString("|")
 
         if (pending?.signature != signature) {
-            flushPendingIfReady()
-            val startedAtUnix = ((session?.serverUnix ?: clockUnixSeconds()) - positionSeconds)
+            if (pending?.trackId != track.id) {
+                flushPendingIfReady()
+            }
+            val activePlay = repository.loadActivePlay()
+                ?.takeIf { it.isContinuationOf(track.id, positionSeconds, nowUnix) }
+            val observedAtUnix = session?.lastObservedUnix
+                ?.takeIf { it > 0L }
+                ?: session?.serverUnix
+                ?: nowUnix
+            val startedAtUnix = activePlay?.startedAtUnix ?: (observedAtUnix - positionSeconds)
                 .coerceAtLeast(0L)
             pending = PendingScrobble(
                 signature = signature,
+                trackId = track.id,
                 payload = track.toLastfmPayload(durationSeconds, startedAtUnix),
                 durationSeconds = durationSeconds,
                 startedAtUnix = startedAtUnix,
+                scrobbled = activePlay?.scrobbled ?: false,
                 lastPositionSeconds = positionSeconds,
+                lastSeenUnix = nowUnix,
             )
         }
 
         val current = pending ?: return
         val updated = current.copy(
             lastPositionSeconds = maxOf(current.lastPositionSeconds, positionSeconds),
+            lastSeenUnix = nowUnix,
         )
         pending = updated
+        repository.saveActivePlay(updated.toActivePlay())
 
         if (transportState == "PLAYING" || transportState == "TRANSITIONING") {
             sendNowPlayingIfNeeded(updated)
@@ -82,7 +101,14 @@ class LastfmScrobbler(
 
     private fun scrobbleIfReady(item: PendingScrobble) {
         if (item.scrobbled || !item.hasReachedScrobbleThreshold()) return
+        if (repository.hasRecentScrobble(item.trackId, item.startedAtUnix)) {
+            pending = item.copy(scrobbled = true)
+            repository.saveActivePlay(item.copy(scrobbled = true).toActivePlay())
+            return
+        }
+        repository.rememberScrobble(item.trackId, item.startedAtUnix)
         pending = item.copy(scrobbled = true)
+        repository.saveActivePlay(item.copy(scrobbled = true).toActivePlay())
         scope.launch {
             runCatching { repository.scrobble(item.payload.copy(timestampUnix = item.startedAtUnix)) }
         }
@@ -98,6 +124,24 @@ class LastfmScrobbler(
             ?: SCROBBLE_MAX_THRESHOLD_SECONDS
         return lastPositionSeconds >= threshold
     }
+
+    private fun PendingScrobble.toActivePlay(): LastfmActivePlay =
+        LastfmActivePlay(
+            trackId = trackId,
+            startedAtUnix = startedAtUnix,
+            lastPositionSeconds = lastPositionSeconds,
+            scrobbled = scrobbled,
+            lastSeenUnix = lastSeenUnix,
+        )
+
+    private fun LastfmActivePlay.isContinuationOf(
+        trackId: String,
+        positionSeconds: Long,
+        nowUnix: Long,
+    ): Boolean =
+        this.trackId == trackId &&
+            nowUnix - lastSeenUnix <= ACTIVE_PLAY_MAX_GAP_SECONDS &&
+            positionSeconds + ACTIVE_PLAY_POSITION_RESET_TOLERANCE_SECONDS >= lastPositionSeconds
 
     private fun TrackSummaryDto.isScrobbleable(): Boolean =
         title.isNotBlank() &&
@@ -119,5 +163,7 @@ class LastfmScrobbler(
     companion object {
         private const val LASTFM_MIN_TRACK_DURATION_SECONDS = 30L
         private const val SCROBBLE_MAX_THRESHOLD_SECONDS = 240L
+        private const val ACTIVE_PLAY_MAX_GAP_SECONDS = 12 * 60 * 60L
+        private const val ACTIVE_PLAY_POSITION_RESET_TOLERANCE_SECONDS = 15L
     }
 }

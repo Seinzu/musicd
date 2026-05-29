@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.AddToQueue
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Home
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.QueuePlayNext
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.SkipNext
@@ -2794,8 +2796,12 @@ private fun AlbumRow(
                         Text("🦥 ${album.likeCount}")
                     }
                     onOpenArtist?.let { TextButton(onClick = it) { Text("Artist") } }
-                    TextButton(onClick = onPlayNextAlbum) { Text("Play Next") }
-                    TextButton(onClick = onAppendAlbum) { Text("Add Queue") }
+                    OutlinedIconButton(onClick = onPlayNextAlbum) {
+                        Icon(Icons.Rounded.QueuePlayNext, contentDescription = "Play album next")
+                    }
+                    OutlinedIconButton(onClick = onAppendAlbum) {
+                        Icon(Icons.Rounded.AddToQueue, contentDescription = "Add album to queue")
+                    }
                 }
             }
         }
@@ -3008,11 +3014,11 @@ private fun AlbumDetailScreen(
                                 Text("Artist")
                             }
                         }
-                        OutlinedButton(onClick = onPlayNextAlbum) {
-                            Text("Play Next")
+                        OutlinedIconButton(onClick = onPlayNextAlbum) {
+                            Icon(Icons.Rounded.QueuePlayNext, contentDescription = "Play album next")
                         }
-                        OutlinedButton(onClick = onAppendAlbum) {
-                            Text("Add Queue")
+                        OutlinedIconButton(onClick = onAppendAlbum) {
+                            Icon(Icons.Rounded.AddToQueue, contentDescription = "Add album to queue")
                         }
                     }
                 }
@@ -3442,8 +3448,12 @@ private fun TrackRow(
                     ) {
                         Text("🦥 ${track.likeCount}")
                     }
-                    TextButton(onClick = onPlayNextTrack) { Text("Play Next") }
-                    TextButton(onClick = onAppendTrack) { Text("Add Queue") }
+                    OutlinedIconButton(onClick = onPlayNextTrack) {
+                        Icon(Icons.Rounded.QueuePlayNext, contentDescription = "Play track next")
+                    }
+                    OutlinedIconButton(onClick = onAppendTrack) {
+                        Icon(Icons.Rounded.AddToQueue, contentDescription = "Add track to queue")
+                    }
                 }
             }
         }
