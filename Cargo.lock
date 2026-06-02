@@ -905,6 +905,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "libc",
+ "musicd-upnp",
  "ratatui",
  "reqwest",
  "serde",

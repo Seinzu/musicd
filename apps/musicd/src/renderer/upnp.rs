@@ -1,8 +1,9 @@
 use std::io;
 
 use musicd_upnp::{
-    StreamResource, TransportSnapshot, clear_next_av_transport_uri, get_transport_snapshot,
-    inspect_renderer, next, pause, play, previous, seek, set_av_transport_uri,
+    RendererPlaylist, StreamResource, TransportSnapshot, clear_next_av_transport_uri,
+    clear_playlist_extension_queue, get_transport_snapshot, inspect_renderer, next, pause, play,
+    previous, query_playlist_extension_queue, seek, set_av_transport_uri,
     set_next_av_transport_uri, stop,
 };
 
@@ -61,6 +62,28 @@ impl RendererBackend for UpnpRendererBackend {
 
     fn clear_next(&self, renderer: &RendererRecord) -> io::Result<()> {
         clear_next_av_transport_uri(upnp_control_url(renderer)?)
+    }
+
+    fn clear_private_queue(&self, renderer: &RendererRecord) -> io::Result<bool> {
+        if renderer.capabilities.has_playlist_extension_service == Some(false) {
+            return Ok(false);
+        }
+        clear_playlist_extension_queue(&renderer.location)
+    }
+
+    fn private_queue(&self, renderer: &RendererRecord) -> io::Result<Option<RendererPlaylist>> {
+        if renderer.capabilities.has_playlist_extension_service != Some(true) {
+            return Ok(None);
+        }
+        let renderer_description = inspect_renderer(&renderer.location)?;
+        let Some(service) = renderer_description
+            .services
+            .iter()
+            .find(|service| service.service_type == "urn:UuVol-com:service:PlaylistExtension:1")
+        else {
+            return Ok(None);
+        };
+        query_playlist_extension_queue(&service.control_url).map(Some)
     }
 
     fn play(&self, renderer: &RendererRecord) -> io::Result<()> {

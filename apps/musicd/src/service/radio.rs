@@ -158,10 +158,12 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
-        match self
-            .renderer_backend(renderer_location)?
-            .play_stream(&renderer, &resource)
-        {
+        match self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "radio-set-avtransport-uri-play",
+            |backend| backend.play_stream(&renderer, &resource),
+        ) {
             Ok(()) => {
                 let _ = self.mark_renderer_reachable(&renderer);
                 self.database.mark_direct_stream_play_started(

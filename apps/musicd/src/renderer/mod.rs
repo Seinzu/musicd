@@ -2,7 +2,7 @@ use std::io;
 #[cfg(test)]
 use std::sync::Arc;
 
-use musicd_upnp::{StreamResource, TransportSnapshot};
+use musicd_upnp::{RendererPlaylist, StreamResource, TransportSnapshot};
 
 use crate::types::RendererRecord;
 
@@ -67,6 +67,14 @@ pub(crate) trait RendererBackend: Send + Sync {
     fn preload_next(&self, renderer: &RendererRecord, resource: &StreamResource) -> io::Result<()>;
 
     fn clear_next(&self, renderer: &RendererRecord) -> io::Result<()>;
+
+    fn clear_private_queue(&self, _renderer: &RendererRecord) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    fn private_queue(&self, _renderer: &RendererRecord) -> io::Result<Option<RendererPlaylist>> {
+        Ok(None)
+    }
 
     fn play(&self, renderer: &RendererRecord) -> io::Result<()>;
 

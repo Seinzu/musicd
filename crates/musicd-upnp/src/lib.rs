@@ -57,6 +57,7 @@ pub struct RendererDescription {
     pub device_type: String,
     pub manufacturer: Option<String>,
     pub model_name: Option<String>,
+    pub services: Vec<UpnpService>,
     pub av_transport_control_url: String,
     pub rendering_control_url: Option<String>,
     pub capabilities: RendererCapabilities,
@@ -86,6 +87,28 @@ pub struct PositionInfo {
 pub struct TransportSnapshot {
     pub transport_info: TransportInfo,
     pub position_info: PositionInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpnpActionResponse {
+    pub action: String,
+    pub values: Vec<(String, String)>,
+    pub raw_xml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererPlaylist {
+    pub id_array_token: Option<u32>,
+    pub ids: Vec<u32>,
+    pub entries: Vec<RendererPlaylistEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RendererPlaylistEntry {
+    pub id: u32,
+    pub uri: String,
+    pub title: Option<String>,
+    pub metadata: Option<String>,
 }
 
 impl DeviceDescription {
@@ -127,6 +150,7 @@ impl RendererDescription {
             device_type: device.device_type,
             manufacturer: device.manufacturer,
             model_name: device.model_name,
+            services: device.services,
             av_transport_control_url,
             rendering_control_url,
             capabilities: RendererCapabilities {
@@ -242,7 +266,7 @@ pub fn inspect_renderer(location: &str) -> io::Result<RendererDescription> {
     RendererDescription::from_device(fetch_device_description(location)?)
 }
 
-fn fetch_service_actions(scpd_url: &str) -> io::Result<Vec<String>> {
+pub fn fetch_service_actions(scpd_url: &str) -> io::Result<Vec<String>> {
     let response = http_request("GET", scpd_url, &[("Accept", "application/xml")], None)?;
     if response.status_code != 200 {
         return Err(io::Error::new(
@@ -326,10 +350,6 @@ pub fn clear_next_av_transport_uri(control_url: &str) -> io::Result<()> {
         ],
         Some(body.as_bytes()),
     )?;
-
-    if is_invalid_args_fault(&response) {
-        return Ok(());
-    }
 
     expect_successful_soap("SetNextAVTransportURI", response)
 }
@@ -443,6 +463,130 @@ pub fn get_transport_snapshot(control_url: &str) -> io::Result<TransportSnapshot
     Ok(TransportSnapshot {
         transport_info: get_transport_info(control_url)?,
         position_info: get_position_info(control_url)?,
+    })
+}
+
+pub fn query_av_transport_action(
+    control_url: &str,
+    action: &str,
+) -> io::Result<UpnpActionResponse> {
+    let body = build_instance_id_only_envelope(action, 0);
+    let response = av_transport_action(control_url, action, body.as_bytes())?;
+    expect_successful_soap(action, response.clone())?;
+    let raw_xml = String::from_utf8(response.body).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{action} response body was not valid UTF-8: {error}"),
+        )
+    })?;
+    Ok(UpnpActionResponse {
+        action: action.to_string(),
+        values: extract_action_values(action, &raw_xml),
+        raw_xml,
+    })
+}
+
+pub fn query_playlist_extension_queue(control_url: &str) -> io::Result<RendererPlaylist> {
+    let id_array = playlist_extension_action(
+        control_url,
+        "IdArray",
+        build_no_arg_envelope(PLAYLIST_EXTENSION_SERVICE, "IdArray").as_bytes(),
+    )?;
+    expect_successful_soap("IdArray", id_array.clone())?;
+    let id_array_xml = response_body_utf8("IdArray", id_array.body)?;
+    let id_array_token = extract_first_tag(&id_array_xml, "aIdArrayToken")
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    let ids = extract_first_tag(&id_array_xml, "aIdArray")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(decode_playlist_id_array)
+        .transpose()?
+        .unwrap_or_default();
+
+    let mut entries = if ids.is_empty() {
+        Vec::new()
+    } else {
+        query_playlist_extension_read_list(control_url, &ids)?
+    };
+    for id in &ids {
+        if entries.iter().any(|entry| entry.id == *id) {
+            continue;
+        }
+        if let Ok(entry) = query_playlist_extension_read(control_url, *id) {
+            entries.push(entry);
+        }
+    }
+
+    Ok(RendererPlaylist {
+        id_array_token,
+        ids,
+        entries,
+    })
+}
+
+pub fn clear_playlist_extension_queue(renderer_location: &str) -> io::Result<bool> {
+    let renderer = inspect_renderer(renderer_location)?;
+    let Some(service) = renderer
+        .services
+        .iter()
+        .find(|service| service.service_type == PLAYLIST_EXTENSION_SERVICE)
+    else {
+        return Ok(false);
+    };
+
+    let response = playlist_extension_action(
+        &service.control_url,
+        "DeleteAll",
+        build_no_arg_envelope(PLAYLIST_EXTENSION_SERVICE, "DeleteAll").as_bytes(),
+    )?;
+    expect_successful_soap("DeleteAll", response)?;
+    Ok(true)
+}
+
+fn query_playlist_extension_read_list(
+    control_url: &str,
+    ids: &[u32],
+) -> io::Result<Vec<RendererPlaylistEntry>> {
+    let id_list = ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let body = build_action_envelope(
+        PLAYLIST_EXTENSION_SERVICE,
+        "ReadList",
+        &[("aIdList", &id_list)],
+    );
+    let response = playlist_extension_action(control_url, "ReadList", body.as_bytes())?;
+    expect_successful_soap("ReadList", response.clone())?;
+    let raw_xml = response_body_utf8("ReadList", response.body)?;
+    let Some(metadata_list) = extract_first_tag(&raw_xml, "aMetaDataList") else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_playlist_metadata_list(&xml_unescape(metadata_list)))
+}
+
+fn query_playlist_extension_read(control_url: &str, id: u32) -> io::Result<RendererPlaylistEntry> {
+    let id_value = id.to_string();
+    let body = build_action_envelope(
+        PLAYLIST_EXTENSION_SERVICE,
+        "Read",
+        &[("aId", id_value.as_str())],
+    );
+    let response = playlist_extension_action(control_url, "Read", body.as_bytes())?;
+    expect_successful_soap("Read", response.clone())?;
+    let raw_xml = response_body_utf8("Read", response.body)?;
+    let uri = extract_first_tag(&raw_xml, "aUri")
+        .map(xml_unescape)
+        .unwrap_or_default();
+    let metadata = extract_first_tag(&raw_xml, "aMetaData")
+        .map(xml_unescape)
+        .filter(|value| !value.trim().is_empty());
+    let title = metadata
+        .as_deref()
+        .and_then(|metadata| extract_first_tag(metadata, "dc:title"))
+        .map(xml_unescape);
+    Ok(RendererPlaylistEntry {
+        id,
+        uri,
+        title,
+        metadata,
     })
 }
 
@@ -572,6 +716,35 @@ pub fn build_get_position_info_envelope(instance_id: u32) -> String {
     )
 }
 
+fn build_instance_id_only_envelope(action: &str, instance_id: u32) -> String {
+    format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:{action}></s:Body></s:Envelope>"#
+    )
+}
+
+fn build_no_arg_envelope(service_type: &str, action: &str) -> String {
+    build_action_envelope(service_type, action, &[])
+}
+
+fn build_action_envelope(service_type: &str, action: &str, args: &[(&str, &str)]) -> String {
+    let mut body = format!(
+        r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="{service_type}">"#
+    );
+    for (name, value) in args {
+        body.push('<');
+        body.push_str(name);
+        body.push('>');
+        body.push_str(&xml_escape(value));
+        body.push_str("</");
+        body.push_str(name);
+        body.push('>');
+    }
+    body.push_str("</u:");
+    body.push_str(action);
+    body.push_str("></s:Body></s:Envelope>");
+    body
+}
+
 fn expect_successful_soap(action: &str, response: HttpResponse) -> io::Result<()> {
     if (200..300).contains(&response.status_code) {
         return Ok(());
@@ -589,13 +762,13 @@ fn expect_successful_soap(action: &str, response: HttpResponse) -> io::Result<()
     ))
 }
 
-fn is_invalid_args_fault(response: &HttpResponse) -> bool {
-    if response.status_code < 400 {
-        return false;
-    }
-    let body = String::from_utf8_lossy(&response.body);
-    body.contains("<errorCode>402</errorCode>")
-        || body.contains("<errorDescription>Invalid args</errorDescription>")
+fn response_body_utf8(action: &str, body: Vec<u8>) -> io::Result<String> {
+    String::from_utf8(body).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{action} response body was not valid UTF-8: {error}"),
+        )
+    })
 }
 
 fn av_transport_action(control_url: &str, action: &str, body: &[u8]) -> io::Result<HttpResponse> {
@@ -606,6 +779,23 @@ fn av_transport_action(control_url: &str, action: &str, body: &[u8]) -> io::Resu
         &[
             ("Content-Type", "text/xml; charset=\"utf-8\""),
             ("SOAPACTION", soap_action.as_str()),
+        ],
+        Some(body),
+    )
+}
+
+fn playlist_extension_action(
+    control_url: &str,
+    action: &str,
+    body: &[u8],
+) -> io::Result<HttpResponse> {
+    let soap_action = format!("\"{PLAYLIST_EXTENSION_SERVICE}#{action}\"");
+    http_request(
+        "POST",
+        control_url,
+        &[
+            ("Content-Type", "text/xml; charset=\"utf-8\""),
+            ("SOAPACTION", &soap_action),
         ],
         Some(body),
     )
@@ -706,6 +896,140 @@ fn parse_position_info_response(body: &[u8]) -> io::Result<PositionInfo> {
         rel_time_seconds,
         track_duration_seconds,
     })
+}
+
+fn extract_action_values(action: &str, xml: &str) -> Vec<(String, String)> {
+    known_action_response_fields(action)
+        .iter()
+        .filter_map(|field| {
+            extract_first_tag(xml, field)
+                .map(str::trim)
+                .map(|value| ((*field).to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn known_action_response_fields(action: &str) -> &'static [&'static str] {
+    match action {
+        "GetTransportInfo" => &[
+            "CurrentTransportState",
+            "CurrentTransportStatus",
+            "CurrentSpeed",
+        ],
+        "GetPositionInfo" => &[
+            "Track",
+            "TrackDuration",
+            "TrackMetaData",
+            "TrackURI",
+            "RelTime",
+            "AbsTime",
+            "RelCount",
+            "AbsCount",
+        ],
+        "GetMediaInfo" => &[
+            "NrTracks",
+            "MediaDuration",
+            "CurrentURI",
+            "CurrentURIMetaData",
+            "NextURI",
+            "NextURIMetaData",
+            "PlayMedium",
+            "RecordMedium",
+            "WriteStatus",
+        ],
+        "GetDeviceCapabilities" => &["PlayMedia", "RecMedia", "RecQualityModes"],
+        "GetTransportSettings" => &["PlayMode", "RecQualityMode"],
+        "GetCurrentTransportActions" => &["Actions"],
+        _ => &[],
+    }
+}
+
+fn parse_playlist_metadata_list(xml: &str) -> Vec<RendererPlaylistEntry> {
+    extract_all_tag_blocks(xml, "Entry")
+        .into_iter()
+        .filter_map(parse_playlist_metadata_entry)
+        .collect()
+}
+
+fn parse_playlist_metadata_entry(xml: &str) -> Option<RendererPlaylistEntry> {
+    let id =
+        extract_first_tag(xml, "Id").and_then(|value| parse_playlist_entry_id(value.trim()))?;
+    let uri = extract_first_tag(xml, "Uri")
+        .map(xml_unescape)
+        .unwrap_or_default();
+    let metadata = extract_first_tag(xml, "MetaData")
+        .map(xml_unescape)
+        .filter(|value| !value.trim().is_empty());
+    let title = metadata
+        .as_deref()
+        .and_then(|metadata| extract_first_tag(metadata, "dc:title"))
+        .map(xml_unescape);
+    Some(RendererPlaylistEntry {
+        id,
+        uri,
+        title,
+        metadata,
+    })
+}
+
+fn parse_playlist_entry_id(value: &str) -> Option<u32> {
+    let digits = value
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse::<u32>().ok()
+}
+
+fn decode_playlist_id_array(value: &str) -> io::Result<Vec<u32>> {
+    let bytes = decode_base64(value)?;
+    if bytes.len() % 4 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "playlist IdArray length {} was not a multiple of 4",
+                bytes.len()
+            ),
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn decode_base64(value: &str) -> io::Result<Vec<u8>> {
+    let mut bits = 0u32;
+    let mut bit_count = 0u8;
+    let mut output = Vec::new();
+    for byte in value.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
+        if byte == b'=' {
+            break;
+        }
+        let Some(six_bits) = base64_value(byte) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid base64 byte 0x{byte:02x}"),
+            ));
+        };
+        bits = (bits << 6) | u32::from(six_bits);
+        bit_count += 6;
+        while bit_count >= 8 {
+            bit_count -= 8;
+            output.push(((bits >> bit_count) & 0xff) as u8);
+        }
+    }
+    Ok(output)
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
 }
 
 fn parse_device_description(location: &str, xml: &str) -> io::Result<DeviceDescription> {
@@ -1136,6 +1460,15 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
 fn parse_upnp_time(value: &str) -> Option<u64> {
     let value = value.trim();
     if value.is_empty() || value == "NOT_IMPLEMENTED" {
@@ -1195,10 +1528,11 @@ mod tests {
         build_get_transport_info_envelope, build_next_envelope, build_pause_envelope,
         build_play_envelope, build_previous_envelope, build_seek_envelope,
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
-        build_stop_envelope, format_upnp_time, is_invalid_args_fault,
+        build_stop_envelope, decode_playlist_id_array, format_upnp_time,
         is_transition_not_available_fault, parse_device_description, parse_http_url,
-        parse_position_info_response, parse_service_actions, parse_ssdp_response,
-        parse_transport_info_response, resolve_url, select_renderer_device_section,
+        parse_playlist_metadata_list, parse_position_info_response, parse_service_actions,
+        parse_ssdp_response, parse_transport_info_response, resolve_url,
+        select_renderer_device_section,
     };
     use std::collections::HashMap;
 
@@ -1285,6 +1619,40 @@ mod tests {
     fn transport_info_envelope_contains_action() {
         let body = build_get_transport_info_envelope(0);
         assert!(body.contains("GetTransportInfo"));
+    }
+
+    #[test]
+    fn decodes_playlist_extension_id_array() {
+        let ids = decode_playlist_id_array(
+            "AMgnGADFVbgAciBoAMnSmADE33ABMTcAAFfFCAEFsoAAw5Z4APVUIADIWdgAxYOgAL9/SADEHxA=",
+        )
+        .expect("id array should decode");
+
+        assert_eq!(
+            ids,
+            vec![
+                13117208, 12932536, 7479400, 13226648, 12902256, 20002560, 5752072, 17150592,
+                12818040, 16077856, 13130200, 12944288, 12549960, 12853008
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_playlist_extension_metadata_entries() {
+        let xml = r#"<MetaDataList><Entry><Id>7479400l</Id>
+<Uri>http://server.local/stream/track/one</Uri>
+<MetaData>&lt;DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"&gt;&lt;item&gt;&lt;dc:title&gt;The Opposite of Hallelujah&lt;/dc:title&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</MetaData>
+</Entry></MetaDataList>"#;
+
+        let entries = parse_playlist_metadata_list(xml);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, 7479400);
+        assert_eq!(entries[0].uri, "http://server.local/stream/track/one");
+        assert_eq!(
+            entries[0].title.as_deref(),
+            Some("The Opposite of Hallelujah")
+        );
     }
 
     #[test]
@@ -1526,30 +1894,5 @@ mod tests {
         };
 
         assert!(is_transition_not_available_fault(&response));
-    }
-
-    #[test]
-    fn detects_invalid_args_fault() {
-        let response = super::HttpResponse {
-            status_code: 500,
-            reason_phrase: "SOAP Error".to_string(),
-            headers: HashMap::new(),
-            body: br#"<?xml version="1.0"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Body>
-    <s:Fault>
-      <detail>
-        <UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
-          <errorCode>402</errorCode>
-          <errorDescription>Invalid args</errorDescription>
-        </UPnPError>
-      </detail>
-    </s:Fault>
-  </s:Body>
-</s:Envelope>"#
-                .to_vec(),
-        };
-
-        assert!(is_invalid_args_fault(&response));
     }
 }

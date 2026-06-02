@@ -144,11 +144,20 @@ impl ServiceState {
                 group,
                 "clear",
                 |state, member_location, renderer| {
-                    state.renderer_backend(member_location)?.stop(renderer)
+                    state.run_renderer_action_with_private_queue_log(
+                        member_location,
+                        renderer,
+                        "group-clear-stop",
+                        |backend| backend.stop(renderer),
+                    )?;
+                    state.clear_renderer_private_queue(member_location, renderer, "group-clear");
+                    Ok(())
                 },
             ) {
                 eprintln!("group queue clear stop failed for {renderer_location}: {error}");
             }
+        } else if let Ok(renderer) = self.resolve_renderer(renderer_location) {
+            self.clear_renderer_private_queue(renderer_location, &renderer, "clear-queue");
         }
         self.database.clear_queue(renderer_location)?;
         self.finish_queue_mutation(renderer_location, group.as_ref(), None);

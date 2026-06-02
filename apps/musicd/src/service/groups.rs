@@ -325,6 +325,28 @@ impl ServiceState {
         force_clear_no_successor: bool,
     ) -> io::Result<()> {
         let session = self.playback_session(group_location);
+        if group.members.iter().any(|member| {
+            self.resolve_renderer(&member.renderer_location)
+                .map(|renderer| renderer.capabilities.has_playlist_extension_service == Some(true))
+                .unwrap_or(false)
+        }) {
+            if session
+                .as_ref()
+                .and_then(|session| session.next_queue_entry_id)
+                .is_some()
+            {
+                self.database
+                    .mark_next_queue_entry_preloaded(group_location, None)?;
+            }
+            self.debug_log(
+                "group-preload-next-skipped",
+                format!(
+                    "renderer={} reason=playlist-extension-queue current_entry={} force_clear_no_successor={}",
+                    group_location, current_entry_id, force_clear_no_successor
+                ),
+            );
+            return Ok(());
+        }
         if !self.config.native_next_preload_enabled {
             let had_preloaded_next = session
                 .as_ref()
@@ -387,13 +409,18 @@ impl ServiceState {
                     continue;
                 }
             };
+            if renderer.capabilities.has_playlist_extension_service == Some(true) {
+                continue;
+            }
             if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
                 continue;
             }
-            match self
-                .renderer_backend(renderer_location)?
-                .preload_next(&renderer, &resource)
-            {
+            match self.run_renderer_action_with_private_queue_log(
+                renderer_location,
+                &renderer,
+                "group-set-next-avtransport-uri",
+                |backend| backend.preload_next(&renderer, &resource),
+            ) {
                 Ok(()) => {
                     preloaded += 1;
                     let _ = self.mark_renderer_reachable(&renderer);
@@ -441,38 +468,41 @@ impl ServiceState {
                     continue;
                 }
             };
+            if renderer.capabilities.has_playlist_extension_service == Some(true) {
+                self.debug_log(
+                    "group-clear-next-skipped",
+                    format!(
+                        "group={} renderer={} reason={} skipped_reason=playlist-extension-queue",
+                        group_location, renderer_location, reason
+                    ),
+                );
+                continue;
+            }
             if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
                 continue;
             }
-            match self.renderer_backend(renderer_location) {
-                Ok(backend) => match backend.clear_next(&renderer) {
-                    Ok(()) => {
-                        let _ = self.mark_renderer_reachable(&renderer);
-                        self.debug_log(
-                            "group-clear-next",
-                            format!(
-                                "group={} renderer={} reason={}",
-                                group_location, renderer_location, reason
-                            ),
-                        );
-                    }
-                    Err(error) => {
-                        failed = true;
-                        self.debug_log(
-                            "group-clear-next-failed",
-                            format!(
-                                "group={} renderer={} reason={} error={}",
-                                group_location, renderer_location, reason, error
-                            ),
-                        );
-                    }
-                },
+            match self.run_renderer_action_with_private_queue_log(
+                renderer_location,
+                &renderer,
+                "group-clear-next-avtransport-uri",
+                |backend| backend.clear_next(&renderer),
+            ) {
+                Ok(()) => {
+                    let _ = self.mark_renderer_reachable(&renderer);
+                    self.debug_log(
+                        "group-clear-next",
+                        format!(
+                            "group={} renderer={} reason={}",
+                            group_location, renderer_location, reason
+                        ),
+                    );
+                }
                 Err(error) => {
                     failed = true;
                     self.debug_log(
                         "group-clear-next-failed",
                         format!(
-                            "group={} renderer={} reason={} backend_error={}",
+                            "group={} renderer={} reason={} error={}",
                             group_location, renderer_location, reason, error
                         ),
                     );
@@ -784,10 +814,12 @@ impl ServiceState {
         resource: &StreamResource,
     ) -> io::Result<RendererRecord> {
         let renderer = self.resolve_renderer(renderer_location)?;
-        if let Err(error) = self
-            .renderer_backend(renderer_location)?
-            .play_stream(&renderer, resource)
-        {
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "group-set-avtransport-uri-play",
+            |backend| backend.play_stream(&renderer, resource),
+        ) {
             let _ = self.mark_group_member_unreachable(renderer_location, &error);
             return Err(error);
         }
@@ -899,10 +931,12 @@ impl ServiceState {
             }
         }
 
-        match self
-            .renderer_backend(renderer_location)?
-            .seek(&renderer, seconds)
-        {
+        match self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "group-seek",
+            |backend| backend.seek(&renderer, seconds),
+        ) {
             Ok(()) => eprintln!(
                 "[musicd][group-add-seek] renderer={renderer_location} stage=seek_ok target={seconds}"
             ),
@@ -957,6 +991,13 @@ impl ServiceState {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
             return Ok(false);
         };
+        if self
+            .playback_session(group_location)
+            .and_then(|session| session.next_queue_entry_id)
+            != Some(next_entry.id)
+        {
+            return Ok(false);
+        }
         let Some(track_uri) = snapshot.position_info.track_uri.as_deref() else {
             return Ok(false);
         };

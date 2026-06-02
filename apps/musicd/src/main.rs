@@ -830,6 +830,84 @@ mod tests {
     }
 
     #[test]
+    fn queue_poll_stops_renderer_and_clears_final_queue_when_renderer_reports_stale_uri() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let track_3 = sample_track("track-3", Some(1), Some(3), "Track 3");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![playing_snapshot(&track_1, 42, 180)],
+        ));
+        let state = sample_state_with_backend(
+            vec![track_1.clone(), track_2.clone(), track_3.clone()],
+            backend.clone(),
+        );
+        let third_stream_url = state.stream_resource_for_track(&track_3).stream_url;
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Three Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                    queue_entry_for_track(&track_3),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let third_entry_id = queue.entries[2].id;
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                third_entry_id,
+                &track_3.id,
+                &third_stream_url,
+                track_3.duration_seconds,
+            )
+            .expect("final entry should start");
+        state
+            .database
+            .record_transport_snapshot(
+                renderer_location,
+                "PLAYING",
+                Some(&third_stream_url),
+                Some(179),
+                Some(180),
+            )
+            .expect("previous final-track position should be recorded");
+
+        state
+            .poll_renderer_queue(renderer_location)
+            .expect("queue poll should handle stale renderer URI");
+
+        assert_eq!(
+            backend.stop_count(),
+            1,
+            "the renderer should be stopped when the final entry has completed but the renderer escapes to a stale URI"
+        );
+        assert!(
+            state
+                .database
+                .load_queue(renderer_location)
+                .expect("queue lookup should succeed")
+                .is_none(),
+            "the completed final queue should be cleared"
+        );
+        assert!(
+            state
+                .database
+                .load_playback_session(renderer_location)
+                .expect("session lookup should succeed")
+                .is_none(),
+            "the completed final queue session should be cleared"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn start_current_single_track_clears_stale_renderer_next_slot() {
         let renderer_location = "http://renderer.local/description.xml";
         let track = sample_track("track-1", Some(1), Some(1), "Track 1");
@@ -852,6 +930,82 @@ mod tests {
             backend.cleared_next_count(),
             1,
             "starting a queue with no successor should clear any stale renderer-side next URI"
+        );
+        assert_eq!(
+            backend.private_queue_clear_count(),
+            1,
+            "starting a queue should clear any stale private renderer queue"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn start_current_playlist_extension_renderer_does_not_touch_native_next_slot() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let mut fake_backend = FakeRendererBackend::new(renderer_location, Vec::new());
+        fake_backend
+            .renderer
+            .capabilities
+            .has_playlist_extension_service = Some(true);
+        let backend = Arc::new(fake_backend);
+        let state =
+            sample_state_with_backend(vec![track_1.clone(), track_2.clone()], backend.clone());
+        state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+
+        state
+            .start_current_queue_entry(renderer_location)
+            .expect("queue should start");
+
+        assert_eq!(
+            backend.private_queue_clear_count(),
+            1,
+            "starting on a PlaylistExtension renderer should clear its private queue"
+        );
+        assert_eq!(
+            backend.cleared_next_count(),
+            0,
+            "PlaylistExtension renderers should not be sent SetNextAVTransportURI cleanup"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn clear_queue_clears_private_renderer_queue() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(renderer_location, Vec::new()));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Single Track",
+                &[queue_entry_for_track(&track)],
+            )
+            .expect("queue replace should succeed");
+
+        state
+            .clear_queue(renderer_location)
+            .expect("queue clear should succeed");
+
+        assert_eq!(
+            backend.private_queue_clear_count(),
+            1,
+            "clearing the musicd queue should clear any stale private renderer queue"
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
@@ -2760,6 +2914,8 @@ mod tests {
         seek_positions: Mutex<Vec<u64>>,
         cleared_next_count: Mutex<usize>,
         play_count: Mutex<usize>,
+        stop_count: Mutex<usize>,
+        private_queue_clear_count: Mutex<usize>,
     }
 
     impl FakeRendererBackend {
@@ -2794,6 +2950,8 @@ mod tests {
                 seek_positions: Mutex::new(Vec::new()),
                 cleared_next_count: Mutex::new(0),
                 play_count: Mutex::new(0),
+                stop_count: Mutex::new(0),
+                private_queue_clear_count: Mutex::new(0),
             }
         }
 
@@ -2816,6 +2974,20 @@ mod tests {
                 .play_count
                 .lock()
                 .expect("play count should not be poisoned")
+        }
+
+        fn stop_count(&self) -> usize {
+            *self
+                .stop_count
+                .lock()
+                .expect("stop count should not be poisoned")
+        }
+
+        fn private_queue_clear_count(&self) -> usize {
+            *self
+                .private_queue_clear_count
+                .lock()
+                .expect("private queue clear count should not be poisoned")
         }
 
         fn seek_positions(&self) -> Vec<u64> {
@@ -2867,6 +3039,14 @@ mod tests {
             Ok(())
         }
 
+        fn clear_private_queue(&self, _renderer: &RendererRecord) -> std::io::Result<bool> {
+            *self
+                .private_queue_clear_count
+                .lock()
+                .expect("private queue clear count should not be poisoned") += 1;
+            Ok(true)
+        }
+
         fn play(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
             *self
                 .play_count
@@ -2880,6 +3060,10 @@ mod tests {
         }
 
         fn stop(&self, _renderer: &RendererRecord) -> std::io::Result<()> {
+            *self
+                .stop_count
+                .lock()
+                .expect("stop count should not be poisoned") += 1;
             Ok(())
         }
 

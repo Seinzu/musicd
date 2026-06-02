@@ -2,9 +2,9 @@ use std::io;
 use std::thread;
 use std::time::Duration;
 
-use musicd_upnp::TransportSnapshot;
+use musicd_upnp::{RendererPlaylist, TransportSnapshot};
 
-use crate::renderer::{RendererKind, renderer_kind_for_location};
+use crate::renderer::{RendererBackend, RendererKind, renderer_kind_for_location};
 use crate::types::{LibraryTrack, PlaybackQueue, RendererRecord};
 
 use super::ServiceState;
@@ -12,6 +12,58 @@ use super::poll::{
     next_queue_entry_after, previous_queue_entry_before, queue_status_for_transport,
     should_adopt_preloaded_next_entry,
 };
+
+fn format_private_queue_snapshot(queue: &RendererPlaylist) -> String {
+    let ids = if queue.ids.is_empty() {
+        "<none>".to_string()
+    } else {
+        queue
+            .ids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let mut entries = queue
+        .entries
+        .iter()
+        .take(16)
+        .enumerate()
+        .map(|(index, entry)| {
+            format!(
+                "{}:{}:{}:{}",
+                index + 1,
+                entry.id,
+                compact_log_value(entry.title.as_deref().unwrap_or("<unknown>"), 80),
+                compact_log_value(&entry.uri, 120)
+            )
+        })
+        .collect::<Vec<_>>();
+    if queue.entries.len() > entries.len() {
+        entries.push(format!("...+{}", queue.entries.len() - entries.len()));
+    }
+    format!(
+        "token={:?} ids={} entry_count={} entries=[{}]",
+        queue.id_array_token,
+        ids,
+        queue.entries.len(),
+        entries.join("|")
+    )
+}
+
+fn compact_log_value(value: &str, limit: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= limit {
+        return compact;
+    }
+    let end = compact
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= limit)
+        .last()
+        .unwrap_or(0);
+    format!("{}...", &compact[..end])
+}
 
 impl ServiceState {
     pub(crate) fn refresh_transport_state(
@@ -72,6 +124,66 @@ impl ServiceState {
             );
         }
         Ok(last_snapshot)
+    }
+
+    pub(crate) fn run_renderer_action_with_private_queue_log<T>(
+        &self,
+        renderer_location: &str,
+        renderer: &RendererRecord,
+        action: &str,
+        operation: impl FnOnce(&dyn RendererBackend) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.debug_log_private_queue_snapshot(renderer_location, renderer, action, "before");
+        let result = match self.renderer_backend(renderer_location) {
+            Ok(backend) => operation(backend),
+            Err(error) => Err(error),
+        };
+        self.debug_log_private_queue_snapshot(renderer_location, renderer, action, "after");
+        result
+    }
+
+    fn debug_log_private_queue_snapshot(
+        &self,
+        renderer_location: &str,
+        renderer: &RendererRecord,
+        action: &str,
+        phase: &str,
+    ) {
+        if !self.debug_enabled()
+            || renderer.capabilities.has_playlist_extension_service != Some(true)
+        {
+            return;
+        }
+
+        match self
+            .renderer_backend(renderer_location)
+            .and_then(|backend| backend.private_queue(renderer))
+        {
+            Ok(Some(queue)) => self.debug_log(
+                "renderer-private-queue",
+                format!(
+                    "renderer={} action={} phase={} {}",
+                    renderer_location,
+                    action,
+                    phase,
+                    format_private_queue_snapshot(&queue)
+                ),
+            ),
+            Ok(None) => self.debug_log(
+                "renderer-private-queue",
+                format!(
+                    "renderer={} action={} phase={} unavailable",
+                    renderer_location, action, phase
+                ),
+            ),
+            Err(error) => self.debug_log(
+                "renderer-private-queue-error",
+                format!(
+                    "renderer={} action={} phase={} error={}",
+                    renderer_location, action, phase, error
+                ),
+            ),
+        }
     }
 
     pub(crate) fn resume_renderer(&self, renderer_location: &str) -> io::Result<String> {
@@ -182,7 +294,12 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
-        if let Err(error) = self.renderer_backend(renderer_location)?.play(&renderer) {
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "play",
+            |backend| backend.play(&renderer),
+        ) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
             return Err(error);
         }
@@ -211,7 +328,12 @@ impl ServiceState {
                 &group,
                 "pause",
                 |state, member_location, renderer| {
-                    state.renderer_backend(member_location)?.pause(renderer)
+                    state.run_renderer_action_with_private_queue_log(
+                        member_location,
+                        renderer,
+                        "group-pause",
+                        |backend| backend.pause(renderer),
+                    )
                 },
             )?;
             self.database
@@ -233,7 +355,12 @@ impl ServiceState {
         }
         let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("pause-request", format!("renderer={renderer_location}"));
-        if let Err(error) = self.renderer_backend(renderer_location)?.pause(&renderer) {
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "pause",
+            |backend| backend.pause(&renderer),
+        ) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
             return Err(error);
         }
@@ -280,7 +407,12 @@ impl ServiceState {
                 &group,
                 "stop",
                 |state, member_location, renderer| {
-                    state.renderer_backend(member_location)?.stop(renderer)
+                    state.run_renderer_action_with_private_queue_log(
+                        member_location,
+                        renderer,
+                        "group-stop",
+                        |backend| backend.stop(renderer),
+                    )
                 },
             )?;
             self.database
@@ -302,7 +434,12 @@ impl ServiceState {
         }
         let renderer = self.resolve_renderer(renderer_location)?;
         self.debug_log("stop-request", format!("renderer={renderer_location}"));
-        if let Err(error) = self.renderer_backend(renderer_location)?.stop(&renderer) {
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "stop",
+            |backend| backend.stop(&renderer),
+        ) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
             return Err(error);
         }
@@ -342,7 +479,12 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
-        if let Err(error) = self.renderer_backend(renderer_location)?.next(&renderer) {
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "next",
+            |backend| backend.next(&renderer),
+        ) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
             return Err(error);
         }
@@ -381,10 +523,12 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
-        if let Err(error) = self
-            .renderer_backend(renderer_location)?
-            .previous(&renderer)
-        {
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "previous",
+            |backend| backend.previous(&renderer),
+        ) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
             return Err(error);
         }
@@ -406,6 +550,24 @@ impl ServiceState {
         force_clear_no_successor: bool,
     ) -> io::Result<()> {
         let session = self.playback_session(renderer_location);
+        if renderer.capabilities.has_playlist_extension_service == Some(true) {
+            if session
+                .as_ref()
+                .and_then(|session| session.next_queue_entry_id)
+                .is_some()
+            {
+                self.database
+                    .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            }
+            self.debug_log(
+                "preload-next-skipped",
+                format!(
+                    "renderer={} reason=playlist-extension-queue current_entry={} force_clear_no_successor={}",
+                    renderer_location, current_entry_id, force_clear_no_successor
+                ),
+            );
+            return Ok(());
+        }
         if !self.config.native_next_preload_enabled {
             let had_preloaded_next = session
                 .as_ref()
@@ -465,10 +627,12 @@ impl ServiceState {
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
             return Ok(());
         }
-        if let Err(error) = self
-            .renderer_backend(renderer_location)?
-            .preload_next(renderer, &resource)
-        {
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            renderer,
+            "set-next-avtransport-uri",
+            |backend| backend.preload_next(renderer, &resource),
+        ) {
             let _ = self.mark_renderer_unreachable(renderer_location, &error);
             return Err(error);
         }
@@ -496,6 +660,13 @@ impl ServiceState {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
             return Ok(false);
         };
+        if self
+            .playback_session(renderer_location)
+            .and_then(|session| session.next_queue_entry_id)
+            != Some(next_entry.id)
+        {
+            return Ok(false);
+        }
         let Some(track_uri) = snapshot.position_info.track_uri.as_deref() else {
             return Ok(false);
         };
@@ -549,35 +720,72 @@ impl ServiceState {
         renderer: &RendererRecord,
         reason: &str,
     ) -> bool {
+        if renderer.capabilities.has_playlist_extension_service == Some(true) {
+            self.debug_log(
+                "clear-next-skipped",
+                format!(
+                    "renderer={} reason={} skipped_reason=playlist-extension-queue",
+                    renderer_location, reason
+                ),
+            );
+            return true;
+        }
         if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
             return true;
         }
-        match self.renderer_backend(renderer_location) {
-            Ok(backend) => match backend.clear_next(renderer) {
-                Ok(()) => {
-                    let _ = self.mark_renderer_reachable(renderer);
-                    self.debug_log(
-                        "clear-next",
-                        format!("renderer={} reason={}", renderer_location, reason),
-                    );
-                    true
-                }
-                Err(error) => {
-                    self.debug_log(
-                        "clear-next-failed",
-                        format!(
-                            "renderer={} reason={} error={}",
-                            renderer_location, reason, error
-                        ),
-                    );
-                    false
-                }
-            },
+        match self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            renderer,
+            "clear-next-avtransport-uri",
+            |backend| backend.clear_next(renderer),
+        ) {
+            Ok(()) => {
+                let _ = self.mark_renderer_reachable(renderer);
+                self.debug_log(
+                    "clear-next",
+                    format!("renderer={} reason={}", renderer_location, reason),
+                );
+                true
+            }
             Err(error) => {
                 self.debug_log(
                     "clear-next-failed",
                     format!(
-                        "renderer={} reason={} backend_error={}",
+                        "renderer={} reason={} error={}",
+                        renderer_location, reason, error
+                    ),
+                );
+                false
+            }
+        }
+    }
+
+    pub(crate) fn clear_renderer_private_queue(
+        &self,
+        renderer_location: &str,
+        renderer: &RendererRecord,
+        reason: &str,
+    ) -> bool {
+        match self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            renderer,
+            "playlist-delete-all",
+            |backend| backend.clear_private_queue(renderer),
+        ) {
+            Ok(true) => {
+                let _ = self.mark_renderer_reachable(renderer);
+                self.debug_log(
+                    "clear-private-queue",
+                    format!("renderer={} reason={}", renderer_location, reason),
+                );
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                self.debug_log(
+                    "clear-private-queue-failed",
+                    format!(
+                        "renderer={} reason={} error={}",
                         renderer_location, reason, error
                     ),
                 );
@@ -673,11 +881,14 @@ impl ServiceState {
             };
         }
         let renderer = self.resolve_renderer(renderer_location)?;
+        self.clear_renderer_private_queue(renderer_location, &renderer, "start-current");
 
-        match self
-            .renderer_backend(renderer_location)?
-            .play_stream(&renderer, &resource)
-        {
+        match self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "set-avtransport-uri-play",
+            |backend| backend.play_stream(&renderer, &resource),
+        ) {
             Ok(()) => {
                 let _ = self.mark_renderer_reachable(&renderer);
                 self.database.mark_queue_play_started(
@@ -745,7 +956,12 @@ impl ServiceState {
             &group,
             "play",
             |state, member_location, renderer| {
-                state.renderer_backend(member_location)?.play(renderer)
+                state.run_renderer_action_with_private_queue_log(
+                    member_location,
+                    renderer,
+                    "group-play",
+                    |backend| backend.play(renderer),
+                )
             },
         )?;
         self.debug_log_current_queue_file(
@@ -816,10 +1032,12 @@ impl ServiceState {
             ),
         }
 
-        match self
-            .renderer_backend(renderer_location)
-            .and_then(|backend| backend.seek(&renderer, position_seconds))
-        {
+        match self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "seek",
+            |backend| backend.seek(&renderer, position_seconds),
+        ) {
             Ok(()) => {
                 let _ = self.mark_renderer_reachable(&renderer);
                 let resource = self.stream_resource_for_track(track);

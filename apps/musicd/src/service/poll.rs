@@ -149,6 +149,26 @@ pub(crate) fn should_auto_advance(
         .unwrap_or(false)
 }
 
+fn session_was_near_expected_track_end(
+    session: Option<&PlaybackSession>,
+    expected_uri: &str,
+    track_duration_seconds: Option<u64>,
+) -> bool {
+    let Some(session) = session else {
+        return false;
+    };
+    if session.current_track_uri.as_deref() != Some(expected_uri) {
+        return false;
+    }
+    let Some(position) = session.position_seconds else {
+        return false;
+    };
+    let duration = track_duration_seconds.or(session.duration_seconds);
+    duration
+        .map(|duration| position.saturating_add(2) >= duration)
+        .unwrap_or(false)
+}
+
 impl ServiceState {
     pub(crate) fn poll_active_queues(&self) -> io::Result<()> {
         for renderer_location in self.database.list_playing_queue_renderers()? {
@@ -317,6 +337,16 @@ impl ServiceState {
             }
         }
 
+        if self.handle_unexpected_renderer_uri(
+            renderer_location,
+            &renderer,
+            &queue,
+            session.as_ref(),
+            &snapshot,
+        )? {
+            return Ok(());
+        }
+
         let adopted_renderer_advance =
             self.adopt_renderer_advanced_entry(renderer_location, &queue, &snapshot)?;
         if adopted_renderer_advance {
@@ -389,10 +419,132 @@ impl ServiceState {
                 .advance_queue_after_completion(renderer_location)?;
             if next_entry_id.is_some() {
                 let _ = self.start_current_queue_entry(renderer_location)?;
+            } else {
+                self.clear_renderer_private_queue(renderer_location, &renderer, "final-complete");
             }
             self.events.touch(renderer_location);
         }
 
         Ok(())
+    }
+
+    fn handle_unexpected_renderer_uri(
+        &self,
+        renderer_location: &str,
+        renderer: &crate::types::RendererRecord,
+        queue: &PlaybackQueue,
+        session: Option<&PlaybackSession>,
+        snapshot: &TransportSnapshot,
+    ) -> io::Result<bool> {
+        if self.config.native_next_preload_enabled {
+            return Ok(false);
+        }
+        if !matches!(
+            snapshot.transport_info.transport_state.as_str(),
+            "PLAYING" | "TRANSITIONING"
+        ) {
+            return Ok(false);
+        }
+        let Some(reported_uri) = snapshot.position_info.track_uri.as_deref() else {
+            return Ok(false);
+        };
+        let Some(current_entry_id) = queue.current_entry_id else {
+            return Ok(false);
+        };
+        let Some(current_entry) = queue
+            .entries
+            .iter()
+            .find(|entry| entry.id == current_entry_id)
+        else {
+            return Ok(false);
+        };
+        let Some(current_track) = self.find_track(&current_entry.track_id) else {
+            return Ok(false);
+        };
+        let expected_uri = self.stream_resource_for_track(&current_track).stream_url;
+        if reported_uri == expected_uri {
+            return Ok(false);
+        }
+
+        let reported_queue_entry = self.queue_entry_id_for_stream_uri(queue, reported_uri);
+        let final_entry = next_queue_entry_after(queue, current_entry_id).is_none();
+        let near_expected_end = session_was_near_expected_track_end(
+            session,
+            &expected_uri,
+            current_track.duration_seconds,
+        );
+        self.debug_log(
+            "renderer-uri-mismatch",
+            format!(
+                "renderer={} expected_entry={} expected_track={} expected_uri={} reported_uri={} reported_entry={:?} state={} position={:?} duration={:?} final_entry={} near_expected_end={}",
+                renderer_location,
+                current_entry_id,
+                current_track.id,
+                expected_uri,
+                reported_uri,
+                reported_queue_entry,
+                snapshot.transport_info.transport_state,
+                snapshot.position_info.rel_time_seconds,
+                snapshot.position_info.track_duration_seconds,
+                final_entry,
+                near_expected_end
+            ),
+        );
+
+        if !final_entry {
+            return Ok(false);
+        }
+
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            renderer,
+            "stale-uri-stop",
+            |backend| backend.stop(renderer),
+        ) {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
+        let _ = self.mark_renderer_reachable(renderer);
+
+        if near_expected_end {
+            self.clear_renderer_private_queue(
+                renderer_location,
+                renderer,
+                "stale-uri-final-complete",
+            );
+            self.debug_log(
+                "renderer-uri-mismatch-final-complete",
+                format!(
+                    "renderer={} expected_entry={} reported_uri={}",
+                    renderer_location, current_entry_id, reported_uri
+                ),
+            );
+            let _ = self
+                .database
+                .advance_queue_after_completion(renderer_location)?;
+        } else {
+            self.debug_log(
+                "renderer-uri-mismatch-stopped",
+                format!(
+                    "renderer={} expected_entry={} reported_uri={}",
+                    renderer_location, current_entry_id, reported_uri
+                ),
+            );
+            self.database
+                .set_queue_status(renderer_location, "stopped", "STOPPED")?;
+        }
+        self.events.touch(renderer_location);
+        Ok(true)
+    }
+
+    fn queue_entry_id_for_stream_uri(
+        &self,
+        queue: &PlaybackQueue,
+        stream_uri: &str,
+    ) -> Option<i64> {
+        queue.entries.iter().find_map(|entry| {
+            let track = self.find_track(&entry.track_id)?;
+            (self.stream_resource_for_track(&track).stream_url == stream_uri).then_some(entry.id)
+        })
     }
 }
