@@ -550,7 +550,8 @@ impl ServiceState {
         force_clear_no_successor: bool,
     ) -> io::Result<()> {
         let session = self.playback_session(renderer_location);
-        if renderer.capabilities.has_playlist_extension_service == Some(true) {
+        let native_next_enabled = self.native_next_preload_enabled_for_renderer(renderer);
+        if !native_next_enabled {
             if session
                 .as_ref()
                 .and_then(|session| session.next_queue_entry_id)
@@ -559,34 +560,36 @@ impl ServiceState {
                 self.database
                     .mark_next_queue_entry_preloaded(renderer_location, None)?;
             }
-            self.debug_log(
-                "preload-next-skipped",
-                format!(
-                    "renderer={} reason=playlist-extension-queue current_entry={} force_clear_no_successor={}",
-                    renderer_location, current_entry_id, force_clear_no_successor
-                ),
-            );
-            return Ok(());
-        }
-        if !self.config.native_next_preload_enabled {
-            let had_preloaded_next = session
-                .as_ref()
-                .and_then(|session| session.next_queue_entry_id)
-                .is_some();
-            if force_clear_no_successor || had_preloaded_next {
-                let cleared = self.clear_renderer_next_queue_entry(
-                    renderer_location,
-                    renderer,
-                    "native-next-disabled",
-                );
-                if cleared {
-                    self.database
-                        .mark_next_queue_entry_preloaded(renderer_location, None)?;
+            if !self.config.native_next_preload_enabled {
+                let had_preloaded_next = session
+                    .as_ref()
+                    .and_then(|session| session.next_queue_entry_id)
+                    .is_some();
+                if force_clear_no_successor || had_preloaded_next {
+                    let cleared = self.clear_renderer_next_queue_entry(
+                        renderer_location,
+                        renderer,
+                        "native-next-disabled",
+                    );
+                    if cleared {
+                        self.database
+                            .mark_next_queue_entry_preloaded(renderer_location, None)?;
+                    }
                 }
             }
             self.debug_log(
                 "preload-next-skipped",
-                format!("renderer={} reason=native-next-disabled", renderer_location),
+                format!(
+                    "renderer={} reason={} current_entry={} force_clear_no_successor={}",
+                    renderer_location,
+                    if self.config.native_next_preload_enabled {
+                        "playlist-extension-native-next-disabled"
+                    } else {
+                        "native-next-disabled"
+                    },
+                    current_entry_id,
+                    force_clear_no_successor
+                ),
             );
             return Ok(());
         }
@@ -720,7 +723,9 @@ impl ServiceState {
         renderer: &RendererRecord,
         reason: &str,
     ) -> bool {
-        if renderer.capabilities.has_playlist_extension_service == Some(true) {
+        if renderer.capabilities.has_playlist_extension_service == Some(true)
+            && !self.config.native_next_preload_playlist_extension_enabled
+        {
             self.debug_log(
                 "clear-next-skipped",
                 format!(

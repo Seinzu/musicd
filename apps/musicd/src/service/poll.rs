@@ -436,7 +436,7 @@ impl ServiceState {
         session: Option<&PlaybackSession>,
         snapshot: &TransportSnapshot,
     ) -> io::Result<bool> {
-        if self.config.native_next_preload_enabled {
+        if self.native_next_preload_enabled_for_renderer(renderer) {
             return Ok(false);
         }
         if !matches!(

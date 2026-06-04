@@ -325,28 +325,6 @@ impl ServiceState {
         force_clear_no_successor: bool,
     ) -> io::Result<()> {
         let session = self.playback_session(group_location);
-        if group.members.iter().any(|member| {
-            self.resolve_renderer(&member.renderer_location)
-                .map(|renderer| renderer.capabilities.has_playlist_extension_service == Some(true))
-                .unwrap_or(false)
-        }) {
-            if session
-                .as_ref()
-                .and_then(|session| session.next_queue_entry_id)
-                .is_some()
-            {
-                self.database
-                    .mark_next_queue_entry_preloaded(group_location, None)?;
-            }
-            self.debug_log(
-                "group-preload-next-skipped",
-                format!(
-                    "renderer={} reason=playlist-extension-queue current_entry={} force_clear_no_successor={}",
-                    group_location, current_entry_id, force_clear_no_successor
-                ),
-            );
-            return Ok(());
-        }
         if !self.config.native_next_preload_enabled {
             let had_preloaded_next = session
                 .as_ref()
@@ -366,6 +344,29 @@ impl ServiceState {
             self.debug_log(
                 "group-preload-next-skipped",
                 format!("renderer={} reason=native-next-disabled", group_location),
+            );
+            return Ok(());
+        }
+        let group_has_disabled_playlist_extension_member = group.members.iter().any(|member| {
+            self.resolve_renderer(&member.renderer_location)
+                .map(|renderer| !self.native_next_preload_enabled_for_renderer(&renderer))
+                .unwrap_or(false)
+        });
+        if group_has_disabled_playlist_extension_member {
+            if session
+                .as_ref()
+                .and_then(|session| session.next_queue_entry_id)
+                .is_some()
+            {
+                self.database
+                    .mark_next_queue_entry_preloaded(group_location, None)?;
+            }
+            self.debug_log(
+                "group-preload-next-skipped",
+                format!(
+                    "renderer={} reason=member-native-next-disabled current_entry={} force_clear_no_successor={}",
+                    group_location, current_entry_id, force_clear_no_successor
+                ),
             );
             return Ok(());
         }
@@ -409,7 +410,7 @@ impl ServiceState {
                     continue;
                 }
             };
-            if renderer.capabilities.has_playlist_extension_service == Some(true) {
+            if !self.native_next_preload_enabled_for_renderer(&renderer) {
                 continue;
             }
             if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
@@ -468,7 +469,9 @@ impl ServiceState {
                     continue;
                 }
             };
-            if renderer.capabilities.has_playlist_extension_service == Some(true) {
+            if renderer.capabilities.has_playlist_extension_service == Some(true)
+                && !self.config.native_next_preload_playlist_extension_enabled
+            {
                 self.debug_log(
                     "group-clear-next-skipped",
                     format!(

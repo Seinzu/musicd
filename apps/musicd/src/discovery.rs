@@ -264,6 +264,7 @@ mod tests {
             debug_mode: false,
             skip_startup_scan: false,
             native_next_preload_enabled: false,
+            native_next_preload_playlist_extension_enabled: false,
             library_watch_enabled: true,
             library_watch_interval_ms: 10_000,
             library_watch_settle_ms: 3_000,

@@ -112,6 +112,15 @@ impl ServiceState {
         }
     }
 
+    pub(crate) fn native_next_preload_enabled_for_renderer(
+        &self,
+        renderer: &RendererRecord,
+    ) -> bool {
+        self.config.native_next_preload_enabled
+            && (renderer.capabilities.has_playlist_extension_service != Some(true)
+                || self.config.native_next_preload_playlist_extension_enabled)
+    }
+
     pub(crate) fn load(config: AppConfig) -> io::Result<Self> {
         let database = Database::open(&config.config_path)?;
         let persisted_library = database.load_library(config.library_path.clone())?;

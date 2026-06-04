@@ -124,6 +124,16 @@ fn run_serve() -> io::Result<()> {
             "disabled"
         }
     );
+    if config.native_next_preload_enabled {
+        println!(
+            "Native next on PlaylistExtension renderers: {}",
+            if config.native_next_preload_playlist_extension_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+    }
     println!(
         "Open {}/ in a browser to browse and play music.",
         config.resolved_base_url()

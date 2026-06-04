@@ -984,6 +984,57 @@ mod tests {
     }
 
     #[test]
+    fn start_current_playlist_extension_renderer_can_preload_native_next_when_opted_in() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let mut fake_backend = FakeRendererBackend::new(renderer_location, Vec::new());
+        fake_backend
+            .renderer
+            .capabilities
+            .has_playlist_extension_service = Some(true);
+        let backend = Arc::new(fake_backend);
+        let mut state =
+            sample_state_with_backend(vec![track_1.clone(), track_2.clone()], backend.clone());
+        state.config.native_next_preload_enabled = true;
+        state.config.native_next_preload_playlist_extension_enabled = true;
+        state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let second_stream_url = state.stream_resource_for_track(&track_2).stream_url;
+
+        state
+            .start_current_queue_entry(renderer_location)
+            .expect("queue should start");
+
+        assert_eq!(
+            backend.private_queue_clear_count(),
+            1,
+            "starting on a PlaylistExtension renderer should still clear its private queue"
+        );
+        assert_eq!(
+            backend.preloaded_streams().len(),
+            1,
+            "PlaylistExtension renderers should receive SetNextAVTransportURI only when explicitly opted in"
+        );
+        assert_eq!(
+            backend.preloaded_streams()[0].stream_url,
+            second_stream_url,
+            "the native next slot should be primed with the next queue entry"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn clear_queue_clears_private_renderer_queue() {
         let renderer_location = "http://renderer.local/description.xml";
         let track = sample_track("track-1", Some(1), Some(1), "Track 1");
@@ -2833,6 +2884,7 @@ mod tests {
                 debug_mode: false,
                 skip_startup_scan: false,
                 native_next_preload_enabled: false,
+                native_next_preload_playlist_extension_enabled: false,
                 library_watch_enabled: true,
                 library_watch_interval_ms: 10_000,
                 library_watch_settle_ms: 3_000,
@@ -2959,6 +3011,13 @@ mod tests {
             self.played_streams
                 .lock()
                 .expect("played streams should not be poisoned")
+                .clone()
+        }
+
+        fn preloaded_streams(&self) -> Vec<StreamResource> {
+            self.preloaded_streams
+                .lock()
+                .expect("preloaded streams should not be poisoned")
                 .clone()
         }
 
