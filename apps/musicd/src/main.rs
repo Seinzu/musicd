@@ -54,8 +54,9 @@ mod tests {
     };
     use std::collections::{HashMap, VecDeque};
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_standard_http_ranges() {
@@ -1029,6 +1030,144 @@ mod tests {
             backend.preloaded_streams()[0].stream_url,
             second_stream_url,
             "the native next slot should be primed with the next queue entry"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn renderer_actions_are_serialized_per_renderer() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(renderer_location, Vec::new()));
+        backend.set_preload_delay(Duration::from_millis(75));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        let renderer = backend.renderer.clone();
+        let resource = state.stream_resource_for_track(&track);
+
+        std::thread::scope(|scope| {
+            let left_state = &state;
+            let left_renderer = renderer.clone();
+            let left_resource = resource.clone();
+            let left = scope.spawn(move || {
+                left_state.run_renderer_action_with_private_queue_log(
+                    renderer_location,
+                    &left_renderer,
+                    "set-next-avtransport-uri",
+                    |backend| backend.preload_next(&left_renderer, &left_resource),
+                )
+            });
+
+            std::thread::sleep(Duration::from_millis(10));
+
+            let right_state = &state;
+            let right_renderer = renderer.clone();
+            let right_resource = resource.clone();
+            let right = scope.spawn(move || {
+                right_state.run_renderer_action_with_private_queue_log(
+                    renderer_location,
+                    &right_renderer,
+                    "set-next-avtransport-uri",
+                    |backend| backend.preload_next(&right_renderer, &right_resource),
+                )
+            });
+
+            left.join()
+                .expect("left preload thread should not panic")
+                .expect("left preload should succeed");
+            right
+                .join()
+                .expect("right preload thread should not panic")
+                .expect("right preload should succeed");
+        });
+
+        assert_eq!(
+            backend.preloaded_streams().len(),
+            2,
+            "both renderer actions should still run"
+        );
+        assert_eq!(
+            backend.max_active_preload_count(),
+            1,
+            "renderer actions for the same renderer should not overlap"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn concurrent_preload_requests_send_native_next_once() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let backend = Arc::new(FakeRendererBackend::new(renderer_location, Vec::new()));
+        backend.set_preload_delay(Duration::from_millis(75));
+        let mut state =
+            sample_state_with_backend(vec![track_1.clone(), track_2.clone()], backend.clone());
+        state.config.native_next_preload_enabled = true;
+        let renderer = backend.renderer.clone();
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let current_entry_id = queue
+            .current_entry_id
+            .expect("queue should have a current entry");
+
+        std::thread::scope(|scope| {
+            let left_state = &state;
+            let left_renderer = renderer.clone();
+            let left_queue = queue.clone();
+            let left = scope.spawn(move || {
+                left_state.preload_next_queue_entry(
+                    renderer_location,
+                    &left_renderer,
+                    &left_queue,
+                    current_entry_id,
+                    false,
+                )
+            });
+
+            std::thread::sleep(Duration::from_millis(10));
+
+            let right_state = &state;
+            let right_renderer = renderer.clone();
+            let right_queue = queue.clone();
+            let right = scope.spawn(move || {
+                right_state.preload_next_queue_entry(
+                    renderer_location,
+                    &right_renderer,
+                    &right_queue,
+                    current_entry_id,
+                    false,
+                )
+            });
+
+            left.join()
+                .expect("left preload thread should not panic")
+                .expect("left preload should succeed");
+            right
+                .join()
+                .expect("right preload thread should not panic")
+                .expect("right preload should succeed");
+        });
+
+        assert_eq!(
+            backend.preloaded_streams().len(),
+            1,
+            "concurrent preload decisions for the same next entry should send only one native next action"
+        );
+        assert_eq!(
+            backend.max_active_preload_count(),
+            1,
+            "native next actions should also be serialized while the first preload is in flight"
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
@@ -2898,6 +3037,7 @@ mod tests {
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
             events: crate::service::PlaybackEvents::new(),
+            renderer_action_locks: Mutex::new(HashMap::new()),
             rescan_state: crate::service::RescanState::new(),
         }
     }
@@ -2968,6 +3108,9 @@ mod tests {
         play_count: Mutex<usize>,
         stop_count: Mutex<usize>,
         private_queue_clear_count: Mutex<usize>,
+        preload_delay: Mutex<Option<Duration>>,
+        active_preload_count: AtomicUsize,
+        max_active_preload_count: AtomicUsize,
     }
 
     impl FakeRendererBackend {
@@ -3004,7 +3147,17 @@ mod tests {
                 play_count: Mutex::new(0),
                 stop_count: Mutex::new(0),
                 private_queue_clear_count: Mutex::new(0),
+                preload_delay: Mutex::new(None),
+                active_preload_count: AtomicUsize::new(0),
+                max_active_preload_count: AtomicUsize::new(0),
             }
+        }
+
+        fn set_preload_delay(&self, delay: Duration) {
+            *self
+                .preload_delay
+                .lock()
+                .expect("preload delay should not be poisoned") = Some(delay);
         }
 
         fn played_streams(&self) -> Vec<StreamResource> {
@@ -3055,6 +3208,10 @@ mod tests {
                 .expect("seek positions should not be poisoned")
                 .clone()
         }
+
+        fn max_active_preload_count(&self) -> usize {
+            self.max_active_preload_count.load(Ordering::SeqCst)
+        }
     }
 
     impl RendererBackend for FakeRendererBackend {
@@ -3083,10 +3240,31 @@ mod tests {
             _renderer: &RendererRecord,
             resource: &StreamResource,
         ) -> std::io::Result<()> {
+            let active = self.active_preload_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut observed_max = self.max_active_preload_count.load(Ordering::SeqCst);
+            while active > observed_max {
+                match self.max_active_preload_count.compare_exchange(
+                    observed_max,
+                    active,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(current) => observed_max = current,
+                }
+            }
+            if let Some(delay) = *self
+                .preload_delay
+                .lock()
+                .expect("preload delay should not be poisoned")
+            {
+                std::thread::sleep(delay);
+            }
             self.preloaded_streams
                 .lock()
                 .expect("preloaded streams should not be poisoned")
                 .push(resource.clone());
+            self.active_preload_count.fetch_sub(1, Ordering::SeqCst);
             Ok(())
         }
 

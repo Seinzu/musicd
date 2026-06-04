@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use arc_swap::ArcSwap;
 use musicd_core::AppConfig;
@@ -45,6 +45,7 @@ pub(crate) struct ServiceState {
     pub(crate) renderer_backends: RendererBackends,
     pub(crate) metrics: OnceLock<Arc<metrics::Metrics>>,
     pub(crate) events: PlaybackEvents,
+    pub(crate) renderer_action_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// State for tracking concurrent rescans
     pub(crate) rescan_state: RescanState,
 }
@@ -121,6 +122,17 @@ impl ServiceState {
                 || self.config.native_next_preload_playlist_extension_enabled)
     }
 
+    pub(crate) fn renderer_action_lock(&self, renderer_location: &str) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .renderer_action_locks
+            .lock()
+            .expect("renderer action lock map should not be poisoned");
+        locks
+            .entry(renderer_location.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     pub(crate) fn load(config: AppConfig) -> io::Result<Self> {
         let database = Database::open(&config.config_path)?;
         let persisted_library = database.load_library(config.library_path.clone())?;
@@ -131,6 +143,7 @@ impl ServiceState {
             renderer_backends: RendererBackends::default(),
             metrics: OnceLock::new(),
             events: PlaybackEvents::new(),
+            renderer_action_locks: Mutex::new(HashMap::new()),
             rescan_state: RescanState::new(),
         };
 

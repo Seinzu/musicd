@@ -133,6 +133,20 @@ impl ServiceState {
         action: &str,
         operation: impl FnOnce(&dyn RendererBackend) -> io::Result<T>,
     ) -> io::Result<T> {
+        let action_lock = self.renderer_action_lock(renderer_location);
+        let _action_guard = match action_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.debug_log(
+                    "renderer-action-wait",
+                    format!("renderer={} action={}", renderer_location, action),
+                );
+                action_lock
+                    .lock()
+                    .expect("renderer action lock should not be poisoned")
+            }
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        };
         self.debug_log_private_queue_snapshot(renderer_location, renderer, action, "before");
         let result = match self.renderer_backend(renderer_location) {
             Ok(backend) => operation(backend),
@@ -630,17 +644,40 @@ impl ServiceState {
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
             return Ok(());
         }
-        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+        let preloaded = match self.run_renderer_action_with_private_queue_log(
             renderer_location,
             renderer,
             "set-next-avtransport-uri",
-            |backend| backend.preload_next(renderer, &resource),
+            |backend| {
+                if self
+                    .playback_session(renderer_location)
+                    .and_then(|session| session.next_queue_entry_id)
+                    == Some(next_entry.id)
+                {
+                    return Ok(false);
+                }
+                backend.preload_next(renderer, &resource)?;
+                self.database
+                    .mark_next_queue_entry_preloaded(renderer_location, Some(next_entry.id))?;
+                Ok(true)
+            },
         ) {
-            let _ = self.mark_renderer_unreachable(renderer_location, &error);
-            return Err(error);
+            Ok(preloaded) => preloaded,
+            Err(error) => {
+                let _ = self.mark_renderer_unreachable(renderer_location, &error);
+                return Err(error);
+            }
+        };
+        if !preloaded {
+            self.debug_log(
+                "preload-next-skipped",
+                format!(
+                    "renderer={} reason=already-preloaded current_entry={} next_entry={}",
+                    renderer_location, current_entry_id, next_entry.id
+                ),
+            );
+            return Ok(());
         }
-        self.database
-            .mark_next_queue_entry_preloaded(renderer_location, Some(next_entry.id))?;
         self.debug_log(
             "preload-next",
             format!(
