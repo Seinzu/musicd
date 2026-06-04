@@ -222,8 +222,64 @@ impl ServiceState {
     ) {
         if let (Some(group), Some(queue)) = (group, queue) {
             self.refresh_group_queue_preload(renderer_location, group, queue);
+        } else if let Some(queue) = queue {
+            self.refresh_renderer_queue_preload(renderer_location, queue);
         }
         self.events.touch(renderer_location);
+    }
+
+    fn refresh_renderer_queue_preload(&self, renderer_location: &str, queue: &PlaybackQueue) {
+        let session = self.playback_session(renderer_location);
+        let is_active = session
+            .as_ref()
+            .map(|session| {
+                matches!(
+                    session.transport_state.as_str(),
+                    "PLAYING" | "TRANSITIONING" | "PAUSED_PLAYBACK"
+                )
+            })
+            .unwrap_or(false);
+        if let (true, Some(current_entry_id)) = (is_active, queue.current_entry_id) {
+            let renderer = match self.resolve_renderer(renderer_location) {
+                Ok(renderer) => renderer,
+                Err(error) => {
+                    self.debug_log(
+                        "playlist-sync-failed",
+                        format!(
+                            "renderer={} reason=queue-mutation resolve_error={}",
+                            renderer_location, error
+                        ),
+                    );
+                    return;
+                }
+            };
+            let playlist_synced = self.sync_renderer_private_queue_from_musicd(
+                renderer_location,
+                &renderer,
+                queue,
+                current_entry_id,
+                "queue-mutation",
+            );
+            if !playlist_synced {
+                if let Err(error) = self.preload_next_queue_entry(
+                    renderer_location,
+                    &renderer,
+                    queue,
+                    current_entry_id,
+                    false,
+                ) {
+                    eprintln!("next-track preload refresh failed for {renderer_location}: {error}");
+                }
+            }
+        } else if session
+            .as_ref()
+            .and_then(|session| session.next_queue_entry_id)
+            .is_some()
+        {
+            let _ = self
+                .database
+                .mark_next_queue_entry_preloaded(renderer_location, None);
+        }
     }
 
     fn refresh_group_queue_preload(

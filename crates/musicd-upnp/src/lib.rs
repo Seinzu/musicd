@@ -543,6 +543,73 @@ pub fn clear_playlist_extension_queue(renderer_location: &str) -> io::Result<boo
     Ok(true)
 }
 
+pub fn sync_playlist_extension_queue_after_current(
+    control_url: &str,
+    current: &StreamResource,
+    successors: &[StreamResource],
+) -> io::Result<bool> {
+    let queue = query_playlist_extension_queue(control_url)?;
+    let Some(current_id) = queue
+        .entries
+        .iter()
+        .find(|entry| entry.uri == current.stream_url)
+        .map(|entry| entry.id)
+    else {
+        return Ok(false);
+    };
+
+    for id in queue.ids.iter().copied().filter(|id| *id != current_id) {
+        delete_playlist_extension_entry(control_url, id)?;
+    }
+
+    let mut after_id = current_id;
+    for resource in successors {
+        after_id = insert_playlist_extension_entry(control_url, after_id, resource)?;
+    }
+
+    Ok(true)
+}
+
+pub fn insert_playlist_extension_entry(
+    control_url: &str,
+    after_id: u32,
+    resource: &StreamResource,
+) -> io::Result<u32> {
+    let after_id_value = after_id.to_string();
+    let metadata = didl_lite_metadata(
+        &resource.stream_url,
+        &resource.mime_type,
+        &resource.title,
+        resource.album_art_url.as_deref(),
+    );
+    let body = build_action_envelope(
+        PLAYLIST_EXTENSION_SERVICE,
+        "Insert",
+        &[
+            ("aAfterId", after_id_value.as_str()),
+            ("aUri", resource.stream_url.as_str()),
+            ("aMetaData", metadata.as_str()),
+        ],
+    );
+    let response = playlist_extension_action(control_url, "Insert", body.as_bytes())?;
+    expect_successful_soap("Insert", response.clone())?;
+    let raw_xml = response_body_utf8("Insert", response.body)?;
+    extract_first_tag(&raw_xml, "aNewId")
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Insert response missing aNewId"))
+}
+
+pub fn delete_playlist_extension_entry(control_url: &str, id: u32) -> io::Result<()> {
+    let id_value = id.to_string();
+    let body = build_action_envelope(
+        PLAYLIST_EXTENSION_SERVICE,
+        "Delete",
+        &[("aId", id_value.as_str())],
+    );
+    let response = playlist_extension_action(control_url, "Delete", body.as_bytes())?;
+    expect_successful_soap("Delete", response)
+}
+
 fn query_playlist_extension_read_list(
     control_url: &str,
     ids: &[u32],
@@ -1653,6 +1720,28 @@ mod tests {
             entries[0].title.as_deref(),
             Some("The Opposite of Hallelujah")
         );
+    }
+
+    #[test]
+    fn playlist_extension_insert_envelope_escapes_values() {
+        let body = super::build_action_envelope(
+            super::PLAYLIST_EXTENSION_SERVICE,
+            "Insert",
+            &[
+                ("aAfterId", "123"),
+                ("aUri", "http://server.local/stream/track/one&two"),
+                (
+                    "aMetaData",
+                    "<DIDL-Lite><dc:title>A & B</dc:title></DIDL-Lite>",
+                ),
+            ],
+        );
+
+        assert!(body.contains("<u:Insert"));
+        assert!(body.contains("<aAfterId>123</aAfterId>"));
+        assert!(body.contains("one&amp;two"));
+        assert!(body.contains("&lt;DIDL-Lite&gt;"));
+        assert!(body.contains("A &amp; B"));
     }
 
     #[test]

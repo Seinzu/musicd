@@ -76,6 +76,15 @@ pub(crate) trait RendererBackend: Send + Sync {
         Ok(None)
     }
 
+    fn sync_private_queue_after_current(
+        &self,
+        _renderer: &RendererRecord,
+        _current: &StreamResource,
+        _successors: &[StreamResource],
+    ) -> io::Result<bool> {
+        Ok(false)
+    }
+
     fn play(&self, renderer: &RendererRecord) -> io::Result<()>;
 
     fn pause(&self, renderer: &RendererRecord) -> io::Result<()>;

@@ -688,6 +688,84 @@ impl ServiceState {
         Ok(())
     }
 
+    pub(crate) fn sync_renderer_private_queue_from_musicd(
+        &self,
+        renderer_location: &str,
+        renderer: &RendererRecord,
+        queue: &PlaybackQueue,
+        current_entry_id: i64,
+        reason: &str,
+    ) -> bool {
+        if renderer.capabilities.has_playlist_extension_service != Some(true)
+            || self.config.native_next_preload_playlist_extension_enabled
+        {
+            return false;
+        }
+
+        let Some(current_index) = queue
+            .entries
+            .iter()
+            .position(|entry| entry.id == current_entry_id)
+        else {
+            return false;
+        };
+        let Some(current_track) = self.find_track(&queue.entries[current_index].track_id) else {
+            return false;
+        };
+        let current = self.stream_resource_for_track(&current_track);
+        let successors = queue
+            .entries
+            .iter()
+            .skip(current_index + 1)
+            .filter_map(|entry| self.find_track(&entry.track_id))
+            .map(|track| self.stream_resource_for_track(&track))
+            .collect::<Vec<_>>();
+
+        match self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            renderer,
+            "playlist-sync-after-current",
+            |backend| backend.sync_private_queue_after_current(renderer, &current, &successors),
+        ) {
+            Ok(true) => {
+                let _ = self
+                    .database
+                    .mark_next_queue_entry_preloaded(renderer_location, None);
+                self.debug_log(
+                    "playlist-sync",
+                    format!(
+                        "renderer={} reason={} current_entry={} successors={}",
+                        renderer_location,
+                        reason,
+                        current_entry_id,
+                        successors.len()
+                    ),
+                );
+                true
+            }
+            Ok(false) => {
+                self.debug_log(
+                    "playlist-sync-skipped",
+                    format!(
+                        "renderer={} reason={} current_entry={} skipped_reason=unavailable-or-current-not-found",
+                        renderer_location, reason, current_entry_id
+                    ),
+                );
+                false
+            }
+            Err(error) => {
+                self.debug_log(
+                    "playlist-sync-failed",
+                    format!(
+                        "renderer={} reason={} current_entry={} error={}",
+                        renderer_location, reason, current_entry_id, error
+                    ),
+                );
+                false
+            }
+        }
+    }
+
     pub(crate) fn adopt_renderer_advanced_entry(
         &self,
         renderer_location: &str,
@@ -940,14 +1018,23 @@ impl ServiceState {
                     &stream_url,
                     track.duration_seconds,
                 )?;
-                if let Err(error) = self.preload_next_queue_entry(
+                let playlist_synced = self.sync_renderer_private_queue_from_musicd(
                     renderer_location,
                     &renderer,
                     &queue,
                     current_entry.id,
-                    true,
-                ) {
-                    eprintln!("next-track preload failed for {renderer_location}: {error}");
+                    "start-current",
+                );
+                if !playlist_synced {
+                    if let Err(error) = self.preload_next_queue_entry(
+                        renderer_location,
+                        &renderer,
+                        &queue,
+                        current_entry.id,
+                        true,
+                    ) {
+                        eprintln!("next-track preload failed for {renderer_location}: {error}");
+                    }
                 }
                 Ok((
                     track,

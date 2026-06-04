@@ -975,10 +975,29 @@ mod tests {
             1,
             "starting on a PlaylistExtension renderer should clear its private queue"
         );
+        let syncs = backend.private_queue_syncs();
+        assert_eq!(
+            syncs.len(),
+            1,
+            "starting on a PlaylistExtension renderer should mirror the musicd queue into the private renderer queue"
+        );
+        assert_eq!(
+            syncs[0].0.stream_url,
+            state.stream_resource_for_track(&track_1).stream_url
+        );
+        assert_eq!(syncs[0].1.len(), 1);
+        assert_eq!(
+            syncs[0].1[0].stream_url,
+            state.stream_resource_for_track(&track_2).stream_url
+        );
         assert_eq!(
             backend.cleared_next_count(),
             0,
             "PlaylistExtension renderers should not be sent SetNextAVTransportURI cleanup"
+        );
+        assert!(
+            backend.preloaded_streams().is_empty(),
+            "PlaylistExtension queue sync should replace native next preloading in normal mode"
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
@@ -1021,6 +1040,10 @@ mod tests {
             1,
             "starting on a PlaylistExtension renderer should still clear its private queue"
         );
+        assert!(
+            backend.private_queue_syncs().is_empty(),
+            "diagnostic native-next mode should bypass PlaylistExtension queue sync"
+        );
         assert_eq!(
             backend.preloaded_streams().len(),
             1,
@@ -1030,6 +1053,61 @@ mod tests {
             backend.preloaded_streams()[0].stream_url,
             second_stream_url,
             "the native next slot should be primed with the next queue entry"
+        );
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn active_playlist_extension_queue_mutation_refreshes_private_queue() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let track_3 = sample_track("track-3", Some(1), Some(3), "Track 3");
+        let mut fake_backend = FakeRendererBackend::new(renderer_location, Vec::new());
+        fake_backend
+            .renderer
+            .capabilities
+            .has_playlist_extension_service = Some(true);
+        let backend = Arc::new(fake_backend);
+        let state = sample_state_with_backend(
+            vec![track_1.clone(), track_2.clone(), track_3.clone()],
+            backend.clone(),
+        );
+        state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+        state
+            .start_current_queue_entry(renderer_location)
+            .expect("queue should start");
+
+        state
+            .append_track_to_queue(renderer_location, &track_3)
+            .expect("queue append should succeed");
+
+        let syncs = backend.private_queue_syncs();
+        assert_eq!(syncs.len(), 2);
+        let latest = syncs.last().expect("latest sync should exist");
+        assert_eq!(
+            latest.0.stream_url,
+            state.stream_resource_for_track(&track_1).stream_url
+        );
+        assert_eq!(latest.1.len(), 2);
+        assert_eq!(
+            latest.1[0].stream_url,
+            state.stream_resource_for_track(&track_2).stream_url
+        );
+        assert_eq!(
+            latest.1[1].stream_url,
+            state.stream_resource_for_track(&track_3).stream_url
         );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
@@ -3103,6 +3181,7 @@ mod tests {
         snapshots: Mutex<VecDeque<TransportSnapshot>>,
         played_streams: Mutex<Vec<StreamResource>>,
         preloaded_streams: Mutex<Vec<StreamResource>>,
+        private_queue_syncs: Mutex<Vec<(StreamResource, Vec<StreamResource>)>>,
         seek_positions: Mutex<Vec<u64>>,
         cleared_next_count: Mutex<usize>,
         play_count: Mutex<usize>,
@@ -3142,6 +3221,7 @@ mod tests {
                 snapshots: Mutex::new(VecDeque::from(snapshots)),
                 played_streams: Mutex::new(Vec::new()),
                 preloaded_streams: Mutex::new(Vec::new()),
+                private_queue_syncs: Mutex::new(Vec::new()),
                 seek_positions: Mutex::new(Vec::new()),
                 cleared_next_count: Mutex::new(0),
                 play_count: Mutex::new(0),
@@ -3171,6 +3251,13 @@ mod tests {
             self.preloaded_streams
                 .lock()
                 .expect("preloaded streams should not be poisoned")
+                .clone()
+        }
+
+        fn private_queue_syncs(&self) -> Vec<(StreamResource, Vec<StreamResource>)> {
+            self.private_queue_syncs
+                .lock()
+                .expect("private queue syncs should not be poisoned")
                 .clone()
         }
 
@@ -3281,6 +3368,22 @@ mod tests {
                 .private_queue_clear_count
                 .lock()
                 .expect("private queue clear count should not be poisoned") += 1;
+            Ok(true)
+        }
+
+        fn sync_private_queue_after_current(
+            &self,
+            renderer: &RendererRecord,
+            current: &StreamResource,
+            successors: &[StreamResource],
+        ) -> std::io::Result<bool> {
+            if renderer.capabilities.has_playlist_extension_service != Some(true) {
+                return Ok(false);
+            }
+            self.private_queue_syncs
+                .lock()
+                .expect("private queue syncs should not be poisoned")
+                .push((current.clone(), successors.to_vec()));
             Ok(true)
         }
 

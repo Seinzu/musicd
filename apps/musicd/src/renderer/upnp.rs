@@ -4,7 +4,7 @@ use musicd_upnp::{
     RendererPlaylist, StreamResource, TransportSnapshot, clear_next_av_transport_uri,
     clear_playlist_extension_queue, get_transport_snapshot, inspect_renderer, next, pause, play,
     previous, query_playlist_extension_queue, seek, set_av_transport_uri,
-    set_next_av_transport_uri, stop,
+    set_next_av_transport_uri, stop, sync_playlist_extension_queue_after_current,
 };
 
 use crate::ids::normalized_renderer_name;
@@ -84,6 +84,26 @@ impl RendererBackend for UpnpRendererBackend {
             return Ok(None);
         };
         query_playlist_extension_queue(&service.control_url).map(Some)
+    }
+
+    fn sync_private_queue_after_current(
+        &self,
+        renderer: &RendererRecord,
+        current: &StreamResource,
+        successors: &[StreamResource],
+    ) -> io::Result<bool> {
+        if renderer.capabilities.has_playlist_extension_service != Some(true) {
+            return Ok(false);
+        }
+        let renderer_description = inspect_renderer(&renderer.location)?;
+        let Some(service) = renderer_description
+            .services
+            .iter()
+            .find(|service| service.service_type == "urn:UuVol-com:service:PlaylistExtension:1")
+        else {
+            return Ok(false);
+        };
+        sync_playlist_extension_queue_after_current(&service.control_url, current, successors)
     }
 
     fn play(&self, renderer: &RendererRecord) -> io::Result<()> {
