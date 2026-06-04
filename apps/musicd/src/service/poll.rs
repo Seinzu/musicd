@@ -348,7 +348,7 @@ impl ServiceState {
         }
 
         let adopted_renderer_advance =
-            self.adopt_renderer_advanced_entry(renderer_location, &queue, &snapshot)?;
+            self.adopt_renderer_advanced_entry(renderer_location, &renderer, &queue, &snapshot)?;
         if adopted_renderer_advance {
             self.debug_log(
                 "queue-adopt-renderer-advance",
@@ -370,7 +370,17 @@ impl ServiceState {
         }) {
             let adopted_final_entry = adopted_renderer_advance
                 && next_queue_entry_after(&queue, current_entry_id).is_none();
-            if !adopted_final_entry {
+            if adopted_renderer_advance
+                && self.sync_renderer_private_queue_from_musicd(
+                    renderer_location,
+                    &renderer,
+                    &queue,
+                    current_entry_id,
+                    "renderer-advance",
+                )
+            {
+                // PlaylistExtension queue was reconciled from musicd's source of truth.
+            } else if !adopted_final_entry {
                 if let Err(error) = self.preload_next_queue_entry(
                     renderer_location,
                     &renderer,

@@ -831,6 +831,90 @@ mod tests {
     }
 
     #[test]
+    fn queue_poll_adopts_playlist_extension_renderer_advance() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let track_3 = sample_track("track-3", Some(1), Some(3), "Track 3");
+        let mut fake_backend =
+            FakeRendererBackend::new(renderer_location, vec![playing_snapshot(&track_2, 1, 180)]);
+        fake_backend
+            .renderer
+            .capabilities
+            .has_playlist_extension_service = Some(true);
+        let backend = Arc::new(fake_backend);
+        let state = sample_state_with_backend(
+            vec![track_1.clone(), track_2.clone(), track_3.clone()],
+            backend.clone(),
+        );
+        let first_stream_url = state.stream_resource_for_track(&track_1).stream_url;
+        let second_stream_url = state.stream_resource_for_track(&track_2).stream_url;
+        let third_stream_url = state.stream_resource_for_track(&track_3).stream_url;
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Three Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                    queue_entry_for_track(&track_3),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let first_entry_id = queue
+            .current_entry_id
+            .expect("queue should have a current entry");
+        let second_entry_id = queue.entries[1].id;
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                first_entry_id,
+                &track_1.id,
+                &first_stream_url,
+                track_1.duration_seconds,
+            )
+            .expect("queue play should start");
+
+        state
+            .poll_renderer_queue(renderer_location)
+            .expect("queue poll should adopt PlaylistExtension renderer advance");
+
+        let advanced_queue = state
+            .database
+            .load_queue(renderer_location)
+            .expect("queue lookup should succeed")
+            .expect("queue should remain while track 2 plays");
+        let session = state
+            .database
+            .load_playback_session(renderer_location)
+            .expect("session lookup should succeed")
+            .expect("session should track the adopted entry");
+        assert_eq!(advanced_queue.current_entry_id, Some(second_entry_id));
+        assert_eq!(advanced_queue.entries[0].entry_status, "completed");
+        assert_eq!(advanced_queue.entries[1].entry_status, "playing");
+        assert_eq!(advanced_queue.entries[2].entry_status, "pending");
+        assert_eq!(session.queue_entry_id, Some(second_entry_id));
+        assert_eq!(session.next_queue_entry_id, None);
+        assert_eq!(
+            session.current_track_uri.as_deref(),
+            Some(second_stream_url.as_str())
+        );
+        assert!(backend.preloaded_streams().is_empty());
+        assert_eq!(backend.private_queue_syncs().len(), 1);
+        let sync = backend
+            .private_queue_syncs()
+            .pop()
+            .expect("private queue sync should be recorded");
+        assert_eq!(sync.0.stream_url, second_stream_url);
+        assert_eq!(sync.1.len(), 1);
+        assert_eq!(sync.1[0].stream_url, third_stream_url);
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn queue_poll_stops_renderer_and_clears_final_queue_when_renderer_reports_stale_uri() {
         let renderer_location = "http://renderer.local/description.xml";
         let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");

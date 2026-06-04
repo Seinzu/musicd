@@ -769,6 +769,7 @@ impl ServiceState {
     pub(crate) fn adopt_renderer_advanced_entry(
         &self,
         renderer_location: &str,
+        renderer: &RendererRecord,
         queue: &PlaybackQueue,
         snapshot: &TransportSnapshot,
     ) -> io::Result<bool> {
@@ -778,11 +779,14 @@ impl ServiceState {
         let Some(next_entry) = next_queue_entry_after(queue, current_entry_id) else {
             return Ok(false);
         };
-        if self
+        let expected_preloaded_next = self
             .playback_session(renderer_location)
             .and_then(|session| session.next_queue_entry_id)
-            != Some(next_entry.id)
-        {
+            == Some(next_entry.id);
+        let playlist_extension_advance = renderer.capabilities.has_playlist_extension_service
+            == Some(true)
+            && !self.config.native_next_preload_playlist_extension_enabled;
+        if !expected_preloaded_next && !playlist_extension_advance {
             return Ok(false);
         }
         let Some(track_uri) = snapshot.position_info.track_uri.as_deref() else {
@@ -825,8 +829,16 @@ impl ServiceState {
         self.debug_log(
             "renderer-advanced",
             format!(
-                "renderer={} adopted_entry={} track={} uri={}",
-                renderer_location, next_entry.id, next_track.title, track_uri
+                "renderer={} adopted_entry={} track={} uri={} source={}",
+                renderer_location,
+                next_entry.id,
+                next_track.title,
+                track_uri,
+                if expected_preloaded_next {
+                    "native-next"
+                } else {
+                    "playlist-extension"
+                }
             ),
         );
         Ok(true)
