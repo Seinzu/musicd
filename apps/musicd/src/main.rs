@@ -671,6 +671,45 @@ mod tests {
     }
 
     #[test]
+    fn paused_queues_remain_active_poll_targets() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let state = sample_state(vec![track.clone()]);
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Manual",
+                &[queue_entry_for_track(&track)],
+            )
+            .expect("queue should be created");
+        let resource = state.stream_resource_for_track(&track);
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                queue.entries[0].id,
+                &track.id,
+                &resource.stream_url,
+                track.duration_seconds,
+            )
+            .expect("queue session should be marked started");
+        state
+            .database
+            .sync_queue_status(renderer_location, "paused")
+            .expect("remote pause should update queue status");
+
+        let active_renderers = state
+            .database
+            .list_playing_queue_renderers()
+            .expect("active queue renderers should load");
+
+        assert_eq!(active_renderers, vec![renderer_location.to_string()]);
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn queue_poll_starts_next_entry_with_matching_track_metadata() {
         let renderer_location = "http://renderer.local/description.xml";
         let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");

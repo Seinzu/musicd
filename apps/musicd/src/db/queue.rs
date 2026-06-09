@@ -883,7 +883,7 @@ impl Database {
             .prepare(
                 "SELECT renderer_location
                  FROM playback_queues
-                 WHERE status = 'playing'
+                 WHERE status IN ('playing', 'paused')
                  ORDER BY updated_unix ASC, renderer_location ASC",
             )
             .map_err(db_error)?;
