@@ -107,6 +107,22 @@ class MusicdRepository(
         api.searchRadioStations(baseUrl.normalizeBaseUrl(), query, countryCode, limit)
     }
 
+    suspend fun searchTidalTracks(
+        baseUrl: String,
+        query: String,
+        limit: Int = 24,
+    ): List<TidalTrackDto> = withContext(Dispatchers.IO) {
+        api.searchTidalTracks(baseUrl.normalizeBaseUrl(), query, limit)
+    }
+
+    suspend fun searchTidalAlbums(
+        baseUrl: String,
+        query: String,
+        limit: Int = 12,
+    ): List<TidalAlbumDto> = withContext(Dispatchers.IO) {
+        api.searchTidalAlbums(baseUrl.normalizeBaseUrl(), query, limit)
+    }
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String): ArtistDetailDto =
         withContext(Dispatchers.IO) {
             api.getArtistDetail(baseUrl.normalizeBaseUrl(), artistId, loadClientId())
@@ -248,6 +264,22 @@ class MusicdRepository(
         api.playRadioStation(baseUrl.normalizeBaseUrl(), rendererLocation, station, loadClientId())
     }
 
+    suspend fun playTidalTrack(
+        baseUrl: String,
+        rendererLocation: String,
+        track: TidalTrackDto,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.playTidalTrack(baseUrl.normalizeBaseUrl(), rendererLocation, track, loadClientId())
+    }
+
+    suspend fun playTidalAlbum(
+        baseUrl: String,
+        rendererLocation: String,
+        album: TidalAlbumDto,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.playTidalAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, album, loadClientId())
+    }
+
     suspend fun selectAlbumArtwork(
         baseUrl: String,
         albumId: String,
@@ -270,6 +302,38 @@ class MusicdRepository(
         trackId: String,
     ): MutationResponseDto = withContext(Dispatchers.IO) {
         api.playNextTrack(baseUrl.normalizeBaseUrl(), rendererLocation, trackId, loadClientId())
+    }
+
+    suspend fun appendTidalTrack(
+        baseUrl: String,
+        rendererLocation: String,
+        track: TidalTrackDto,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.appendTidalTrack(baseUrl.normalizeBaseUrl(), rendererLocation, track, loadClientId())
+    }
+
+    suspend fun appendTidalAlbum(
+        baseUrl: String,
+        rendererLocation: String,
+        album: TidalAlbumDto,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.appendTidalAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, album, loadClientId())
+    }
+
+    suspend fun playNextTidalTrack(
+        baseUrl: String,
+        rendererLocation: String,
+        track: TidalTrackDto,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.playNextTidalTrack(baseUrl.normalizeBaseUrl(), rendererLocation, track, loadClientId())
+    }
+
+    suspend fun playNextTidalAlbum(
+        baseUrl: String,
+        rendererLocation: String,
+        album: TidalAlbumDto,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.playNextTidalAlbum(baseUrl.normalizeBaseUrl(), rendererLocation, album, loadClientId())
     }
 
     suspend fun appendAlbum(

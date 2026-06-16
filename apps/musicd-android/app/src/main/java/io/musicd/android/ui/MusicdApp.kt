@@ -106,6 +106,8 @@ import io.musicd.android.data.MusicSourceKind
 import io.musicd.android.data.QueueEntryDto
 import io.musicd.android.data.RadioStationDto
 import io.musicd.android.data.RendererDto
+import io.musicd.android.data.TidalAlbumDto
+import io.musicd.android.data.TidalTrackDto
 import io.musicd.android.data.TrackSummaryDto
 import java.time.LocalDate
 import java.time.LocalTime
@@ -199,6 +201,14 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onRadioCountryCodeChange = viewModel::updateRadioCountryCode,
         onSearchRadio = viewModel::searchRadioStations,
         onPlayRadioStation = viewModel::playRadioStation,
+        onTidalQueryChange = viewModel::updateTidalQuery,
+        onSearchTidal = viewModel::searchTidalTracks,
+        onPlayTidalAlbum = viewModel::playTidalAlbum,
+        onAppendTidalAlbum = viewModel::appendTidalAlbum,
+        onPlayNextTidalAlbum = viewModel::playNextTidalAlbum,
+        onPlayTidalTrack = viewModel::playTidalTrack,
+        onAppendTidalTrack = viewModel::appendTidalTrack,
+        onPlayNextTidalTrack = viewModel::playNextTidalTrack,
         onOpenArtist = viewModel::openArtist,
         onOpenArtistByName = viewModel::openArtistByName,
         onCloseArtistDetail = viewModel::closeArtistDetail,
@@ -265,6 +275,14 @@ private fun MusicdRoot(
     onRadioCountryCodeChange: (String) -> Unit,
     onSearchRadio: () -> Unit,
     onPlayRadioStation: (RadioStationDto) -> Unit,
+    onTidalQueryChange: (String) -> Unit,
+    onSearchTidal: () -> Unit,
+    onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
+    onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayTidalTrack: (TidalTrackDto) -> Unit,
+    onAppendTidalTrack: (TidalTrackDto) -> Unit,
+    onPlayNextTidalTrack: (TidalTrackDto) -> Unit,
     onOpenArtist: (String) -> Unit,
     onOpenArtistByName: (String) -> Unit,
     onCloseArtistDetail: () -> Unit,
@@ -427,6 +445,12 @@ private fun MusicdRoot(
                             icon = { Icon(Icons.Rounded.Wifi, contentDescription = null) },
                             label = { Text("Radio") },
                         )
+                        NavigationBarItem(
+                            selected = state.selectedTab == MusicdTab.Tidal,
+                            onClick = { onSelectTab(MusicdTab.Tidal) },
+                            icon = { Icon(Icons.Rounded.Album, contentDescription = null) },
+                            label = { Text("TIDAL") },
+                        )
                     }
                     NavigationBarItem(
                         selected = state.selectedTab == MusicdTab.Queue,
@@ -544,6 +568,18 @@ private fun MusicdRoot(
                     onPlayRadioStation = onPlayRadioStation,
                     onOpenRendererPicker = onOpenRendererPicker,
                 )
+                MusicdTab.Tidal -> TidalScreen(
+                    state = state,
+                    onTidalQueryChange = onTidalQueryChange,
+                    onSearchTidal = onSearchTidal,
+                    onPlayTidalAlbum = onPlayTidalAlbum,
+                    onAppendTidalAlbum = onAppendTidalAlbum,
+                    onPlayNextTidalAlbum = onPlayNextTidalAlbum,
+                    onPlayTidalTrack = onPlayTidalTrack,
+                    onAppendTidalTrack = onAppendTidalTrack,
+                    onPlayNextTidalTrack = onPlayNextTidalTrack,
+                    onOpenRendererPicker = onOpenRendererPicker,
+                )
                 MusicdTab.Queue -> QueueScreen(
                     state = state,
                     onPlay = onPlay,
@@ -572,6 +608,7 @@ private fun MiniPlayerBar(
     onNext: () -> Unit,
 ) {
     val track = state.nowPlaying?.currentTrack
+    val queueEntry = currentPlaybackQueueEntry(state)
     val session = state.nowPlaying?.session
     val canNavigatePlayback = canRequestPlaybackNavigation(state)
     val canResumePlayback = canRequestPlaybackResume(state)
@@ -595,7 +632,10 @@ private fun MiniPlayerBar(
                 ArtworkSquare(
                     url = resolveUrl(state.baseUrl, track?.artworkUrl),
                     modifier = Modifier.size(52.dp),
-                    fallbackText = track?.album?.ifBlank { track?.title.orEmpty() }.orEmpty(),
+                    fallbackText = track?.album
+                        ?.ifBlank { track.title }
+                        ?: queueEntry?.album?.ifBlank { queueEntry.title.orEmpty() }
+                        ?: queueEntry?.title.orEmpty(),
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -1089,6 +1129,252 @@ private fun radioStationMeta(station: RadioStationDto): String =
         station.codec?.takeIf { it.isNotBlank() },
         station.bitrate?.takeIf { it > 0 }?.let { "$it kbps" },
     ).joinToString(" · ").ifBlank { station.streamUrl }
+
+@Composable
+private fun TidalScreen(
+    state: MusicdUiState,
+    onTidalQueryChange: (String) -> Unit,
+    onSearchTidal: () -> Unit,
+    onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
+    onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayTidalTrack: (TidalTrackDto) -> Unit,
+    onAppendTidalTrack: (TidalTrackDto) -> Unit,
+    onPlayNextTidalTrack: (TidalTrackDto) -> Unit,
+    onOpenRendererPicker: () -> Unit,
+) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            ElevatedPanel {
+                Text("TIDAL", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Search TIDAL and send albums or tracks to the selected renderer.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(14.dp))
+                OutlinedTextField(
+                    value = state.tidalQuery,
+                    onValueChange = onTidalQueryChange,
+                    label = { Text("TIDAL search") },
+                    placeholder = { Text("Artist, album, or song") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = onSearchTidal,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !state.isSearchingTidal,
+                ) {
+                    if (state.isSearchingTidal) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        Spacer(Modifier.size(8.dp))
+                    }
+                    Text(if (state.isSearchingTidal) "Searching" else "Search")
+                }
+                if (state.selectedRendererLocation.isBlank()) {
+                    Spacer(Modifier.height(12.dp))
+                    InlineMessage(
+                        text = "Choose a renderer before starting TIDAL playback.",
+                        color = MaterialTheme.colorScheme.secondary,
+                        actionLabel = "Choose",
+                        onAction = onOpenRendererPicker,
+                    )
+                }
+            }
+        }
+
+        when {
+            state.tidalAlbums.isNotEmpty() || state.tidalTracks.isNotEmpty() -> {
+                if (state.tidalAlbums.isNotEmpty()) {
+                    item {
+                        Text(
+                            "${state.tidalAlbums.size} albums",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    items(state.tidalAlbums, key = { "tidal-album-${it.albumId}" }) { album ->
+                        TidalAlbumRow(
+                            album = album,
+                            canPlay = state.selectedRendererLocation.isNotBlank(),
+                            onPlay = { onPlayTidalAlbum(album) },
+                            onAppend = { onAppendTidalAlbum(album) },
+                            onPlayNext = { onPlayNextTidalAlbum(album) },
+                        )
+                    }
+                }
+                if (state.tidalTracks.isNotEmpty()) {
+                    item {
+                        Text(
+                            "${state.tidalTracks.size} tracks",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    items(state.tidalTracks, key = { "tidal-${it.trackId}" }) { track ->
+                        TidalTrackRow(
+                            track = track,
+                            canPlay = state.selectedRendererLocation.isNotBlank(),
+                            onPlay = { onPlayTidalTrack(track) },
+                            onAppend = { onAppendTidalTrack(track) },
+                            onPlayNext = { onPlayNextTidalTrack(track) },
+                        )
+                    }
+                }
+            }
+            state.isSearchingTidal -> {
+                item {
+                    LoadingPanel("Searching TIDAL...")
+                }
+            }
+            state.hasSearchedTidal -> {
+                item {
+                    EmptyPanel(
+                        title = "No TIDAL results",
+                        body = "Try a broader artist, album, or track search.",
+                    )
+                }
+            }
+            else -> {
+                item {
+                    EmptyPanel(
+                        title = "Find TIDAL music",
+                        body = "Search by artist, album, or song title.",
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TidalAlbumRow(
+    album: TidalAlbumDto,
+    canPlay: Boolean,
+    onPlay: () -> Unit,
+    onAppend: () -> Unit,
+    onPlayNext: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ArtworkSquare(
+                url = album.artworkUrl,
+                modifier = Modifier.size(72.dp),
+                fallbackText = album.title.ifBlank { "TIDAL" },
+                contentHeight = 72.dp,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    album.title.ifBlank { "Untitled album" },
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    tidalAlbumMeta(album),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledIconButton(onClick = onPlay, enabled = canPlay) {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = "Play TIDAL album")
+                    }
+                    OutlinedIconButton(onClick = onPlayNext, enabled = canPlay) {
+                        Icon(Icons.Rounded.QueuePlayNext, contentDescription = "Play TIDAL album next")
+                    }
+                    OutlinedIconButton(onClick = onAppend, enabled = canPlay) {
+                        Icon(Icons.Rounded.AddToQueue, contentDescription = "Add TIDAL album to queue")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TidalTrackRow(
+    track: TidalTrackDto,
+    canPlay: Boolean,
+    onPlay: () -> Unit,
+    onAppend: () -> Unit,
+    onPlayNext: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ArtworkSquare(
+                url = track.artworkUrl,
+                modifier = Modifier.size(72.dp),
+                fallbackText = track.title.ifBlank { "TIDAL" },
+                contentHeight = 72.dp,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    track.title.ifBlank { "Untitled track" },
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    tidalTrackMeta(track),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledIconButton(onClick = onPlay, enabled = canPlay) {
+                        Icon(Icons.Rounded.PlayArrow, contentDescription = "Play TIDAL track")
+                    }
+                    OutlinedIconButton(onClick = onPlayNext, enabled = canPlay) {
+                        Icon(Icons.Rounded.QueuePlayNext, contentDescription = "Play TIDAL track next")
+                    }
+                    OutlinedIconButton(onClick = onAppend, enabled = canPlay) {
+                        Icon(Icons.Rounded.AddToQueue, contentDescription = "Add TIDAL track to queue")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun tidalAlbumMeta(album: TidalAlbumDto): String =
+    listOfNotNull(
+        album.artist?.takeIf { it.isNotBlank() },
+        album.trackCount?.takeIf { it > 0 }?.let { count -> "$count tracks" },
+        album.releaseDate?.takeIf { it.isNotBlank() },
+        album.durationSeconds?.let(::formatDuration),
+    ).joinToString(" · ").ifBlank { album.albumId }
+
+private fun tidalTrackMeta(track: TidalTrackDto): String =
+    listOfNotNull(
+        track.artist?.takeIf { it.isNotBlank() },
+        track.album?.takeIf { it.isNotBlank() },
+        track.durationSeconds?.let(::formatDuration),
+    ).joinToString(" · ").ifBlank { track.trackId }
 
 @Composable
 private fun LibraryScreen(
@@ -3676,6 +3962,7 @@ private fun canRequestPlaybackResume(state: MusicdUiState): Boolean =
 private fun playbackTitle(state: MusicdUiState): String =
     state.nowPlaying?.currentTrack?.title
         ?: state.nowPlaying?.session?.title?.takeIf { it.isNotBlank() }
+        ?: currentPlaybackQueueEntry(state)?.title?.takeIf { it.isNotBlank() }
         ?: "Nothing playing"
 
 private fun playbackSubtitle(state: MusicdUiState): String {
@@ -3684,11 +3971,26 @@ private fun playbackSubtitle(state: MusicdUiState): String {
         return listOfNotNull(track.artist, track.album).joinToString(" · ")
     }
     val session = state.nowPlaying?.session
+    val queueEntry = currentPlaybackQueueEntry(state)
     return listOfNotNull(
         session?.artist?.takeIf { it.isNotBlank() },
         session?.album?.takeIf { it.isNotBlank() },
+        queueEntry?.artist?.takeIf { session?.artist.isNullOrBlank() && it.isNotBlank() },
+        queueEntry?.album?.takeIf { session?.album.isNullOrBlank() && it.isNotBlank() },
     ).joinToString(" · ").ifBlank {
         humanizeTransportState(session?.transportState)
+    }
+}
+
+private fun currentPlaybackQueueEntry(state: MusicdUiState): QueueEntryDto? {
+    val queue = state.queue ?: return null
+    val sessionEntryId = state.nowPlaying?.session?.queueEntryId
+    if (sessionEntryId != null) {
+        return queue.entries.firstOrNull { entry -> entry.id == sessionEntryId }
+    }
+    val currentEntryId = queue.currentEntryId
+    return queue.entries.firstOrNull { entry ->
+        entry.id == currentEntryId && isCurrentQueueEntryStatus(entry.entryStatus)
     }
 }
 
@@ -3719,11 +4021,15 @@ private fun NowPlayingContent(
     val canNavigatePlayback = canRequestPlaybackNavigation(state)
     val canResumePlayback = canRequestPlaybackResume(state)
     val track = state.nowPlaying?.currentTrack
+    val queueEntry = currentPlaybackQueueEntry(state)
     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         ArtworkSquare(
             url = resolveUrl(state.baseUrl, track?.artworkUrl),
             modifier = Modifier.weight(0.34f),
-            fallbackText = track?.album?.ifBlank { track?.title.orEmpty() }.orEmpty(),
+            fallbackText = track?.album
+                ?.ifBlank { track.title }
+                ?: queueEntry?.album?.ifBlank { queueEntry.title.orEmpty() }
+                ?: queueEntry?.title.orEmpty(),
         )
         Column(modifier = Modifier.weight(0.66f)) {
             Text(playbackTitle(state), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -4085,5 +4391,6 @@ private fun currentTitle(tab: MusicdTab): String = when (tab) {
     MusicdTab.Home -> "Home"
     MusicdTab.Library -> "Library"
     MusicdTab.Radio -> "Radio"
+    MusicdTab.Tidal -> "TIDAL"
     MusicdTab.Queue -> "Queue"
 }

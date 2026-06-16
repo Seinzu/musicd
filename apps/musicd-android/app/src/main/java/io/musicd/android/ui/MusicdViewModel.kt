@@ -29,6 +29,8 @@ import io.musicd.android.data.QueueDto
 import io.musicd.android.data.RadioStationDto
 import io.musicd.android.data.RendererDto
 import io.musicd.android.data.ServerInfoDto
+import io.musicd.android.data.TidalAlbumDto
+import io.musicd.android.data.TidalTrackDto
 import io.musicd.android.data.TrackSummaryDto
 import io.musicd.android.playback.LastfmScrobbler
 import io.musicd.android.playback.MusicdPlaybackNotificationService
@@ -45,6 +47,7 @@ enum class MusicdTab {
     Home,
     Library,
     Radio,
+    Tidal,
     Queue,
 }
 
@@ -76,6 +79,11 @@ data class MusicdUiState(
     val radioStations: List<RadioStationDto> = emptyList(),
     val isSearchingRadio: Boolean = false,
     val hasSearchedRadio: Boolean = false,
+    val tidalQuery: String = "",
+    val tidalAlbums: List<TidalAlbumDto> = emptyList(),
+    val tidalTracks: List<TidalTrackDto> = emptyList(),
+    val isSearchingTidal: Boolean = false,
+    val hasSearchedTidal: Boolean = false,
     val lastfmApiKey: String = "",
     val lastfmSharedSecret: String = "",
     val lastfmUsername: String = "",
@@ -592,6 +600,11 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 radioCountryCode = "",
                 isSearchingRadio = false,
                 hasSearchedRadio = false,
+                tidalQuery = "",
+                tidalAlbums = emptyList(),
+                tidalTracks = emptyList(),
+                isSearchingTidal = false,
+                hasSearchedTidal = false,
                 artists = emptyList(),
                 selectedArtistDetail = null,
                 selectedAlbumDetail = null,
@@ -618,6 +631,10 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
 
     fun updateRadioCountryCode(value: String) {
         _uiState.update { it.copy(radioCountryCode = value.take(2).uppercase()) }
+    }
+
+    fun updateTidalQuery(value: String) {
+        _uiState.update { it.copy(tidalQuery = value) }
     }
 
     fun updateLastfmApiKey(value: String) {
@@ -745,6 +762,64 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 _uiState.update {
                     it.copy(
                         isSearchingRadio = false,
+                        errorMessage = connectionErrorMessage(error),
+                    )
+                }
+            }
+        }
+    }
+
+    fun searchTidalTracks() {
+        val state = uiState.value
+        if (state.sourceKind == MusicSourceKind.LocalCompanion) {
+            _uiState.update { it.copy(infoMessage = "TIDAL is not part of local companion mode yet.") }
+            return
+        }
+        val baseUrl = state.baseUrl
+        val query = state.tidalQuery.trim()
+        if (baseUrl.isBlank()) return
+        if (query.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Enter a TIDAL search first.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isSearchingTidal = true,
+                    hasSearchedTidal = true,
+                    errorMessage = null,
+                    warningMessage = null,
+                    infoMessage = null,
+                )
+            }
+            runCatching {
+                val albums = repository.searchTidalAlbums(
+                    baseUrl = baseUrl,
+                    query = query,
+                )
+                val tracks = repository.searchTidalTracks(
+                    baseUrl = baseUrl,
+                    query = query,
+                )
+                albums to tracks
+            }.onSuccess { (albums, tracks) ->
+                _uiState.update {
+                    it.copy(
+                        tidalAlbums = albums,
+                        tidalTracks = tracks,
+                        isSearchingTidal = false,
+                        warningMessage = null,
+                        infoMessage = if (albums.isEmpty() && tracks.isEmpty()) {
+                            "No TIDAL albums or tracks matched that search."
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isSearchingTidal = false,
                         errorMessage = connectionErrorMessage(error),
                     )
                 }
@@ -1502,12 +1577,84 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun playTidalTrack(track: TidalTrackDto) {
+        val baseUrl = uiState.value.baseUrl
+        val rendererLocation = uiState.value.selectedRendererLocation
+        if (baseUrl.isBlank() || rendererLocation.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Choose a renderer first.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
+            runCatching { repository.playTidalTrack(baseUrl, rendererLocation, track) }
+                .onSuccess { response ->
+                    _uiState.update { it.copy(infoMessage = response.message ?: "TIDAL track started.") }
+                    syncPlaybackNotificationService()
+                    refreshPlaybackSurfaces()
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = connectionErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun playTidalAlbum(album: TidalAlbumDto) {
+        val baseUrl = uiState.value.baseUrl
+        val rendererLocation = uiState.value.selectedRendererLocation
+        if (baseUrl.isBlank() || rendererLocation.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Choose a renderer first.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
+            runCatching { repository.playTidalAlbum(baseUrl, rendererLocation, album) }
+                .onSuccess { response ->
+                    _uiState.update { it.copy(infoMessage = response.message ?: "TIDAL album started.") }
+                    syncPlaybackNotificationService()
+                    refreshPlaybackSurfaces()
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = connectionErrorMessage(error),
+                        )
+                    }
+                }
+        }
+    }
+
     fun appendTrack(trackId: String) = queueMutationAction("Track queued.") { baseUrl, renderer ->
         repository.appendTrack(baseUrl, renderer, trackId)
     }
 
     fun playNextTrack(trackId: String) = queueMutationAction("Track queued to play next.") { baseUrl, renderer ->
         repository.playNextTrack(baseUrl, renderer, trackId)
+    }
+
+    fun appendTidalTrack(track: TidalTrackDto) = queueMutationAction("TIDAL track queued.") { baseUrl, renderer ->
+        repository.appendTidalTrack(baseUrl, renderer, track)
+    }
+
+    fun playNextTidalTrack(track: TidalTrackDto) = queueMutationAction(
+        "TIDAL track queued to play next.",
+    ) { baseUrl, renderer ->
+        repository.playNextTidalTrack(baseUrl, renderer, track)
+    }
+
+    fun appendTidalAlbum(album: TidalAlbumDto) = queueMutationAction("TIDAL album queued.") { baseUrl, renderer ->
+        repository.appendTidalAlbum(baseUrl, renderer, album)
+    }
+
+    fun playNextTidalAlbum(album: TidalAlbumDto) = queueMutationAction(
+        "TIDAL album queued to play next.",
+    ) { baseUrl, renderer ->
+        repository.playNextTidalAlbum(baseUrl, renderer, album)
     }
 
     fun appendAlbum(albumId: String) = queueMutationAction(

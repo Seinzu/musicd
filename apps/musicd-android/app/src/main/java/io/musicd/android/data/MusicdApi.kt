@@ -193,6 +193,27 @@ data class RadioStationDto(
 )
 
 @Serializable
+data class TidalTrackDto(
+    @SerialName("track_id") val trackId: String,
+    val title: String,
+    val artist: String? = null,
+    val album: String? = null,
+    @SerialName("duration_seconds") val durationSeconds: Long? = null,
+    @SerialName("artwork_url") val artworkUrl: String? = null,
+)
+
+@Serializable
+data class TidalAlbumDto(
+    @SerialName("album_id") val albumId: String,
+    val title: String,
+    val artist: String? = null,
+    @SerialName("track_count") val trackCount: Long? = null,
+    @SerialName("duration_seconds") val durationSeconds: Long? = null,
+    @SerialName("artwork_url") val artworkUrl: String? = null,
+    @SerialName("release_date") val releaseDate: String? = null,
+)
+
+@Serializable
 data class ArtistDetailDto(
     val id: String,
     val name: String,
@@ -372,6 +393,20 @@ class MusicdApi(
             },
         )
 
+    suspend fun searchTidalTracks(
+        baseUrl: String,
+        query: String,
+        limit: Int,
+    ): List<TidalTrackDto> =
+        get("$baseUrl/api/tidal/search-tracks?query=${query.encodeForUrl()}&limit=$limit")
+
+    suspend fun searchTidalAlbums(
+        baseUrl: String,
+        query: String,
+        limit: Int,
+    ): List<TidalAlbumDto> =
+        get("$baseUrl/api/tidal/search-albums?query=${query.encodeForUrl()}&limit=$limit")
+
     suspend fun getArtistDetail(baseUrl: String, artistId: String, clientId: String): ArtistDetailDto =
         get("$baseUrl/api/artists/${artistId.encodeForUrl()}?client_id=${clientId.encodeForUrl()}")
 
@@ -540,6 +575,26 @@ class MusicdApi(
         },
     )
 
+    suspend fun playTidalTrack(
+        baseUrl: String,
+        rendererLocation: String,
+        track: TidalTrackDto,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/tidal/play-track",
+        tidalTrackFormFields(rendererLocation, track, clientId),
+    )
+
+    suspend fun playTidalAlbum(
+        baseUrl: String,
+        rendererLocation: String,
+        album: TidalAlbumDto,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/tidal/play-album",
+        tidalAlbumFormFields(rendererLocation, album, clientId),
+    )
+
     suspend fun selectAlbumArtwork(
         baseUrl: String,
         albumId: String,
@@ -578,6 +633,46 @@ class MusicdApi(
             "client_id" to clientId,
             "track_id" to trackId,
         ),
+    )
+
+    suspend fun appendTidalTrack(
+        baseUrl: String,
+        rendererLocation: String,
+        track: TidalTrackDto,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/queue/tidal/append-track",
+        tidalTrackFormFields(rendererLocation, track, clientId),
+    )
+
+    suspend fun appendTidalAlbum(
+        baseUrl: String,
+        rendererLocation: String,
+        album: TidalAlbumDto,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/queue/tidal/append-album",
+        tidalAlbumFormFields(rendererLocation, album, clientId),
+    )
+
+    suspend fun playNextTidalTrack(
+        baseUrl: String,
+        rendererLocation: String,
+        track: TidalTrackDto,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/queue/tidal/play-next-track",
+        tidalTrackFormFields(rendererLocation, track, clientId),
+    )
+
+    suspend fun playNextTidalAlbum(
+        baseUrl: String,
+        rendererLocation: String,
+        album: TidalAlbumDto,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/queue/tidal/play-next-album",
+        tidalAlbumFormFields(rendererLocation, album, clientId),
     )
 
     suspend fun appendAlbum(
@@ -759,6 +854,36 @@ class MusicdApi(
             .build()
         val body = executeRequest(request)
         return decodeBody(body, url)
+    }
+
+    private fun tidalTrackFormFields(
+        rendererLocation: String,
+        track: TidalTrackDto,
+        clientId: String,
+    ): Map<String, String> = buildMap {
+        put("renderer_location", rendererLocation)
+        put("client_id", clientId)
+        put("tidal_track_id", track.trackId)
+        track.title.takeIf { it.isNotBlank() }?.let { put("title", it) }
+        track.artist?.takeIf { it.isNotBlank() }?.let { put("artist", it) }
+        track.album?.takeIf { it.isNotBlank() }?.let { put("album", it) }
+        track.durationSeconds?.let { put("duration_seconds", it.toString()) }
+        track.artworkUrl?.takeIf { it.isNotBlank() }?.let { put("artwork_url", it) }
+    }
+
+    private fun tidalAlbumFormFields(
+        rendererLocation: String,
+        album: TidalAlbumDto,
+        clientId: String,
+    ): Map<String, String> = buildMap {
+        put("renderer_location", rendererLocation)
+        put("client_id", clientId)
+        put("tidal_album_id", album.albumId)
+        album.title.takeIf { it.isNotBlank() }?.let { put("title", it) }
+        album.artist?.takeIf { it.isNotBlank() }?.let { put("artist", it) }
+        album.trackCount?.let { put("track_count", it.toString()) }
+        album.durationSeconds?.let { put("duration_seconds", it.toString()) }
+        album.artworkUrl?.takeIf { it.isNotBlank() }?.let { put("artwork_url", it) }
     }
 
     private fun executeRequest(request: Request): String {
