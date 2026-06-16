@@ -203,7 +203,10 @@ impl ServiceState {
         Ok(queue)
     }
 
-    fn queue_target_group(&self, renderer_location: &str) -> io::Result<Option<RendererGroup>> {
+    pub(super) fn queue_target_group(
+        &self,
+        renderer_location: &str,
+    ) -> io::Result<Option<RendererGroup>> {
         if !matches!(
             renderer_kind_for_location(renderer_location),
             RendererKind::Group
@@ -214,7 +217,7 @@ impl ServiceState {
             .map(Some)
     }
 
-    fn finish_queue_mutation(
+    pub(super) fn finish_queue_mutation(
         &self,
         renderer_location: &str,
         group: Option<&RendererGroup>,

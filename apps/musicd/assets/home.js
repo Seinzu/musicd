@@ -681,6 +681,269 @@ async function submitRadioPlay(data) {
   }
 }
 
+/* ------------------------------------------------------------- TIDAL */
+function tidalRendererLocation(form) {
+  return new FormData(form).get('renderer_location') || document.getElementById('renderer_location')?.value || '';
+}
+
+function setTidalStatus(message, isError = false) {
+  const status = document.getElementById('tidal_status');
+  if (!status) {
+    return;
+  }
+  status.textContent = message;
+  status.classList.toggle('error-text', isError);
+}
+
+async function requestTidalAuthUrl(event) {
+  event.preventDefault();
+  const link = document.getElementById('tidal_auth_link');
+  setTidalStatus('Requesting login link...');
+  try {
+    const response = await fetch('/api/tidal/auth-url', { method: 'POST' });
+    const payload = await response.json();
+    if (!response.ok || !payload.auth_url) {
+      throw new Error(payload.error || 'TIDAL login link failed');
+    }
+    if (link) {
+      link.href = payload.auth_url;
+      link.hidden = false;
+    }
+    setTidalStatus('Login link ready.');
+  } catch (error) {
+    if (link) {
+      link.hidden = true;
+      link.removeAttribute('href');
+    }
+    setTidalStatus(error.message || 'TIDAL login link failed.', true);
+  }
+}
+
+async function completeTidalAuth(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const redirectUrl = new FormData(form).get('redirect_url') || '';
+  if (!String(redirectUrl).trim()) {
+    setTidalStatus('Paste the redirected TIDAL URL first.', true);
+    return;
+  }
+  const body = new URLSearchParams();
+  body.set('redirect_url', redirectUrl);
+  setTidalStatus('Completing login...');
+  try {
+    const response = await fetch('/api/tidal/complete-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || 'TIDAL login failed');
+    }
+    form.reset();
+    setTidalStatus('TIDAL login complete.');
+  } catch (error) {
+    setTidalStatus(error.message || 'TIDAL login failed.', true);
+  }
+}
+
+function renderTidalResults(albums, tracks) {
+  const host = document.getElementById('tidal_results');
+  if (!host) {
+    return;
+  }
+  if (!albums.length && !tracks.length) {
+    host.innerHTML = '<p class="empty">No TIDAL albums or tracks matched that search.</p>';
+    return;
+  }
+  const albumHtml = albums.map((album) => {
+    const meta = [
+      album.artist,
+      album.track_count ? `${album.track_count} tracks` : '',
+      album.release_date,
+      formatDuration(album.duration_seconds),
+    ].filter(Boolean).join(' · ');
+    const art = album.artwork_url
+      ? `<img class="tidal-art" src="${escapeHtml(album.artwork_url)}" alt="">`
+      : '<div class="tidal-art placeholder">TIDAL</div>';
+    const payload = escapeHtml(JSON.stringify(album));
+    return `
+      <article class="tidal-result">
+        ${art}
+        <div class="tidal-result-main">
+          <h3>${escapeHtml(album.title || 'Untitled album')}</h3>
+          <p class="meta">${escapeHtml(meta || album.album_id || '')}</p>
+        </div>
+        <div class="tidal-actions">
+          <button type="button" onclick='playTidalAlbum(${payload})'>Play</button>
+          <button type="button" class="secondary" onclick='queueTidalAlbum(${payload})'>Queue</button>
+          <button type="button" class="secondary" onclick='playNextTidalAlbum(${payload})'>Next</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+  const trackHtml = tracks.map((track) => {
+    const meta = [track.artist, track.album, formatDuration(track.duration_seconds)].filter(Boolean).join(' · ');
+    const art = track.artwork_url
+      ? `<img class="tidal-art" src="${escapeHtml(track.artwork_url)}" alt="">`
+      : '<div class="tidal-art placeholder">TIDAL</div>';
+    const payload = escapeHtml(JSON.stringify(track));
+    return `
+      <article class="tidal-result">
+        ${art}
+        <div class="tidal-result-main">
+          <h3>${escapeHtml(track.title || 'Untitled track')}</h3>
+          <p class="meta">${escapeHtml(meta || track.track_id || '')}</p>
+        </div>
+        <div class="tidal-actions">
+          <button type="button" onclick='playTidalTrack(${payload})'>Play</button>
+          <button type="button" class="secondary" onclick='queueTidalTrack(${payload})'>Queue</button>
+          <button type="button" class="secondary" onclick='playNextTidalTrack(${payload})'>Next</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+  host.innerHTML = [
+    albumHtml ? `<h3 class="tidal-section-heading">Albums</h3>${albumHtml}` : '',
+    trackHtml ? `<h3 class="tidal-section-heading">Tracks</h3>${trackHtml}` : '',
+  ].join('');
+}
+
+async function searchTidal(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const params = new URLSearchParams(new FormData(form));
+  params.set('limit', '12');
+  setTidalStatus('Searching TIDAL...');
+  try {
+    const [albumsResponse, tracksResponse] = await Promise.all([
+      fetch(`/api/tidal/search-albums?${params.toString()}`),
+      fetch(`/api/tidal/search-tracks?${params.toString()}`),
+    ]);
+    const [albumsPayload, tracksPayload] = await Promise.all([
+      albumsResponse.json(),
+      tracksResponse.json(),
+    ]);
+    if (!albumsResponse.ok) {
+      throw new Error(albumsPayload.error || 'TIDAL album search failed');
+    }
+    if (!tracksResponse.ok) {
+      throw new Error(tracksPayload.error || 'TIDAL track search failed');
+    }
+    renderTidalResults(albumsPayload, tracksPayload);
+    const albumCount = albumsPayload.length;
+    const trackCount = tracksPayload.length;
+    setTidalStatus(
+      `${albumCount} album${albumCount === 1 ? '' : 's'} and ${trackCount} track${trackCount === 1 ? '' : 's'} found.`,
+    );
+  } catch (error) {
+    renderTidalResults([], []);
+    setTidalStatus(error.message || 'TIDAL search failed.', true);
+  }
+}
+
+async function playTidalAlbum(album) {
+  await submitTidalAlbum('/api/tidal/play-album', album);
+}
+
+async function queueTidalAlbum(album) {
+  await submitTidalAlbum('/api/queue/tidal/append-album', album);
+}
+
+async function playNextTidalAlbum(album) {
+  await submitTidalAlbum('/api/queue/tidal/play-next-album', album);
+}
+
+async function playTidalTrack(track) {
+  await submitTidalTrack('/api/tidal/play-track', track);
+}
+
+async function queueTidalTrack(track) {
+  await submitTidalTrack('/api/queue/tidal/append-track', track);
+}
+
+async function playNextTidalTrack(track) {
+  await submitTidalTrack('/api/queue/tidal/play-next-track', track);
+}
+
+async function submitTidalAlbum(endpoint, album) {
+  await submitTidalItem({
+    endpoint,
+    item: album,
+    idKey: 'album_id',
+    idField: 'tidal_album_id',
+    itemLabel: 'album',
+    fields: ['title', 'artist', 'track_count', 'duration_seconds', 'artwork_url'],
+  });
+}
+
+async function submitTidalTrack(endpoint, track) {
+  await submitTidalItem({
+    endpoint,
+    item: track,
+    idKey: 'track_id',
+    idField: 'tidal_track_id',
+    itemLabel: 'track',
+    fields: ['title', 'artist', 'album', 'duration_seconds', 'artwork_url'],
+  });
+}
+
+async function submitTidalItem({ endpoint, item, idKey, idField, itemLabel, fields }) {
+  const form = document.getElementById('tidal_search_form');
+  const rendererLocation = form ? tidalRendererLocation(form) : document.getElementById('renderer_location')?.value || '';
+  if (!rendererLocation) {
+    setTidalStatus('Pick a renderer before starting TIDAL playback.', true);
+    return;
+  }
+  if (!item?.[idKey]) {
+    setTidalStatus(`Select a TIDAL ${itemLabel} first.`, true);
+    return;
+  }
+
+  const body = new URLSearchParams();
+  body.set('renderer_location', rendererLocation);
+  body.set(idField, item[idKey]);
+  for (const key of fields) {
+    if (item[key] !== undefined && item[key] !== null && String(item[key]).trim() !== '') {
+      body.set(key, item[key]);
+    }
+  }
+
+  setTidalStatus(`Sending ${itemLabel} to renderer...`);
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || 'TIDAL queue update failed');
+    }
+    setTidalStatus(payload.message || 'TIDAL queue updated.');
+    startQueueRefresh();
+  } catch (error) {
+    setTidalStatus(error.message || 'TIDAL queue update failed.', true);
+  }
+}
+
+Object.assign(window, {
+  applySelectedRenderer,
+  completeTidalAuth,
+  discoverRenderers,
+  playNextTidalAlbum,
+  playNextTidalTrack,
+  playRadioStation,
+  playTidalAlbum,
+  playTidalTrack,
+  queueTidalAlbum,
+  queueTidalTrack,
+  requestTidalAuthUrl,
+  searchRadioStations,
+  searchTidal,
+  syncRendererFields,
+});
+
 /* --------------------------------------------------------------- Boot */
 document.addEventListener('change', (event) => {
   if (event.target instanceof HTMLInputElement && event.target.name === 'track_id') {

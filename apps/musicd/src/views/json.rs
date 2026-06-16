@@ -7,9 +7,10 @@ use crate::http::{HttpRequest, request_value};
 use crate::library::inspect_embedded_metadata;
 use crate::renderer::{renderer_group_queue_key, renderer_kind_for_location, renderer_kind_name};
 use crate::service::ServiceState;
+use crate::service::tidal::TidalQueuedTrack;
 use crate::types::{
-    AlbumSummary, ArtistSummary, EmbeddedMetadata, LibraryTrack, PlaybackSession, RendererGroup,
-    RendererRecord, TrackPlayRecord,
+    AlbumSummary, ArtistSummary, EmbeddedMetadata, LibraryTrack, PlaybackSession, QueueEntry,
+    RendererGroup, RendererRecord, TrackPlayRecord,
 };
 use crate::util::{
     bool_json, json_escape, now_unix_timestamp, option_bool_json, option_i64_json,
@@ -586,6 +587,30 @@ pub(crate) fn render_queue_json_for_renderer(
         .iter()
         .map(|entry| {
             let track = state.find_track(&entry.track_id);
+            let tidal_track = (entry.source_kind == "tidal")
+                .then(|| {
+                    entry
+                        .source_ref
+                        .as_deref()
+                        .and_then(|value| serde_json::from_str::<TidalQueuedTrack>(value).ok())
+                })
+                .flatten();
+            let title = track
+                .as_ref()
+                .map(|track| track.title.as_str())
+                .or_else(|| tidal_track.as_ref().and_then(|track| track.title.as_deref()));
+            let artist = track
+                .as_ref()
+                .map(|track| track.artist.as_str())
+                .or_else(|| tidal_track.as_ref().and_then(|track| track.artist.as_deref()));
+            let album = track
+                .as_ref()
+                .map(|track| track.album.as_str())
+                .or_else(|| tidal_track.as_ref().and_then(|track| track.album.as_deref()));
+            let duration_seconds = track
+                .as_ref()
+                .and_then(|track| track.duration_seconds)
+                .or_else(|| tidal_track.as_ref().and_then(|track| track.duration_seconds));
             format!(
                 r#"{{"id":{},"position":{},"track_id":"{}","album_id":{},"source_kind":"{}","source_ref":{},"entry_status":"{}","started_unix":{},"completed_unix":{},"title":{},"artist":{},"album":{},"duration_seconds":{}}}"#,
                 entry.id,
@@ -597,10 +622,10 @@ pub(crate) fn render_queue_json_for_renderer(
                 json_escape(&entry.entry_status),
                 option_i64_json(entry.started_unix),
                 option_i64_json(entry.completed_unix),
-                option_string_json(track.as_ref().map(|track| track.title.as_str())),
-                option_string_json(track.as_ref().map(|track| track.artist.as_str())),
-                option_string_json(track.as_ref().map(|track| track.album.as_str())),
-                option_u64_json(track.and_then(|track| track.duration_seconds)),
+                option_string_json(title),
+                option_string_json(artist),
+                option_string_json(album),
+                option_u64_json(duration_seconds),
             )
         })
         .collect::<Vec<_>>()
@@ -648,6 +673,12 @@ pub(crate) fn render_session_payload_json(
     session: PlaybackSession,
 ) -> String {
     let current_track = current_track_for_renderer(state, renderer_location);
+    let queued_metadata = if current_track.is_none() {
+        current_queue_entry_for_renderer(state, renderer_location, session.queue_entry_id)
+            .and_then(|entry| queue_entry_display_metadata(&entry))
+    } else {
+        None
+    };
     let direct_stream = if current_track.is_none() {
         state.direct_stream_metadata(renderer_location)
     } else {
@@ -668,16 +699,63 @@ pub(crate) fn render_session_payload_json(
             current_track
                 .as_ref()
                 .map(|track| track.title.as_str())
+                .or_else(|| queued_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.title.as_deref()))
                 .or_else(|| direct_stream.as_ref().map(|stream| stream.title.as_str()))
         ),
         option_string_json(
             current_track
                 .as_ref()
                 .map(|track| track.artist.as_str())
+                .or_else(|| queued_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.artist.as_deref()))
                 .or_else(|| direct_stream.as_ref().map(|_| "Internet radio"))
         ),
-        option_string_json(current_track.as_ref().map(|track| track.album.as_str())),
+        option_string_json(
+            current_track
+                .as_ref()
+                .map(|track| track.album.as_str())
+                .or_else(|| queued_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.album.as_deref()))
+        ),
     )
+}
+
+struct QueueEntryDisplayMetadata {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+}
+
+fn current_queue_entry_for_renderer(
+    state: &ServiceState,
+    renderer_location: &str,
+    session_entry_id: Option<i64>,
+) -> Option<QueueEntry> {
+    let queue = state.queue_snapshot(renderer_location)?;
+    let queue_entry_id = queue.current_entry_id.or(session_entry_id)?;
+    queue
+        .entries
+        .into_iter()
+        .find(|entry| entry.id == queue_entry_id)
+}
+
+fn queue_entry_display_metadata(entry: &QueueEntry) -> Option<QueueEntryDisplayMetadata> {
+    if entry.source_kind != "tidal" {
+        return None;
+    }
+    let track = entry
+        .source_ref
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<TidalQueuedTrack>(value).ok())?;
+    Some(QueueEntryDisplayMetadata {
+        title: track.title,
+        artist: track.artist,
+        album: track.album,
+    })
 }
 
 pub(crate) fn render_discovery_json(state: &ServiceState) -> String {

@@ -434,11 +434,13 @@ input[type="text"]:focus, input[type="search"]:focus, input[type="url"]:focus, s
   min-width: 5rem;
   text-transform: uppercase;
 }
-.radio-results {
+.radio-results,
+.tidal-results {
   display: grid;
   gap: 0.6rem;
 }
-.radio-result {
+.radio-result,
+.tidal-result {
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr) auto;
   align-items: center;
@@ -447,14 +449,22 @@ input[type="text"]:focus, input[type="search"]:focus, input[type="url"]:focus, s
   background: var(--md-sys-color-surface-container-high);
   border-radius: var(--md-sys-shape-medium);
 }
-.radio-art {
+.tidal-section-heading {
+  margin-top: 0.35rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.radio-art,
+.tidal-art {
   width: 56px;
   height: 56px;
   object-fit: cover;
   border-radius: var(--md-sys-shape-small);
   background: var(--md-sys-color-surface-dim);
 }
-.radio-art.placeholder {
+.radio-art.placeholder,
+.tidal-art.placeholder {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -462,8 +472,12 @@ input[type="text"]:focus, input[type="search"]:focus, input[type="url"]:focus, s
   font-size: 0.68rem;
   text-transform: uppercase;
 }
-.radio-result-main { min-width: 0; }
-.radio-result-main h3 {
+.radio-result-main,
+.tidal-result-main {
+  min-width: 0;
+}
+.radio-result-main h3,
+.tidal-result-main h3 {
   font-size: 0.98rem;
   font-weight: 600;
   white-space: nowrap;
@@ -475,6 +489,19 @@ input[type="text"]:focus, input[type="search"]:focus, input[type="url"]:focus, s
   flex-wrap: wrap;
   gap: 0.25rem;
   margin-top: 0.25rem;
+}
+.tidal-auth-row {
+  justify-content: flex-start;
+}
+.tidal-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.tidal-actions button {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.85rem;
 }
 
 /* Now-playing */
@@ -787,6 +814,18 @@ tbody tr:hover {
   .now-playing-controls { grid-column: 1 / -1; justify-content: center; }
   .library-tracks-grid { grid-template-columns: 1fr; }
   .track-sidebar { position: static; order: -1; }
+  .radio-result,
+  .tidal-result {
+    grid-template-columns: 48px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+  .radio-result > button,
+  .tidal-actions {
+    grid-column: 1 / -1;
+  }
+  .tidal-actions {
+    justify-content: flex-start;
+  }
   table {
     display: block;
   }

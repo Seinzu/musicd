@@ -214,6 +214,9 @@ pub fn route_template(path: &str) -> String {
     if path.starts_with("/stream/track/") {
         return "/stream/track/{track_id}".to_string();
     }
+    if path.starts_with("/stream/tidal/") {
+        return "/stream/tidal/{track_id}".to_string();
+    }
     if path.starts_with("/artwork/track/") {
         return "/artwork/track/{track_id}".to_string();
     }
@@ -247,6 +250,10 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/queue/play-next-album",
     "/api/queue/play-next-track",
     "/api/queue/remove",
+    "/api/queue/tidal/append-album",
+    "/api/queue/tidal/append-track",
+    "/api/queue/tidal/play-next-album",
+    "/api/queue/tidal/play-next-track",
     "/api/recommendation-seeds",
     "/api/recommendations",
     "/api/recommendations/import",
@@ -263,6 +270,12 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/renderers/register-cli-local",
     "/api/server",
     "/api/session",
+    "/api/tidal/auth-url",
+    "/api/tidal/complete-auth",
+    "/api/tidal/play-album",
+    "/api/tidal/play-track",
+    "/api/tidal/search-albums",
+    "/api/tidal/search-tracks",
     "/api/tracks",
     "/api/transport/next",
     "/api/transport/pause",

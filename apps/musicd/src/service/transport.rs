@@ -5,7 +5,7 @@ use std::time::Duration;
 use musicd_upnp::{RendererPlaylist, TransportSnapshot};
 
 use crate::renderer::{RendererBackend, RendererKind, renderer_kind_for_location};
-use crate::types::{LibraryTrack, PlaybackQueue, RendererRecord};
+use crate::types::{LibraryTrack, PlaybackQueue, RendererRecord, StartedQueueItem};
 
 use super::ServiceState;
 use super::poll::{
@@ -231,11 +231,11 @@ impl ServiceState {
                             .set_queue_status(renderer_location, "playing", "PLAYING")?;
                         return Ok("Playback resumed.".to_string());
                     }
-                    let (track, _, renderer_name, _) =
+                    let (started, _, renderer_name, _) =
                         self.start_current_queue_entry(renderer_location)?;
                     return Ok(format!(
                         "Now playing '{}' on {}.",
-                        track.title, renderer_name
+                        started.title, renderer_name
                     ));
                 }
             }
@@ -278,16 +278,18 @@ impl ServiceState {
                             session.duration_seconds,
                         )
                     });
-                let (track, _, renderer_name, resolved_renderer_location) =
+                let (started, _, renderer_name, resolved_renderer_location) =
                     self.start_current_queue_entry(renderer_location)?;
-                self.seek_restarted_renderer_to_position(
-                    &resolved_renderer_location,
-                    &track,
-                    resume_position_seconds,
-                );
+                if let Some(track) = started.local_track.as_ref() {
+                    self.seek_restarted_renderer_to_position(
+                        &resolved_renderer_location,
+                        track,
+                        resume_position_seconds,
+                    );
+                }
                 return Ok(format!(
                     "Now playing '{}' on {}.",
-                    track.title, renderer_name
+                    started.title, renderer_name
                 ));
             }
         }
@@ -475,11 +477,11 @@ impl ServiceState {
                 if next_queue_entry_after(&queue, current_entry_id).is_some() {
                     self.database
                         .advance_queue_after_completion(renderer_location)?;
-                    let (track, _, renderer_name, _) =
+                    let (started, _, renderer_name, _) =
                         self.start_current_queue_entry(renderer_location)?;
                     return Ok(format!(
                         "Skipped to '{}' on {}.",
-                        track.title, renderer_name
+                        started.title, renderer_name
                     ));
                 }
             }
@@ -519,11 +521,11 @@ impl ServiceState {
                 {
                     self.database
                         .select_queue_entry(renderer_location, previous_entry.id)?;
-                    let (track, _, renderer_name, _) =
+                    let (started, _, renderer_name, _) =
                         self.start_current_queue_entry(renderer_location)?;
                     return Ok(format!(
                         "Went back to '{}' on {}.",
-                        track.title, renderer_name
+                        started.title, renderer_name
                     ));
                 }
             }
@@ -635,10 +637,8 @@ impl ServiceState {
             return Ok(());
         }
 
-        let track = self.find_track(&next_entry.track_id).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "queued next track not found")
-        })?;
-        let resource = self.stream_resource_for_track(&track);
+        let playable = self.playable_resource_for_queue_entry(next_entry)?;
+        let resource = playable.resource.clone();
         if renderer.capabilities.supports_set_next_av_transport_uri() == Some(false) {
             self.database
                 .mark_next_queue_entry_preloaded(renderer_location, None)?;
@@ -682,7 +682,7 @@ impl ServiceState {
             "preload-next",
             format!(
                 "renderer={} current_entry={} next_entry={} next_track={}",
-                renderer_location, current_entry_id, next_entry.id, track.title
+                renderer_location, current_entry_id, next_entry.id, playable.title
             ),
         );
         Ok(())
@@ -709,16 +709,18 @@ impl ServiceState {
         else {
             return false;
         };
-        let Some(current_track) = self.find_track(&queue.entries[current_index].track_id) else {
+        let Ok(current_playable) =
+            self.playable_resource_for_queue_entry(&queue.entries[current_index])
+        else {
             return false;
         };
-        let current = self.stream_resource_for_track(&current_track);
+        let current = current_playable.resource;
         let successors = queue
             .entries
             .iter()
             .skip(current_index + 1)
-            .filter_map(|entry| self.find_track(&entry.track_id))
-            .map(|track| self.stream_resource_for_track(&track))
+            .filter_map(|entry| self.playable_resource_for_queue_entry(entry).ok())
+            .map(|playable| playable.resource)
             .collect::<Vec<_>>();
 
         match self.run_renderer_action_with_private_queue_log(
@@ -793,10 +795,8 @@ impl ServiceState {
             return Ok(false);
         };
 
-        let next_track = self.find_track(&next_entry.track_id).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "queued next track not found")
-        })?;
-        let expected_stream_url = self.stream_resource_for_track(&next_track).stream_url;
+        let next_playable = self.playable_resource_for_queue_entry(next_entry)?;
+        let expected_stream_url = next_playable.resource.stream_url.clone();
         if !should_adopt_preloaded_next_entry(queue, snapshot, Some(&expected_stream_url)) {
             return Ok(false);
         }
@@ -804,9 +804,9 @@ impl ServiceState {
         self.database.adopt_next_queue_entry_as_current(
             renderer_location,
             next_entry.id,
-            &next_track.id,
+            &next_playable.id,
             track_uri,
-            next_track.duration_seconds,
+            next_playable.duration_seconds,
         )?;
         if next_queue_entry_after(queue, next_entry.id).is_none() {
             match self.resolve_renderer(renderer_location) {
@@ -832,7 +832,7 @@ impl ServiceState {
                 "renderer={} adopted_entry={} track={} uri={} source={}",
                 renderer_location,
                 next_entry.id,
-                next_track.title,
+                next_playable.title,
                 track_uri,
                 if expected_preloaded_next {
                     "native-next"
@@ -929,7 +929,7 @@ impl ServiceState {
     pub(crate) fn start_current_queue_entry(
         &self,
         renderer_location: &str,
-    ) -> io::Result<(LibraryTrack, i64, String, String)> {
+    ) -> io::Result<(StartedQueueItem, i64, String, String)> {
         let queue = self
             .database
             .load_queue(renderer_location)?
@@ -941,25 +941,28 @@ impl ServiceState {
             .or_else(|| queue.entries.first())
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queue is empty"))?;
-        let track = self
-            .find_track(&current_entry.track_id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queued track not found"))?;
-        let resource = self.stream_resource_for_track(&track);
+        let playable = self.playable_resource_for_queue_entry(&current_entry)?;
+        let resource = playable.resource.clone();
         let stream_url = resource.stream_url.clone();
         self.debug_log(
             "queue-start",
             format!(
-                "renderer={} entry={} track_id={} title={:?} relative_path={:?} path={:?} uri={} mime_type={}",
+                "renderer={} entry={} item_id={} title={:?} source_kind={} uri={} mime_type={}",
                 renderer_location,
                 current_entry.id,
-                track.id,
-                track.title,
-                track.relative_path,
-                track.path.display().to_string(),
+                playable.id,
+                playable.title,
+                current_entry.source_kind,
                 stream_url,
-                track.mime_type
+                resource.mime_type
             ),
         );
+        let started = StartedQueueItem {
+            id: playable.id.clone(),
+            title: playable.title.clone(),
+            duration_seconds: playable.duration_seconds,
+            local_track: playable.local_track.clone(),
+        };
         if matches!(
             renderer_kind_for_location(renderer_location),
             RendererKind::Group
@@ -970,9 +973,9 @@ impl ServiceState {
                     self.database.mark_queue_play_started(
                         renderer_location,
                         current_entry.id,
-                        &track.id,
+                        &playable.id,
                         &stream_url,
-                        track.duration_seconds,
+                        playable.duration_seconds,
                     )?;
                     if let Err(error) = self.preload_next_group_queue_entry(
                         renderer_location,
@@ -987,7 +990,7 @@ impl ServiceState {
                     }
                     self.record_group_session_warning(renderer_location, "start", &fanout);
                     Ok((
-                        track,
+                        started,
                         current_entry.id,
                         if fanout.succeeded_count() == fanout.total_count() {
                             format!("{} ({} renderers)", group.name, fanout.succeeded_count())
@@ -1026,9 +1029,9 @@ impl ServiceState {
                 self.database.mark_queue_play_started(
                     renderer_location,
                     current_entry.id,
-                    &track.id,
+                    &playable.id,
                     &stream_url,
-                    track.duration_seconds,
+                    playable.duration_seconds,
                 )?;
                 let playlist_synced = self.sync_renderer_private_queue_from_musicd(
                     renderer_location,
@@ -1049,7 +1052,7 @@ impl ServiceState {
                     }
                 }
                 Ok((
-                    track,
+                    started,
                     current_entry.id,
                     renderer.name.clone(),
                     renderer.location.clone(),
@@ -1086,10 +1089,11 @@ impl ServiceState {
             })
             .unwrap_or(true)
         {
-            let (track, _, renderer_name, _) = self.start_current_queue_entry(renderer_location)?;
+            let (started, _, renderer_name, _) =
+                self.start_current_queue_entry(renderer_location)?;
             return Ok(format!(
                 "Now playing '{}' on {}.",
-                track.title, renderer_name
+                started.title, renderer_name
             ));
         }
 
@@ -1249,31 +1253,29 @@ impl ServiceState {
             );
             return;
         };
-        let Some(track) = self.find_track(&entry.track_id) else {
+        let Ok(playable) = self.playable_resource_for_queue_entry(entry) else {
             self.debug_log(
                 event,
                 format!(
-                    "renderer={} phase={} entry={} track_id={} track=<missing>",
+                    "renderer={} phase={} entry={} item_id={} item=<missing>",
                     renderer_location, phase, entry.id, entry.track_id
                 ),
             );
             return;
         };
 
-        let resource = self.stream_resource_for_track(&track);
         self.debug_log(
             event,
             format!(
-                "renderer={} phase={} entry={} track_id={} title={:?} relative_path={:?} path={:?} uri={} mime_type={}",
+                "renderer={} phase={} entry={} item_id={} title={:?} source_kind={} uri={} mime_type={}",
                 renderer_location,
                 phase,
                 entry.id,
-                track.id,
-                track.title,
-                track.relative_path,
-                track.path.display().to_string(),
-                resource.stream_url,
-                track.mime_type
+                playable.id,
+                playable.title,
+                entry.source_kind,
+                playable.resource.stream_url,
+                playable.resource.mime_type
             ),
         );
     }

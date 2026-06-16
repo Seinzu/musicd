@@ -67,6 +67,9 @@ pub struct AppConfig {
     pub library_watch_enabled: bool,
     pub library_watch_interval_ms: u64,
     pub library_watch_settle_ms: u64,
+    pub tidal_helper_command: Option<String>,
+    pub tidal_session_path: PathBuf,
+    pub tidal_audio_quality: String,
 }
 
 impl AppConfig {
@@ -110,6 +113,24 @@ impl AppConfig {
             library_watch_enabled: parse_bool_env_default("MUSICD_LIBRARY_WATCH", true),
             library_watch_interval_ms: parse_u64_env("MUSICD_LIBRARY_WATCH_INTERVAL_MS", 10_000),
             library_watch_settle_ms: parse_u64_env("MUSICD_LIBRARY_WATCH_SETTLE_MS", 3_000),
+            tidal_helper_command: std::env::var("MUSICD_TIDAL_HELPER_COMMAND")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            tidal_session_path: std::env::var("MUSICD_TIDAL_SESSION_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::env::var("MUSICD_CONFIG_PATH")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|_| PathBuf::from("/config"))
+                        .join("tidal")
+                        .join("session.json")
+                }),
+            tidal_audio_quality: std::env::var("MUSICD_TIDAL_AUDIO_QUALITY")
+                .ok()
+                .map(|value| value.trim().to_ascii_uppercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "LOSSLESS".to_string()),
         }
     }
 
@@ -234,6 +255,9 @@ mod tests {
             library_watch_enabled: true,
             library_watch_interval_ms: 10_000,
             library_watch_settle_ms: 3_000,
+            tidal_helper_command: None,
+            tidal_session_path: PathBuf::from("/config/tidal/session.json"),
+            tidal_audio_quality: "LOSSLESS".to_string(),
         };
 
         assert_eq!(config.resolved_base_url(), "http://192.168.1.20:8787");

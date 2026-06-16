@@ -268,6 +268,9 @@ mod tests {
             library_watch_enabled: true,
             library_watch_interval_ms: 10_000,
             library_watch_settle_ms: 3_000,
+            tidal_helper_command: None,
+            tidal_session_path: PathBuf::from("/config/tidal/session.json"),
+            tidal_audio_quality: "LOSSLESS".to_string(),
         }
     }
 

@@ -3214,7 +3214,7 @@ mod tests {
             config: AppConfig {
                 instance_name: "musicd".to_string(),
                 library_path: PathBuf::from("/music"),
-                config_path,
+                config_path: config_path.clone(),
                 bind_address: "0.0.0.0:7878".to_string(),
                 base_url: "http://192.168.1.10:7878".to_string(),
                 discovery_timeout_ms: 1500,
@@ -3228,6 +3228,9 @@ mod tests {
                 library_watch_enabled: true,
                 library_watch_interval_ms: 10_000,
                 library_watch_settle_ms: 3_000,
+                tidal_helper_command: None,
+                tidal_session_path: config_path.join("tidal").join("session.json"),
+                tidal_audio_quality: "LOSSLESS".to_string(),
             },
             database,
             library: arc_swap::ArcSwap::from_pointee(Library::build(

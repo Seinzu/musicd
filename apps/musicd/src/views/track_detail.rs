@@ -145,6 +145,9 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
         })
         .unwrap_or_default();
 
+    let track_css_version = assets::asset_version(assets::TRACK_DETAIL_CSS);
+    let home_js_version = assets::asset_version(assets::HOME_JS);
+
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -152,7 +155,7 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Inspect {}</title>
-  <link rel="stylesheet" href="/assets/track_detail.css?v={asset_version}">
+  <link rel="stylesheet" href="/assets/track_detail.css?v={track_css_version}">
 </head>
 <body>
   <main>
@@ -180,7 +183,7 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
       {}
     </section>
   </main>
-  <script src="/assets/home.js?v={asset_version}" defer></script>
+  <script src="/assets/home.js?v={home_js_version}" defer></script>
 </body>
 </html>"#,
         html_escape(&track.title),
@@ -198,6 +201,7 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
         html_escape(&metadata.format_name),
         embedded_rows,
         notes_html,
-        asset_version = assets::VERSION,
+        track_css_version = track_css_version,
+        home_js_version = home_js_version,
     )
 }

@@ -13,6 +13,7 @@ const MEDIA_RENDERER_ST: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 const RENDERING_CONTROL_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 const PLAYLIST_EXTENSION_SERVICE: &str = "urn:UuVol-com:service:PlaylistExtension:1";
+const SM_SEARCH_SERVICE: &str = "urn:UuVol-com:service:SMSearch:1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamResource {
@@ -94,6 +95,19 @@ pub struct UpnpActionResponse {
     pub action: String,
     pub values: Vec<(String, String)>,
     pub raw_xml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpnpActionDescription {
+    pub name: String,
+    pub arguments: Vec<UpnpActionArgument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpnpActionArgument {
+    pub name: String,
+    pub direction: Option<String>,
+    pub related_state_variable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,6 +281,13 @@ pub fn inspect_renderer(location: &str) -> io::Result<RendererDescription> {
 }
 
 pub fn fetch_service_actions(scpd_url: &str) -> io::Result<Vec<String>> {
+    Ok(fetch_service_action_descriptions(scpd_url)?
+        .into_iter()
+        .map(|action| action.name)
+        .collect())
+}
+
+pub fn fetch_service_action_descriptions(scpd_url: &str) -> io::Result<Vec<UpnpActionDescription>> {
     let response = http_request("GET", scpd_url, &[("Accept", "application/xml")], None)?;
     if response.status_code != 200 {
         return Err(io::Error::new(
@@ -285,7 +306,7 @@ pub fn fetch_service_actions(scpd_url: &str) -> io::Result<Vec<String>> {
         )
     })?;
 
-    Ok(parse_service_actions(&body))
+    Ok(parse_service_action_descriptions(&body))
 }
 
 pub fn set_av_transport_uri(control_url: &str, resource: &StreamResource) -> io::Result<()> {
@@ -482,6 +503,35 @@ pub fn query_av_transport_action(
     Ok(UpnpActionResponse {
         action: action.to_string(),
         values: extract_action_values(action, &raw_xml),
+        raw_xml,
+    })
+}
+
+pub fn sm_search_service(renderer: &RendererDescription) -> Option<&UpnpService> {
+    find_sm_search_service(&renderer.services)
+}
+
+pub fn query_sm_search_action(
+    control_url: &str,
+    action: &str,
+    args: &[(&str, &str)],
+) -> io::Result<UpnpActionResponse> {
+    query_upnp_service_action(SM_SEARCH_SERVICE, control_url, action, args)
+}
+
+pub fn query_upnp_service_action(
+    service_type: &str,
+    control_url: &str,
+    action: &str,
+    args: &[(&str, &str)],
+) -> io::Result<UpnpActionResponse> {
+    let body = build_action_envelope(service_type, action, args);
+    let response = service_action(service_type, control_url, action, body.as_bytes())?;
+    expect_successful_soap(action, response.clone())?;
+    let raw_xml = response_body_utf8(action, response.body)?;
+    Ok(UpnpActionResponse {
+        action: action.to_string(),
+        values: extract_generic_action_values(action, &raw_xml),
         raw_xml,
     })
 }
@@ -856,7 +906,16 @@ fn playlist_extension_action(
     action: &str,
     body: &[u8],
 ) -> io::Result<HttpResponse> {
-    let soap_action = format!("\"{PLAYLIST_EXTENSION_SERVICE}#{action}\"");
+    service_action(PLAYLIST_EXTENSION_SERVICE, control_url, action, body)
+}
+
+fn service_action(
+    service_type: &str,
+    control_url: &str,
+    action: &str,
+    body: &[u8],
+) -> io::Result<HttpResponse> {
+    let soap_action = format!("\"{service_type}#{action}\"");
     http_request(
         "POST",
         control_url,
@@ -866,6 +925,21 @@ fn playlist_extension_action(
         ],
         Some(body),
     )
+}
+
+fn find_sm_search_service(services: &[UpnpService]) -> Option<&UpnpService> {
+    services.iter().find(|service| {
+        service.service_type == SM_SEARCH_SERVICE
+            || service
+                .service_type
+                .to_ascii_lowercase()
+                .contains("smsearch")
+            || service
+                .service_id
+                .as_deref()
+                .map(|service_id| service_id.to_ascii_lowercase().contains("smsearch"))
+                .unwrap_or(false)
+    })
 }
 
 fn transport_is_starting_or_playing(control_url: &str) -> bool {
@@ -974,6 +1048,12 @@ fn extract_action_values(action: &str, xml: &str) -> Vec<(String, String)> {
                 .map(|value| ((*field).to_string(), value.to_string()))
         })
         .collect()
+}
+
+fn extract_generic_action_values(action: &str, xml: &str) -> Vec<(String, String)> {
+    let response_tag = format!("{action}Response");
+    let response_xml = extract_first_namespaced_tag(xml, &response_tag).unwrap_or(xml);
+    extract_direct_text_elements(response_xml)
 }
 
 fn known_action_response_fields(action: &str) -> &'static [&'static str] {
@@ -1199,18 +1279,57 @@ fn device_section_is_media_renderer(device_section: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn parse_service_actions(xml: &str) -> Vec<String> {
-    let action_list = extract_first_tag(xml, "actionList").unwrap_or(xml);
-    let mut actions = extract_all_tag_blocks(action_list, "action")
+    let mut actions = parse_service_action_descriptions(xml)
         .into_iter()
-        .filter_map(|action_xml| extract_first_tag(action_xml, "name"))
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(ToString::to_string)
+        .map(|action| action.name)
         .collect::<Vec<_>>();
     actions.sort();
     actions.dedup();
     actions
+}
+
+fn parse_service_action_descriptions(xml: &str) -> Vec<UpnpActionDescription> {
+    let action_list = extract_first_tag(xml, "actionList").unwrap_or(xml);
+    let mut actions = extract_all_tag_blocks(action_list, "action")
+        .into_iter()
+        .filter_map(parse_service_action_description)
+        .collect::<Vec<_>>();
+    actions.sort_by(|left, right| left.name.cmp(&right.name));
+    actions.dedup_by(|left, right| left.name == right.name);
+    actions
+}
+
+fn parse_service_action_description(xml: &str) -> Option<UpnpActionDescription> {
+    let name = extract_first_tag(xml, "name")?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let argument_list = extract_first_tag(xml, "argumentList").unwrap_or("");
+    let arguments = extract_all_tag_blocks(argument_list, "argument")
+        .into_iter()
+        .filter_map(parse_service_action_argument)
+        .collect();
+    Some(UpnpActionDescription { name, arguments })
+}
+
+fn parse_service_action_argument(xml: &str) -> Option<UpnpActionArgument> {
+    let name = extract_first_tag(xml, "name")?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    Some(UpnpActionArgument {
+        name,
+        direction: extract_first_tag(xml, "direction")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        related_state_variable: extract_first_tag(xml, "relatedStateVariable")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    })
 }
 
 fn shared_client() -> &'static Client {
@@ -1446,6 +1565,32 @@ fn extract_first_balanced_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     find_balanced_tag_content_range(xml, tag, 0).map(|(start, end, _)| &xml[start..end])
 }
 
+fn extract_first_namespaced_tag<'a>(xml: &'a str, local_tag: &str) -> Option<&'a str> {
+    let mut search_start = 0usize;
+    loop {
+        let open_index = xml[search_start..].find('<')? + search_start;
+        if xml[open_index + 1..].starts_with('/') {
+            search_start = open_index + 1;
+            continue;
+        }
+        let name_start = open_index + 1;
+        let name_end = xml[name_start..]
+            .find(|ch: char| ch == '>' || ch.is_whitespace())
+            .map(|offset| name_start + offset)?;
+        let name = &xml[name_start..name_end];
+        if name.rsplit_once(':').map(|(_, name)| name).unwrap_or(name) != local_tag {
+            search_start = name_end;
+            continue;
+        }
+        let open_end = xml[name_end..].find('>').map(|offset| name_end + offset)? + 1;
+        let close_tag = format!("</{name}>");
+        let close_index = xml[open_end..]
+            .find(&close_tag)
+            .map(|offset| open_end + offset)?;
+        return Some(&xml[open_end..close_index]);
+    }
+}
+
 fn extract_all_tag_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
     let pattern = TagPattern::new(tag);
     let open_tag = pattern.open();
@@ -1464,6 +1609,53 @@ fn extract_all_tag_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
     }
 
     blocks
+}
+
+fn extract_direct_text_elements(xml: &str) -> Vec<(String, String)> {
+    let mut values = Vec::new();
+    let mut search_start = 0usize;
+    while let Some(relative_open_index) = xml[search_start..].find('<') {
+        let open_index = search_start + relative_open_index;
+        if xml[open_index + 1..].starts_with('/') {
+            search_start = open_index + 1;
+            continue;
+        }
+
+        let name_start = open_index + 1;
+        let Some(name_end) = xml[name_start..]
+            .find(|ch: char| ch == '>' || ch.is_whitespace())
+            .map(|offset| name_start + offset)
+        else {
+            break;
+        };
+        let name = &xml[name_start..name_end];
+        let Some(open_end) = xml[name_end..]
+            .find('>')
+            .map(|offset| name_end + offset + 1)
+        else {
+            break;
+        };
+        let close_tag = format!("</{name}>");
+        let Some(close_index) = xml[open_end..]
+            .find(&close_tag)
+            .map(|offset| open_end + offset)
+        else {
+            search_start = open_end;
+            continue;
+        };
+        let value = &xml[open_end..close_index];
+        if !value.contains('<') {
+            values.push((
+                name.rsplit_once(':')
+                    .map(|(_, local_name)| local_name)
+                    .unwrap_or(name)
+                    .to_string(),
+                xml_unescape(value.trim()),
+            ));
+        }
+        search_start = close_index + close_tag.len();
+    }
+    values
 }
 
 fn extract_all_balanced_tag_blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
@@ -1597,9 +1789,9 @@ mod tests {
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
         build_stop_envelope, decode_playlist_id_array, format_upnp_time,
         is_transition_not_available_fault, parse_device_description, parse_http_url,
-        parse_playlist_metadata_list, parse_position_info_response, parse_service_actions,
-        parse_ssdp_response, parse_transport_info_response, resolve_url,
-        select_renderer_device_section,
+        parse_playlist_metadata_list, parse_position_info_response,
+        parse_service_action_descriptions, parse_service_actions, parse_ssdp_response,
+        parse_transport_info_response, resolve_url, select_renderer_device_section,
     };
     use std::collections::HashMap;
 
@@ -1874,6 +2066,63 @@ mod tests {
                 "Next".to_string(),
                 "Pause".to_string(),
                 "SetNextAVTransportURI".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_service_action_arguments() {
+        let xml = r#"
+<scpd>
+  <actionList>
+    <action>
+      <name>Search</name>
+      <argumentList>
+        <argument>
+          <name>aSearchString</name>
+          <direction>in</direction>
+          <relatedStateVariable>A_ARG_TYPE_String</relatedStateVariable>
+        </argument>
+        <argument>
+          <name>aResult</name>
+          <direction>out</direction>
+          <relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable>
+        </argument>
+      </argumentList>
+    </action>
+  </actionList>
+</scpd>
+        "#;
+
+        let actions = parse_service_action_descriptions(xml);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].name, "Search");
+        assert_eq!(actions[0].arguments.len(), 2);
+        assert_eq!(actions[0].arguments[0].name, "aSearchString");
+        assert_eq!(actions[0].arguments[0].direction.as_deref(), Some("in"));
+        assert_eq!(
+            actions[0].arguments[1].related_state_variable.as_deref(),
+            Some("A_ARG_TYPE_Result")
+        );
+    }
+
+    #[test]
+    fn extracts_generic_namespaced_action_response_values() {
+        let xml = r#"
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:SearchResponse xmlns:u="urn:UuVol-com:service:SMSearch:1">
+      <aResult>Fish &amp; Chips</aResult>
+      <aCount>2</aCount>
+    </u:SearchResponse>
+  </s:Body>
+</s:Envelope>"#;
+
+        assert_eq!(
+            super::extract_generic_action_values("Search", xml),
+            vec![
+                ("aResult".to_string(), "Fish & Chips".to_string()),
+                ("aCount".to_string(), "2".to_string())
             ]
         );
     }

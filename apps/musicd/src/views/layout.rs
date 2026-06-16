@@ -131,6 +131,8 @@ pub(crate) fn render_layout(active: PageTab, body_html: &str, ctx: &LayoutContex
     let title = format!("{} · {}", active.label(), ctx.instance_name);
     let banners = render_banners(ctx);
     let nav = render_bottom_nav(active);
+    let home_css_version = assets::asset_version(assets::HOME_CSS);
+    let home_js_version = assets::asset_version(assets::HOME_JS);
     let renderer_chip_label = if ctx.renderer_location.is_empty() {
         "Choose renderer".to_string()
     } else {
@@ -144,7 +146,7 @@ pub(crate) fn render_layout(active: PageTab, body_html: &str, ctx: &LayoutContex
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title_escaped}</title>
-  <link rel="stylesheet" href="/assets/home.css?v={asset_version}">
+  <link rel="stylesheet" href="/assets/home.css?v={home_css_version}">
 </head>
 <body data-renderer-location="{renderer_location_escaped}">
   <a class="skip-link" href="#main-content">Skip to content</a>
@@ -169,7 +171,7 @@ pub(crate) fn render_layout(active: PageTab, body_html: &str, ctx: &LayoutContex
   <nav class="bottom-nav" aria-label="Primary">
     {nav}
   </nav>
-  <script src="/assets/home.js?v={asset_version}" defer></script>
+  <script src="/assets/home.js?v={home_js_version}" defer></script>
 </body>
 </html>"##,
         title_escaped = html_escape(&title),
@@ -177,7 +179,8 @@ pub(crate) fn render_layout(active: PageTab, body_html: &str, ctx: &LayoutContex
         page_label = html_escape(active.label()),
         renderer_location_escaped = html_escape(&ctx.renderer_location),
         renderer_chip_label_escaped = html_escape(&renderer_chip_label),
-        asset_version = assets::VERSION,
+        home_css_version = home_css_version,
+        home_js_version = home_js_version,
         banners = banners,
         body_html = body_html,
         nav = nav,

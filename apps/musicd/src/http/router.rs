@@ -8,25 +8,30 @@ use crate::handlers::{
     handle_api_android_local_session_request, handle_api_cli_local_completed_request,
     handle_api_cli_local_session_request, handle_api_events_request, handle_api_like_request,
     handle_api_play_album_request, handle_api_play_request, handle_api_queue_append_album_request,
+    handle_api_queue_append_tidal_album_request, handle_api_queue_append_tidal_track_request,
     handle_api_queue_append_track_request, handle_api_queue_clear_request,
     handle_api_queue_move_request, handle_api_queue_play_next_album_request,
+    handle_api_queue_play_next_tidal_album_request, handle_api_queue_play_next_tidal_track_request,
     handle_api_queue_play_next_track_request, handle_api_queue_remove_request,
     handle_api_radio_play_request, handle_api_radio_stations_request,
     handle_api_recommendations_delete_request, handle_api_recommendations_import_request,
     handle_api_register_android_local_renderer_request,
     handle_api_register_cli_local_renderer_request, handle_api_renderer_discover_request,
     handle_api_renderer_group_create_request, handle_api_renderer_group_delete_request,
-    handle_api_renderer_group_update_request, handle_api_transport_next_request,
+    handle_api_renderer_group_update_request, handle_api_tidal_auth_url_request,
+    handle_api_tidal_complete_auth_request, handle_api_tidal_play_album_request,
+    handle_api_tidal_play_track_request, handle_api_tidal_search_albums_request,
+    handle_api_tidal_search_tracks_request, handle_api_transport_next_request,
     handle_api_transport_pause_request, handle_api_transport_play_request,
     handle_api_transport_previous_request, handle_api_transport_stop_request,
     handle_play_album_request, handle_play_request, handle_queue_append_album_request,
     handle_queue_append_track_request, handle_queue_clear_request, handle_queue_move_down_request,
     handle_queue_move_up_request, handle_queue_play_next_album_request,
     handle_queue_play_next_track_request, handle_queue_remove_entry_request,
-    handle_rescan_progress_request, handle_rescan_request, handle_track_artwork_request,
-    handle_track_stream_request, handle_transport_next_request, handle_transport_pause_request,
-    handle_transport_play_request, handle_transport_previous_request,
-    handle_transport_stop_request,
+    handle_rescan_progress_request, handle_rescan_request, handle_tidal_stream_request,
+    handle_track_artwork_request, handle_track_stream_request, handle_transport_next_request,
+    handle_transport_pause_request, handle_transport_play_request,
+    handle_transport_previous_request, handle_transport_stop_request,
 };
 use crate::service::ServiceState;
 use crate::views::json::{
@@ -305,6 +310,30 @@ pub(crate) fn handle_service_request(
             }
             handle_api_radio_stations_request(writer, request, &state)
         }
+        ("GET", "/api/tidal/search-tracks") | ("HEAD", "/api/tidal/search-tracks") => {
+            if request.method == "HEAD" {
+                return respond_text(
+                    writer,
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    b"",
+                    true,
+                );
+            }
+            handle_api_tidal_search_tracks_request(writer, request, &state)
+        }
+        ("GET", "/api/tidal/search-albums") | ("HEAD", "/api/tidal/search-albums") => {
+            if request.method == "HEAD" {
+                return respond_text(
+                    writer,
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    b"",
+                    true,
+                );
+            }
+            handle_api_tidal_search_albums_request(writer, request, &state)
+        }
         ("GET", "/api/events") => handle_api_events_request(writer, request, &state),
         ("GET", "/api/artists") | ("HEAD", "/api/artists") => {
             let body = render_artists_json(&state);
@@ -348,6 +377,18 @@ pub(crate) fn handle_service_request(
         }
         ("POST", "/api/play") => handle_api_play_request(writer, request, &state),
         ("POST", "/api/play-album") => handle_api_play_album_request(writer, request, &state),
+        ("POST", "/api/tidal/auth-url") => {
+            handle_api_tidal_auth_url_request(writer, request, &state)
+        }
+        ("POST", "/api/tidal/complete-auth") => {
+            handle_api_tidal_complete_auth_request(writer, request, &state)
+        }
+        ("POST", "/api/tidal/play-track") => {
+            handle_api_tidal_play_track_request(writer, request, &state)
+        }
+        ("POST", "/api/tidal/play-album") => {
+            handle_api_tidal_play_album_request(writer, request, &state)
+        }
         ("POST", "/api/radio/play") => handle_api_radio_play_request(writer, request, &state),
         ("POST", "/api/like") => handle_api_like_request(writer, request, &state),
         ("POST", "/api/albums/artwork/select") => {
@@ -374,11 +415,23 @@ pub(crate) fn handle_service_request(
         ("POST", "/api/queue/append-track") => {
             handle_api_queue_append_track_request(writer, request, &state)
         }
+        ("POST", "/api/queue/tidal/append-track") => {
+            handle_api_queue_append_tidal_track_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/tidal/append-album") => {
+            handle_api_queue_append_tidal_album_request(writer, request, &state)
+        }
         ("POST", "/api/queue/append-album") => {
             handle_api_queue_append_album_request(writer, request, &state)
         }
         ("POST", "/api/queue/play-next-track") => {
             handle_api_queue_play_next_track_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/tidal/play-next-track") => {
+            handle_api_queue_play_next_tidal_track_request(writer, request, &state)
+        }
+        ("POST", "/api/queue/tidal/play-next-album") => {
+            handle_api_queue_play_next_tidal_album_request(writer, request, &state)
         }
         ("POST", "/api/queue/play-next-album") => {
             handle_api_queue_play_next_album_request(writer, request, &state)
@@ -541,6 +594,12 @@ pub(crate) fn handle_service_request(
                 return respond_method_not_allowed(writer);
             }
             handle_track_stream_request(writer, request, &state)
+        }
+        _ if request.path.starts_with("/stream/tidal/") => {
+            if request.method != "GET" && request.method != "HEAD" {
+                return respond_method_not_allowed(writer);
+            }
+            handle_tidal_stream_request(writer, request, &state)
         }
         _ if request.path.starts_with("/artwork/track/") => {
             if request.method != "GET" && request.method != "HEAD" {

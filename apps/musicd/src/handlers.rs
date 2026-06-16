@@ -2,10 +2,12 @@ use std::io::{self, Write};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
+
 use crate::http::{
     HttpRequest, ResponseWriter, api_error, redirect_album, redirect_home, redirect_to_path,
-    request_value, respond_json, respond_not_found, respond_with_file, write_sse_comment,
-    write_sse_event,
+    request_value, respond_json, respond_not_found, respond_text, respond_with_file,
+    write_response_owned, write_sse_comment, write_sse_event,
 };
 use crate::library::ScanProgressEvent;
 use crate::metrics;
@@ -13,6 +15,7 @@ use crate::renderer::{
     RendererKind, android_local_renderer_capabilities, local_renderer_capabilities,
     renderer_kind_for_location,
 };
+use crate::service::tidal::{TidalQueuedAlbum, TidalQueuedTrack, TidalStreamSource};
 use crate::service::{ServiceState, queue_status_for_transport};
 use crate::types::{AlbumSummary, LibraryTrack, PlaybackQueue, RecommendationImportRequest};
 use crate::util::json_escape;
@@ -1061,6 +1064,398 @@ pub(crate) fn handle_api_play_album_request(
             &format!("playback failed: {error}"),
         ),
     }
+}
+
+pub(crate) fn handle_api_tidal_search_tracks_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let query = match required_request_value(request, "query") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let limit = request_value(request, "limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20);
+
+    match state.search_tidal_tracks(&query, limit) {
+        Ok(tracks) => {
+            let body = serde_json::to_string(&tracks)
+                .map_err(|error| io::Error::other(format!("TIDAL JSON failed: {error}")))?;
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "502 Bad Gateway",
+            &format!("TIDAL search failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_tidal_search_albums_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let query = match required_request_value(request, "query") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let limit = request_value(request, "limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20);
+
+    match state.search_tidal_albums(&query, limit) {
+        Ok(albums) => {
+            let body = serde_json::to_string(&albums)
+                .map_err(|error| io::Error::other(format!("TIDAL JSON failed: {error}")))?;
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "502 Bad Gateway",
+            &format!("TIDAL album search failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_tidal_auth_url_request(
+    writer: &mut ResponseWriter,
+    _request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    match state.tidal_auth_url() {
+        Ok(auth) => {
+            let body = serde_json::to_string(&auth)
+                .map_err(|error| io::Error::other(format!("TIDAL JSON failed: {error}")))?;
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) => api_error(
+            writer,
+            "502 Bad Gateway",
+            &format!("TIDAL auth failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_tidal_complete_auth_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let redirect_url = match required_request_value(request, "redirect_url") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    match state.complete_tidal_auth(&redirect_url) {
+        Ok(auth) => {
+            let body = serde_json::to_string(&auth)
+                .map_err(|error| io::Error::other(format!("TIDAL JSON failed: {error}")))?;
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) => api_error(
+            writer,
+            "502 Bad Gateway",
+            &format!("TIDAL auth failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_tidal_play_album_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_tidal_album_action(
+        writer,
+        request,
+        state,
+        |state, renderer, album| state.replace_queue_with_tidal_album(renderer, album),
+        |album, queue| {
+            format!(
+                "Queued TIDAL album '{}' for playback. Queue length: {}.",
+                tidal_album_display_title(album),
+                queue.entries.len()
+            )
+        },
+        true,
+    )
+}
+
+pub(crate) fn handle_api_tidal_play_track_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_tidal_track_action(
+        writer,
+        request,
+        state,
+        |state, renderer, track| state.replace_queue_with_tidal_track(renderer, track),
+        |track, queue| {
+            format!(
+                "Queued TIDAL track '{}' for playback. Queue length: {}.",
+                tidal_display_title(track),
+                queue.entries.len()
+            )
+        },
+        true,
+    )
+}
+
+pub(crate) fn handle_api_queue_append_tidal_album_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_tidal_album_action(
+        writer,
+        request,
+        state,
+        |state, renderer, album| state.append_tidal_album_to_queue(renderer, album),
+        |album, queue| {
+            format!(
+                "Queued TIDAL album '{}'. Queue length: {}.",
+                tidal_album_display_title(album),
+                queue.entries.len()
+            )
+        },
+        false,
+    )
+}
+
+pub(crate) fn handle_api_queue_append_tidal_track_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_tidal_track_action(
+        writer,
+        request,
+        state,
+        |state, renderer, track| state.append_tidal_track_to_queue(renderer, track),
+        |track, queue| {
+            format!(
+                "Queued TIDAL track '{}'. Queue length: {}.",
+                tidal_display_title(track),
+                queue.entries.len()
+            )
+        },
+        false,
+    )
+}
+
+pub(crate) fn handle_api_queue_play_next_tidal_album_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_tidal_album_action(
+        writer,
+        request,
+        state,
+        |state, renderer, album| state.play_next_tidal_album(renderer, album),
+        |album, queue| {
+            format!(
+                "TIDAL album '{}' will play next. Queue length: {}.",
+                tidal_album_display_title(album),
+                queue.entries.len()
+            )
+        },
+        false,
+    )
+}
+
+pub(crate) fn handle_api_queue_play_next_tidal_track_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_tidal_track_action(
+        writer,
+        request,
+        state,
+        |state, renderer, track| state.play_next_tidal_track(renderer, track),
+        |track, queue| {
+            format!(
+                "TIDAL track '{}' will play next. Queue length: {}.",
+                tidal_display_title(track),
+                queue.entries.len()
+            )
+        },
+        false,
+    )
+}
+
+fn handle_api_tidal_album_action(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+    apply: impl Fn(&ServiceState, &str, TidalQueuedAlbum) -> io::Result<PlaybackQueue>,
+    message: impl Fn(&TidalQueuedAlbum, &PlaybackQueue) -> String,
+    start_playback: bool,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let queued_album = match tidal_album_from_request(request) {
+        Ok(album) => album,
+        Err(error) => return api_error(writer, "400 Bad Request", &error.to_string()),
+    };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
+    let _ = state.remember_renderer_location(&renderer_location);
+
+    match apply(state, &renderer_location, queued_album.clone()) {
+        Ok(_) if start_playback => match state.start_current_queue_entry(&renderer_location) {
+            Ok((started_track, _, renderer_name, _)) => api_renderer_state_response(
+                writer,
+                state,
+                &renderer_location,
+                &format!(
+                    "Now playing '{}' from TIDAL on {}.",
+                    started_track.title, renderer_name
+                ),
+            ),
+            Err(error) => api_error(
+                writer,
+                "502 Bad Gateway",
+                &format!("TIDAL playback failed: {error}"),
+            ),
+        },
+        Ok(queue) => api_queue_response(
+            writer,
+            state,
+            &renderer_location,
+            &message(&queued_album, &queue),
+        ),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("TIDAL queue update failed: {error}"),
+        ),
+    }
+}
+
+fn handle_api_tidal_track_action(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+    apply: impl Fn(&ServiceState, &str, TidalQueuedTrack) -> io::Result<PlaybackQueue>,
+    message: impl Fn(&TidalQueuedTrack, &PlaybackQueue) -> String,
+    start_playback: bool,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let queued_track = match tidal_track_from_request(request) {
+        Ok(track) => track,
+        Err(error) => return api_error(writer, "400 Bad Request", &error.to_string()),
+    };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
+    let _ = state.remember_renderer_location(&renderer_location);
+
+    match apply(state, &renderer_location, queued_track.clone()) {
+        Ok(_) if start_playback => match state.start_current_queue_entry(&renderer_location) {
+            Ok((started_track, _, renderer_name, _)) => api_renderer_state_response(
+                writer,
+                state,
+                &renderer_location,
+                &format!(
+                    "Now playing '{}' on {}.",
+                    started_track.title, renderer_name
+                ),
+            ),
+            Err(error) => api_error(
+                writer,
+                "502 Bad Gateway",
+                &format!("TIDAL playback failed: {error}"),
+            ),
+        },
+        Ok(queue) => api_queue_response(
+            writer,
+            state,
+            &renderer_location,
+            &message(&queued_track, &queue),
+        ),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+            api_error(writer, "400 Bad Request", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("TIDAL queue update failed: {error}"),
+        ),
+    }
+}
+
+fn tidal_album_from_request(request: &HttpRequest) -> io::Result<TidalQueuedAlbum> {
+    let album_id = required_request_value(request, "tidal_album_id")
+        .or_else(|_| required_request_value(request, "album_id"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    Ok(TidalQueuedAlbum {
+        album_id,
+        title: optional_request_string(request, "title"),
+        artist: optional_request_string(request, "artist"),
+        track_count: request_value(request, "track_count")
+            .and_then(|value| value.trim().parse::<u64>().ok()),
+        duration_seconds: request_value(request, "duration_seconds")
+            .and_then(|value| value.trim().parse::<u64>().ok()),
+        artwork_url: optional_request_string(request, "artwork_url"),
+    })
+}
+
+fn tidal_track_from_request(request: &HttpRequest) -> io::Result<TidalQueuedTrack> {
+    let track_id = required_request_value(request, "tidal_track_id")
+        .or_else(|_| required_request_value(request, "track_id"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    Ok(TidalQueuedTrack {
+        track_id,
+        title: optional_request_string(request, "title"),
+        artist: optional_request_string(request, "artist"),
+        album: optional_request_string(request, "album"),
+        duration_seconds: request_value(request, "duration_seconds")
+            .and_then(|value| value.trim().parse::<u64>().ok()),
+        artwork_url: optional_request_string(request, "artwork_url"),
+    })
+}
+
+fn optional_request_string(request: &HttpRequest, key: &str) -> Option<String> {
+    request_value(request, key)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn tidal_album_display_title(album: &TidalQueuedAlbum) -> &str {
+    album
+        .title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&album.album_id)
+}
+
+fn tidal_display_title(track: &TidalQueuedTrack) -> &str {
+    track
+        .title
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&track.track_id)
 }
 
 pub(crate) fn handle_api_radio_stations_request(
@@ -2198,6 +2593,214 @@ pub(crate) fn handle_track_stream_request(
         ),
     }
     result
+}
+
+pub(crate) fn handle_tidal_stream_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let track_id = request.path.trim_start_matches("/stream/tidal/").trim();
+    if track_id.is_empty() {
+        return respond_not_found(writer, request.method == "HEAD");
+    }
+    let source = match state.tidal_stream_source(track_id) {
+        Ok(source) => source,
+        Err(error) => {
+            state.debug_log(
+                "tidal-stream-resolve-failed",
+                format!("track_id={} error={}", track_id, error),
+            );
+            return respond_text(
+                writer,
+                "502 Bad Gateway",
+                "text/plain; charset=utf-8",
+                format!("TIDAL stream resolve failed: {error}").as_bytes(),
+                request.method == "HEAD",
+            );
+        }
+    };
+
+    match source {
+        TidalStreamSource::Direct {
+            url,
+            mime_type,
+            stream_format,
+        } => handle_tidal_direct_stream(
+            writer,
+            request,
+            state,
+            track_id,
+            &url,
+            &mime_type,
+            &stream_format,
+        ),
+        TidalStreamSource::Segments {
+            urls,
+            mime_type,
+            stream_format,
+        } => handle_tidal_segment_stream(
+            writer,
+            request,
+            state,
+            track_id,
+            &urls,
+            &mime_type,
+            &stream_format,
+        ),
+    }
+}
+
+fn handle_tidal_direct_stream(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+    track_id: &str,
+    stream_url: &str,
+    mime_type: &str,
+    stream_format: &str,
+) -> io::Result<()> {
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(tidal_stream_error)?;
+    let mut upstream_request = client.get(stream_url);
+    if let Some(range_header) = request.range_header.as_deref() {
+        upstream_request = upstream_request.header(RANGE, range_header);
+    }
+    let mut upstream = upstream_request.send().map_err(tidal_stream_error)?;
+    if !upstream.status().is_success() {
+        let status = upstream.status();
+        state.debug_log(
+            "tidal-stream-upstream-failed",
+            format!(
+                "track_id={} upstream_status={} url={}",
+                track_id, status, stream_url
+            ),
+        );
+        return respond_text(
+            writer,
+            "502 Bad Gateway",
+            "text/plain; charset=utf-8",
+            format!("TIDAL stream request failed with upstream status {status}").as_bytes(),
+            request.method == "HEAD",
+        );
+    }
+
+    let upstream_status = upstream.status();
+    let status = format!(
+        "{} {}",
+        upstream_status.as_u16(),
+        upstream_status.canonical_reason().unwrap_or("OK")
+    );
+    let headers = tidal_direct_stream_response_headers(mime_type, upstream.headers());
+    state.debug_log(
+        "tidal-stream-proxy",
+        format!(
+            "track_id={} status={} mime_type={} format={} range={:?} upstream_url={}",
+            track_id, status, mime_type, stream_format, request.range_header, stream_url
+        ),
+    );
+    write_response_owned(writer, &status, &headers, None)?;
+    if request.method != "HEAD" {
+        io::copy(&mut upstream, writer)?;
+        writer.flush()?;
+    }
+    Ok(())
+}
+
+fn handle_tidal_segment_stream(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+    track_id: &str,
+    urls: &[String],
+    mime_type: &str,
+    stream_format: &str,
+) -> io::Result<()> {
+    state.debug_log(
+        "tidal-segment-stream-start",
+        format!(
+            "track_id={} segments={} mime_type={} format={} range={:?}",
+            track_id,
+            urls.len(),
+            mime_type,
+            stream_format,
+            request.range_header
+        ),
+    );
+    let headers = vec![
+        ("Content-Type".to_string(), mime_type.to_string()),
+        ("Cache-Control".to_string(), "no-store".to_string()),
+    ];
+    write_response_owned(writer, "200 OK", &headers, None)?;
+    if request.method == "HEAD" {
+        return Ok(());
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(tidal_stream_error)?;
+    for (index, url) in urls.iter().enumerate() {
+        let mut upstream = client.get(url).send().map_err(tidal_stream_error)?;
+        if !upstream.status().is_success() {
+            state.debug_log(
+                "tidal-segment-stream-failed",
+                format!(
+                    "track_id={} segment={} upstream_status={} url={}",
+                    track_id,
+                    index,
+                    upstream.status(),
+                    url
+                ),
+            );
+            return Err(io::Error::other(format!(
+                "TIDAL segment {index} request failed with upstream status {}",
+                upstream.status()
+            )));
+        }
+        io::copy(&mut upstream, writer)?;
+    }
+    writer.flush()?;
+    state.debug_log(
+        "tidal-segment-stream-finished",
+        format!("track_id={} segments={}", track_id, urls.len()),
+    );
+    Ok(())
+}
+
+fn tidal_direct_stream_response_headers(
+    fallback_mime_type: &str,
+    upstream_headers: &reqwest::header::HeaderMap,
+) -> Vec<(String, String)> {
+    let content_type = upstream_headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_mime_type);
+    let mut headers = vec![
+        ("Content-Type".to_string(), content_type.to_string()),
+        ("Accept-Ranges".to_string(), "bytes".to_string()),
+        ("Cache-Control".to_string(), "no-store".to_string()),
+    ];
+    for (name, header_name) in [
+        ("Content-Length", CONTENT_LENGTH),
+        ("Content-Range", CONTENT_RANGE),
+    ] {
+        if let Some(value) = upstream_headers
+            .get(header_name)
+            .and_then(|value| value.to_str().ok())
+        {
+            headers.push((name.to_string(), value.to_string()));
+        }
+    }
+    headers
+}
+
+fn tidal_stream_error(error: reqwest::Error) -> io::Error {
+    io::Error::other(format!("TIDAL stream request failed: {error}"))
 }
 
 fn debug_log_stream_session_context(state: &ServiceState, requested_track: &LibraryTrack) {

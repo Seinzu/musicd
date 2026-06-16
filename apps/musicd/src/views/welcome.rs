@@ -41,6 +41,7 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
 
     let spotlight_html = render_spotlight(&library, &ctx.renderer_location, &renderer_input_hidden);
     let radio_card_html = render_radio_card(&renderer_input_hidden);
+    let tidal_card_html = render_tidal_card(&renderer_input_hidden);
 
     let stats_card_html = format!(
         r#"<section class="card stats-card">
@@ -82,6 +83,7 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
 <div class="welcome-grid">
   {renderer_card_html}
   {radio_card_html}
+  {tidal_card_html}
   {stats_card_html}
 </div>
 {spotlight_html}"#,
@@ -116,6 +118,35 @@ fn render_radio_card(renderer_input_hidden: &str) -> String {
   </form>
   <div id="radio_status" class="meta" aria-live="polite"></div>
   <div id="radio_results" class="radio-results"></div>
+</section>"#,
+        renderer_input_hidden = renderer_input_hidden,
+    )
+}
+
+fn render_tidal_card(renderer_input_hidden: &str) -> String {
+    format!(
+        r#"<section class="card tidal-card">
+  <div class="card-header">
+    <h2>TIDAL</h2>
+    <p class="meta">Log in with TIDAL, search albums or tracks, and add them to the active queue.</p>
+  </div>
+  <div class="control-row tidal-auth-row">
+    <button type="button" class="secondary" onclick="requestTidalAuthUrl(event)">Get Login Link</button>
+    <a id="tidal_auth_link" class="text-link" target="_blank" rel="noreferrer" hidden>Open TIDAL Login</a>
+  </div>
+  <form class="control-row" id="tidal_complete_auth_form" onsubmit="completeTidalAuth(event)">
+    <label for="tidal_redirect_url" class="visually-hidden">TIDAL redirect URL</label>
+    <input id="tidal_redirect_url" name="redirect_url" type="url" placeholder="Redirect URL">
+    <button type="submit" class="secondary">Complete Login</button>
+  </form>
+  <form class="control-row" id="tidal_search_form" onsubmit="searchTidal(event)">
+    {renderer_input_hidden}
+    <label for="tidal_query" class="visually-hidden">TIDAL search</label>
+    <input id="tidal_query" name="query" type="search" placeholder="Search TIDAL">
+    <button type="submit" class="secondary">Search</button>
+  </form>
+  <div id="tidal_status" class="meta" aria-live="polite"></div>
+  <div id="tidal_results" class="tidal-results"></div>
 </section>"#,
         renderer_input_hidden = renderer_input_hidden,
     )

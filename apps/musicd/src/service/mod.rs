@@ -25,6 +25,7 @@ mod queue;
 mod radio;
 mod recommendations;
 mod renderers;
+pub(crate) mod tidal;
 mod transport;
 mod watcher;
 

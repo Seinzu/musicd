@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use musicd_upnp::RendererCapabilities;
+use musicd_upnp::StreamResource;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +280,23 @@ pub(crate) struct QueueMutationEntry {
     pub(crate) album_id: Option<String>,
     pub(crate) source_kind: String,
     pub(crate) source_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QueuePlayableResource {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) duration_seconds: Option<u64>,
+    pub(crate) resource: StreamResource,
+    pub(crate) local_track: Option<LibraryTrack>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StartedQueueItem {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) duration_seconds: Option<u64>,
+    pub(crate) local_track: Option<LibraryTrack>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
