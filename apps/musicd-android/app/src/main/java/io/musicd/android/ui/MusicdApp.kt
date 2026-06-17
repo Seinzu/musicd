@@ -534,6 +534,9 @@ private fun MusicdRoot(
                     onLikeAlbum = onLikeAlbum,
                     onAppendAlbum = onAppendAlbum,
                     onPlayNextAlbum = onPlayNextAlbum,
+                    onPlayTidalAlbum = onPlayTidalAlbum,
+                    onAppendTidalAlbum = onAppendTidalAlbum,
+                    onPlayNextTidalAlbum = onPlayNextTidalAlbum,
                     onOpenRendererPicker = onOpenRendererPicker,
                     onDiscoverRenderers = onDiscoverRenderers,
                     onOpenServerEditor = onOpenServerEditor,
@@ -559,6 +562,9 @@ private fun MusicdRoot(
                     onPlayNextTrack = onPlayNextTrack,
                     onAppendAlbum = onAppendAlbum,
                     onPlayNextAlbum = onPlayNextAlbum,
+                    onPlayTidalAlbum = onPlayTidalAlbum,
+                    onAppendTidalAlbum = onAppendTidalAlbum,
+                    onPlayNextTidalAlbum = onPlayNextTidalAlbum,
                 )
                 MusicdTab.Radio -> RadioScreen(
                     state = state,
@@ -866,6 +872,9 @@ private fun HomeScreen(
     onLikeAlbum: (String) -> Unit,
     onAppendAlbum: (String) -> Unit,
     onPlayNextAlbum: (String) -> Unit,
+    onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
+    onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
     onOpenRendererPicker: () -> Unit,
     onDiscoverRenderers: () -> Unit,
     onOpenServerEditor: () -> Unit,
@@ -950,6 +959,10 @@ private fun HomeScreen(
                     recommendation = recommendation,
                     localAlbum = null,
                     supportingText = recommendationHomeReason(recommendation, state.albums),
+                    canPlayTidalAlbum = state.selectedRendererLocation.isNotBlank(),
+                    onPlayTidalAlbum = onPlayTidalAlbum,
+                    onAppendTidalAlbum = onAppendTidalAlbum,
+                    onPlayNextTidalAlbum = onPlayNextTidalAlbum,
                     onOpenAlbum = {},
                 )
             }
@@ -1398,6 +1411,9 @@ private fun LibraryScreen(
     onPlayNextTrack: (String) -> Unit,
     onAppendAlbum: (String) -> Unit,
     onPlayNextAlbum: (String) -> Unit,
+    onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
+    onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
 ) {
     val query = state.searchQuery.trim()
     val searchResults = rememberLibrarySearchResults(
@@ -1449,6 +1465,10 @@ private fun LibraryScreen(
             onPlayNextTrack = onPlayNextTrack,
             onOpenArtistByName = onOpenArtistByName,
             onOpenArtworkPicker = onOpenAlbumArtworkPicker,
+            canPlayTidalAlbum = state.selectedRendererLocation.isNotBlank(),
+            onPlayTidalAlbum = onPlayTidalAlbum,
+            onAppendTidalAlbum = onAppendTidalAlbum,
+            onPlayNextTidalAlbum = onPlayNextTidalAlbum,
         )
         return
     }
@@ -3209,6 +3229,10 @@ private fun AlbumDetailScreen(
     onAppendTrack: (String) -> Unit,
     onPlayNextTrack: (String) -> Unit,
     onOpenArtistByName: (String) -> Unit,
+    canPlayTidalAlbum: Boolean,
+    onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
+    onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
 ) {
     val totalDurationLabel = albumTotalDurationLabel(album)
     val secondaryMeta = listOfNotNull(
@@ -3334,6 +3358,10 @@ private fun AlbumDetailScreen(
                     baseUrl = baseUrl,
                     recommendation = recommendation,
                     localAlbum = localAlbum,
+                    canPlayTidalAlbum = canPlayTidalAlbum,
+                    onPlayTidalAlbum = onPlayTidalAlbum,
+                    onAppendTidalAlbum = onAppendTidalAlbum,
+                    onPlayNextTidalAlbum = onPlayNextTidalAlbum,
                     onOpenAlbum = { localAlbum?.id?.let(onOpenAlbum) },
                 )
             }
@@ -3347,10 +3375,16 @@ private fun AlbumRecommendationRow(
     recommendation: AlbumRecommendationDto,
     localAlbum: AlbumSummaryDto?,
     supportingText: String? = null,
+    canPlayTidalAlbum: Boolean,
+    onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
+    onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
+    onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
     onOpenAlbum: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
     val tidalUrl = recommendation.tidalUrl?.takeIf(::isWebUrl)
+    val tidalAlbum = tidalAlbumFromRecommendation(recommendation)
+    val hasUnplayableTidalUrl = tidalUrl != null && tidalAlbum == null
     val externalUrl = tidalUrl ?: recommendation.externalUrl?.takeIf(::isWebUrl)
     val openDescription = if (tidalUrl != null) "Open in TIDAL" else "Open recommendation"
     var isContextExpanded by remember(recommendation.recommendationKey, supportingText) {
@@ -3405,7 +3439,11 @@ private fun AlbumRecommendationRow(
                         }
                     }
                 }
-                val meta = recommendationMetaLabel(recommendation, localAlbum != null)
+                val meta = recommendationMetaLabel(
+                    recommendation = recommendation,
+                    isInLibrary = localAlbum != null,
+                    hasUnplayableTidalUrl = hasUnplayableTidalUrl,
+                )
                 if (meta.isNotBlank()) {
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -3428,6 +3466,20 @@ private fun AlbumRecommendationRow(
                         maxLines = if (isContextExpanded) Int.MAX_VALUE else 3,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                tidalAlbum?.let { album ->
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledIconButton(onClick = { onPlayTidalAlbum(album) }, enabled = canPlayTidalAlbum) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Play TIDAL recommendation")
+                        }
+                        OutlinedIconButton(onClick = { onPlayNextTidalAlbum(album) }, enabled = canPlayTidalAlbum) {
+                            Icon(Icons.Rounded.QueuePlayNext, contentDescription = "Play TIDAL recommendation next")
+                        }
+                        OutlinedIconButton(onClick = { onAppendTidalAlbum(album) }, enabled = canPlayTidalAlbum) {
+                            Icon(Icons.Rounded.AddToQueue, contentDescription = "Add TIDAL recommendation to queue")
+                        }
+                    }
                 }
             }
         }
@@ -3455,6 +3507,23 @@ private fun recommendationArtworkUrl(
         ?: recommendation.suggestedMusicbrainzReleaseGroupId
             ?.takeIf { it.isNotBlank() }
             ?.let { "https://coverartarchive.org/release-group/$it/front-250" }
+
+private fun tidalAlbumFromRecommendation(recommendation: AlbumRecommendationDto): TidalAlbumDto? {
+    val albumId = tidalAlbumIdFromUrl(recommendation.tidalUrl) ?: return null
+    return TidalAlbumDto(
+        albumId = albumId,
+        title = recommendation.suggestedTitle,
+        artist = recommendation.suggestedArtist,
+        artworkUrl = recommendation.artworkUrl,
+    )
+}
+
+private fun tidalAlbumIdFromUrl(value: String?): String? {
+    val url = value?.trim()?.takeIf { it.isNotBlank() } ?: return null
+    val match = Regex("""^https?://(?:www\.)?(?:listen\.)?tidal\.com/(?:browse/)?album/([0-9]+)(?:[/?#].*)?$""")
+        .matchEntire(url)
+    return match?.groupValues?.getOrNull(1)
+}
 
 @Composable
 private fun AlbumArtworkPickerSheet(
@@ -4174,9 +4243,11 @@ private fun albumTotalDurationLabel(album: AlbumDetailDto): String? {
 private fun recommendationMetaLabel(
     recommendation: AlbumRecommendationDto,
     isInLibrary: Boolean,
+    hasUnplayableTidalUrl: Boolean = false,
 ): String =
     listOfNotNull(
         "In library".takeIf { isInLibrary },
+        "TIDAL link needs cleanup".takeIf { hasUnplayableTidalUrl },
         recommendation.confidence?.let(::confidenceLabel),
         recommendation.status.takeUnless { it.equals("suggested", ignoreCase = true) },
     ).joinToString(" · ")
