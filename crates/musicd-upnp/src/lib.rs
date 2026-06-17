@@ -20,6 +20,8 @@ pub struct StreamResource {
     pub stream_url: String,
     pub mime_type: String,
     pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
     pub album_art_url: Option<String>,
 }
 
@@ -315,6 +317,8 @@ pub fn set_av_transport_uri(control_url: &str, resource: &StreamResource) -> io:
         &resource.stream_url,
         &resource.mime_type,
         Some(&resource.title),
+        resource.artist.as_deref(),
+        resource.album.as_deref(),
         resource.album_art_url.as_deref(),
     );
     let response = http_request(
@@ -339,6 +343,8 @@ pub fn set_next_av_transport_uri(control_url: &str, resource: &StreamResource) -
         &resource.stream_url,
         &resource.mime_type,
         Some(&resource.title),
+        resource.artist.as_deref(),
+        resource.album.as_deref(),
         resource.album_art_url.as_deref(),
     );
     let response = http_request(
@@ -630,6 +636,8 @@ pub fn insert_playlist_extension_entry(
         &resource.stream_url,
         &resource.mime_type,
         &resource.title,
+        resource.artist.as_deref(),
+        resource.album.as_deref(),
         resource.album_art_url.as_deref(),
     );
     let body = build_action_envelope(
@@ -722,12 +730,16 @@ pub fn build_set_av_transport_uri_envelope(
     stream_url: &str,
     mime_type: &str,
     title: Option<&str>,
+    artist: Option<&str>,
+    album: Option<&str>,
     album_art_url: Option<&str>,
 ) -> String {
     let metadata = didl_lite_metadata(
         stream_url,
         mime_type,
         title.unwrap_or("Unknown title"),
+        artist,
+        album,
         album_art_url,
     );
 
@@ -743,12 +755,16 @@ pub fn build_set_next_av_transport_uri_envelope(
     stream_url: &str,
     mime_type: &str,
     title: Option<&str>,
+    artist: Option<&str>,
+    album: Option<&str>,
     album_art_url: Option<&str>,
 ) -> String {
     let metadata = didl_lite_metadata(
         stream_url,
         mime_type,
         title.unwrap_or("Unknown title"),
+        artist,
+        album,
         album_art_url,
     );
     format!(
@@ -1490,14 +1506,30 @@ fn didl_lite_metadata(
     stream_url: &str,
     mime_type: &str,
     title: &str,
+    artist: Option<&str>,
+    album: Option<&str>,
     album_art_url: Option<&str>,
 ) -> String {
+    let artist_xml = artist
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(String::new, |value| {
+            format!("<upnp:artist>{}</upnp:artist>", xml_escape(value))
+        });
+    let album_xml = album
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(String::new, |value| {
+            format!("<upnp:album>{}</upnp:album>", xml_escape(value))
+        });
     let album_art_xml = album_art_url.map_or_else(String::new, |url| {
         format!("<upnp:albumArtURI>{}</upnp:albumArtURI>", xml_escape(url))
     });
     format!(
-        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="track-0" parentID="library" restricted="1"><dc:title>{}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class>{}<res protocolInfo="http-get:*:{}:*">{}</res></item></DIDL-Lite>"#,
+        r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="track-0" parentID="library" restricted="1"><dc:title>{}</dc:title>{}{}<upnp:class>object.item.audioItem.musicTrack</upnp:class>{}<res protocolInfo="http-get:*:{}:*">{}</res></item></DIDL-Lite>"#,
         xml_escape(title),
+        artist_xml,
+        album_xml,
         album_art_xml,
         xml_escape(mime_type),
         xml_escape(stream_url),
@@ -1802,6 +1834,8 @@ mod tests {
             "http://server.local/stream/this&that.flac",
             "audio/flac",
             Some("Fish & Chips"),
+            Some("The Fryers"),
+            Some("Chip Shop Classics"),
             Some("http://server.local/art/cover one&two.jpg"),
         );
 
@@ -1809,6 +1843,8 @@ mod tests {
         assert!(body.contains("this&amp;that.flac"));
         assert!(body.contains("&lt;DIDL-Lite"));
         assert!(body.contains("Fish &amp;amp; Chips"));
+        assert!(body.contains("The Fryers"));
+        assert!(body.contains("Chip Shop Classics"));
         assert!(body.contains("audio/flac"));
         assert!(body.contains("albumArtURI"));
         assert!(body.contains("cover one&amp;amp;two.jpg"));
@@ -1852,6 +1888,8 @@ mod tests {
             "http://server.local/stream/next&track.flac",
             "audio/flac",
             Some("Next & Best"),
+            Some("The Fryers"),
+            Some("Chip Shop Classics"),
             Some("http://server.local/art/next one&two.jpg"),
         );
 
@@ -1859,6 +1897,8 @@ mod tests {
         assert!(body.contains("next&amp;track.flac"));
         assert!(body.contains("&lt;DIDL-Lite"));
         assert!(body.contains("Next &amp;amp; Best"));
+        assert!(body.contains("The Fryers"));
+        assert!(body.contains("Chip Shop Classics"));
         assert!(body.contains("audio/flac"));
         assert!(body.contains("albumArtURI"));
         assert!(body.contains("next one&amp;amp;two.jpg"));

@@ -736,7 +736,7 @@ fn current_queue_entry_for_renderer(
     session_entry_id: Option<i64>,
 ) -> Option<QueueEntry> {
     let queue = state.queue_snapshot(renderer_location)?;
-    let queue_entry_id = queue.current_entry_id.or(session_entry_id)?;
+    let queue_entry_id = session_entry_id.or(queue.current_entry_id)?;
     queue
         .entries
         .into_iter()

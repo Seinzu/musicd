@@ -295,8 +295,8 @@ impl ServiceState {
     ) -> io::Result<QueuePlayableResource> {
         let queued = tidal_queued_track(entry)?;
         let resolved = self.resolve_tidal_track(&queued.track_id)?;
-        let _artist = resolved.artist.or(queued.artist.clone());
-        let _album = resolved.album.or(queued.album.clone());
+        let artist = resolved.artist.or(queued.artist.clone());
+        let album = resolved.album.or(queued.album.clone());
         let title = first_non_empty([
             Some(resolved.title.as_str()),
             queued.title.as_deref(),
@@ -313,6 +313,8 @@ impl ServiceState {
                 stream_url: self.tidal_proxy_stream_url(&resolved.track_id),
                 mime_type: normalize_tidal_mime_type(resolved.mime_type.as_deref()),
                 title,
+                artist,
+                album,
                 album_art_url: artwork_url,
             },
             local_track: None,

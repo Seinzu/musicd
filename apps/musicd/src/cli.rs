@@ -211,6 +211,8 @@ fn run_play_url(renderer_location: &str, stream_url: &str, title: &str) -> io::R
         stream_url: stream_url.to_string(),
         mime_type: infer_mime_type(Path::new(stream_url)).to_string(),
         title: title.to_string(),
+        artist: None,
+        album: None,
         album_art_url: None,
     };
 
@@ -261,6 +263,8 @@ fn run_play_file(
         stream_url: stream_url.clone(),
         mime_type: infer_mime_type(path.as_path()).to_string(),
         title: title.to_string(),
+        artist: None,
+        album: None,
         album_art_url: None,
     };
 

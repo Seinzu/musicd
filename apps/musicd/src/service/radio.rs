@@ -126,6 +126,8 @@ impl ServiceState {
             stream_url: stream_url.clone(),
             mime_type: mime_type_for_radio_codec(codec),
             title: title.to_string(),
+            artist: Some("Internet radio".to_string()),
+            album: None,
             album_art_url: artwork_url.and_then(|value| normalized_http_stream_url(value).ok()),
         };
 

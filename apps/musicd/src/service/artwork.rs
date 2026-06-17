@@ -113,6 +113,8 @@ impl ServiceState {
             ),
             mime_type: track.mime_type.clone(),
             title: track.title.clone(),
+            artist: Some(track.artist.clone()),
+            album: Some(track.album.clone()),
             album_art_url: self.artwork_url_for_track(track),
         }
     }
