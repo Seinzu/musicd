@@ -141,6 +141,24 @@ class MusicdRepository(
             api.discoverRenderers(baseUrl.normalizeBaseUrl())
         }
 
+    suspend fun getRendererVolume(baseUrl: String, rendererLocation: String): RendererVolumeDto =
+        withContext(Dispatchers.IO) {
+            api.getRendererVolume(baseUrl.normalizeBaseUrl(), rendererLocation, loadClientId())
+        }
+
+    suspend fun setRendererVolume(
+        baseUrl: String,
+        rendererLocation: String,
+        volume: Int,
+    ): RendererVolumeDto = withContext(Dispatchers.IO) {
+        api.setRendererVolume(
+            baseUrl.normalizeBaseUrl(),
+            rendererLocation,
+            volume,
+            loadClientId(),
+        )
+    }
+
     suspend fun createRendererGroup(
         baseUrl: String,
         name: String,

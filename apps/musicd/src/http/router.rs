@@ -18,7 +18,8 @@ use crate::handlers::{
     handle_api_register_android_local_renderer_request,
     handle_api_register_cli_local_renderer_request, handle_api_renderer_discover_request,
     handle_api_renderer_group_create_request, handle_api_renderer_group_delete_request,
-    handle_api_renderer_group_update_request, handle_api_tidal_auth_url_request,
+    handle_api_renderer_group_update_request, handle_api_renderer_volume_request,
+    handle_api_renderer_volume_set_request, handle_api_tidal_auth_url_request,
     handle_api_tidal_complete_auth_request, handle_api_tidal_play_album_request,
     handle_api_tidal_play_track_request, handle_api_tidal_search_albums_request,
     handle_api_tidal_search_tracks_request, handle_api_transport_next_request,
@@ -217,6 +218,18 @@ pub(crate) fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("GET", "/api/renderers/volume") | ("HEAD", "/api/renderers/volume") => {
+            if request.method == "HEAD" {
+                return respond_text(
+                    writer,
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    b"",
+                    true,
+                );
+            }
+            handle_api_renderer_volume_request(writer, request, &state)
+        }
         ("GET", "/api/renderer-groups") | ("HEAD", "/api/renderer-groups") => {
             let body = render_renderer_groups_json(&state);
             respond_text(
@@ -347,6 +360,9 @@ pub(crate) fn handle_service_request(
         }
         ("POST", "/api/renderers/discover") => {
             handle_api_renderer_discover_request(writer, request, &state)
+        }
+        ("POST", "/api/renderers/volume") => {
+            handle_api_renderer_volume_set_request(writer, request, &state)
         }
         ("POST", "/api/renderer-groups") => {
             handle_api_renderer_group_create_request(writer, request, &state)

@@ -67,6 +67,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -112,6 +113,7 @@ import io.musicd.android.data.TrackSummaryDto
 import java.time.LocalDate
 import java.time.LocalTime
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import kotlin.random.Random
 
 private data class LibrarySearchResults(
@@ -191,6 +193,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onDeleteRendererGroup = viewModel::deleteRendererGroup,
         onRemoveRendererGroupMember = viewModel::removeRendererGroupMember,
         onQuickAddRendererToTarget = viewModel::quickAddRendererToTarget,
+        onSetRendererVolume = viewModel::setSelectedRendererVolume,
         onPlay = viewModel::transportPlay,
         onPause = viewModel::transportPause,
         onStop = viewModel::transportStop,
@@ -265,6 +268,7 @@ private fun MusicdRoot(
     onDeleteRendererGroup: (String) -> Unit,
     onRemoveRendererGroupMember: (String, String) -> Unit,
     onQuickAddRendererToTarget: (String, String) -> Unit,
+    onSetRendererVolume: (Int) -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onStop: () -> Unit,
@@ -363,7 +367,11 @@ private fun MusicdRoot(
                     ?.takeIf { state.selectedRendererLocation.startsWith("group:") },
                 isCreatingGroup = state.isCreatingRendererGroup,
                 groupErrorMessage = state.rendererGroupErrorMessage,
+                selectedRendererVolume = state.selectedRendererVolume,
+                isLoadingRendererVolume = state.isLoadingRendererVolume,
+                rendererVolumeErrorMessage = state.rendererVolumeErrorMessage,
                 onSelectRenderer = onSelectRenderer,
+                onSetRendererVolume = onSetRendererVolume,
                 onDiscoverRenderers = onDiscoverRenderers,
                 onDeleteGroup = onDeleteRendererGroup,
                 onRemoveGroupMember = onRemoveRendererGroupMember,
@@ -2309,7 +2317,11 @@ private fun RendererPickerSheet(
     groupPlaybackWarning: String?,
     isCreatingGroup: Boolean,
     groupErrorMessage: String?,
+    selectedRendererVolume: Int?,
+    isLoadingRendererVolume: Boolean,
+    rendererVolumeErrorMessage: String?,
     onSelectRenderer: (String) -> Unit,
+    onSetRendererVolume: (Int) -> Unit,
     onDiscoverRenderers: () -> Unit,
     onDeleteGroup: (String) -> Unit,
     onRemoveGroupMember: (String, String) -> Unit,
@@ -2362,6 +2374,18 @@ private fun RendererPickerSheet(
             )
         }
         Spacer(Modifier.height(20.dp))
+        selectedRenderer
+            ?.takeIf { it.kind == "upnp" && it.directAccess }
+            ?.let { renderer ->
+                RendererVolumeControl(
+                    renderer = renderer,
+                    volume = selectedRendererVolume,
+                    isLoading = isLoadingRendererVolume,
+                    errorMessage = rendererVolumeErrorMessage,
+                    onSetVolume = onSetRendererVolume,
+                )
+                Spacer(Modifier.height(14.dp))
+            }
         if (renderers.isEmpty()) {
             ElevatedPanel {
                 Text(
@@ -2477,6 +2501,86 @@ private fun RendererPickerSheet(
             )
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun RendererVolumeControl(
+    renderer: RendererDto,
+    volume: Int?,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onSetVolume: (Int) -> Unit,
+) {
+    var sliderValue by remember(renderer.location) {
+        mutableStateOf((volume ?: 0).toFloat())
+    }
+    LaunchedEffect(renderer.location, volume) {
+        volume?.let { sliderValue = it.toFloat() }
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        ),
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        Icons.Rounded.Speaker,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        rendererDisplayName(renderer),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (isLoading && volume == null) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    Text(
+                        "${sliderValue.roundToInt().coerceIn(0, 100)}%",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Slider(
+                value = sliderValue.coerceIn(0f, 100f),
+                onValueChange = { sliderValue = it.coerceIn(0f, 100f) },
+                onValueChangeFinished = {
+                    onSetVolume(sliderValue.roundToInt().coerceIn(0, 100))
+                },
+                valueRange = 0f..100f,
+                enabled = volume != null && !isLoading,
+            )
+            errorMessage?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }
 

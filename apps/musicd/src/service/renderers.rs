@@ -248,6 +248,24 @@ impl ServiceState {
             .set_last_selected_renderer_location(&renderer.location)
     }
 
+    pub(crate) fn renderer_volume(&self, renderer_location: &str) -> io::Result<u8> {
+        let renderer = self.resolve_renderer(renderer_location)?;
+        self.renderer_backend(renderer_location)?
+            .get_volume(&renderer)
+    }
+
+    pub(crate) fn set_renderer_volume(
+        &self,
+        renderer_location: &str,
+        volume: u8,
+    ) -> io::Result<u8> {
+        let renderer = self.resolve_renderer(renderer_location)?;
+        let volume = volume.min(100);
+        self.renderer_backend(renderer_location)?
+            .set_volume(&renderer, volume)?;
+        Ok(volume)
+    }
+
     pub(crate) fn mark_renderer_reachable(&self, renderer: &RendererRecord) -> io::Result<()> {
         let mut updated = renderer.clone();
         let now = now_unix_timestamp();

@@ -107,6 +107,9 @@ data class MusicdUiState(
     val albumArtworkErrorMessage: String? = null,
     val queue: QueueDto? = null,
     val showRendererPicker: Boolean = false,
+    val selectedRendererVolume: Int? = null,
+    val isLoadingRendererVolume: Boolean = false,
+    val rendererVolumeErrorMessage: String? = null,
     val isCreatingRendererGroup: Boolean = false,
     val rendererGroupErrorMessage: String? = null,
     val isConnecting: Boolean = false,
@@ -995,7 +998,104 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     showRendererPicker = false,
                     rendererGroupErrorMessage = null,
+                    rendererVolumeErrorMessage = null,
                 )
+            }
+        }
+        if (show) {
+            refreshSelectedRendererVolume()
+        }
+    }
+
+    fun refreshSelectedRendererVolume() {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        val renderer = state.renderers.firstOrNull { it.location == state.selectedRendererLocation }
+        if (baseUrl.isBlank() || renderer == null || !renderer.supportsDirectVolume()) {
+            _uiState.update {
+                it.copy(
+                    selectedRendererVolume = null,
+                    isLoadingRendererVolume = false,
+                    rendererVolumeErrorMessage = null,
+                )
+            }
+            return
+        }
+        val rendererLocation = renderer.location
+        viewModelScope.launch {
+            _uiState.update {
+                if (it.selectedRendererLocation == rendererLocation) {
+                    it.copy(isLoadingRendererVolume = true, rendererVolumeErrorMessage = null)
+                } else {
+                    it
+                }
+            }
+            runCatching {
+                repository.getRendererVolume(baseUrl, rendererLocation)
+            }.onSuccess { response ->
+                _uiState.update {
+                    if (it.selectedRendererLocation == rendererLocation) {
+                        it.copy(
+                            selectedRendererVolume = response.volume.coerceIn(0, 100),
+                            isLoadingRendererVolume = false,
+                            rendererVolumeErrorMessage = null,
+                        )
+                    } else {
+                        it
+                    }
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    if (it.selectedRendererLocation == rendererLocation) {
+                        it.copy(
+                            selectedRendererVolume = null,
+                            isLoadingRendererVolume = false,
+                            rendererVolumeErrorMessage = connectionErrorMessage(error),
+                        )
+                    } else {
+                        it
+                    }
+                }
+            }
+        }
+    }
+
+    fun setSelectedRendererVolume(volume: Int) {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        val rendererLocation = state.selectedRendererLocation
+        val renderer = state.renderers.firstOrNull { it.location == rendererLocation }
+        if (baseUrl.isBlank() || renderer == null || !renderer.supportsDirectVolume()) return
+        val clamped = volume.coerceIn(0, 100)
+        _uiState.update {
+            if (it.selectedRendererLocation == rendererLocation) {
+                it.copy(selectedRendererVolume = clamped, rendererVolumeErrorMessage = null)
+            } else {
+                it
+            }
+        }
+        viewModelScope.launch {
+            runCatching {
+                repository.setRendererVolume(baseUrl, rendererLocation, clamped)
+            }.onSuccess { response ->
+                _uiState.update {
+                    if (it.selectedRendererLocation == rendererLocation) {
+                        it.copy(
+                            selectedRendererVolume = response.volume.coerceIn(0, 100),
+                            rendererVolumeErrorMessage = null,
+                        )
+                    } else {
+                        it
+                    }
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    if (it.selectedRendererLocation == rendererLocation) {
+                        it.copy(rendererVolumeErrorMessage = connectionErrorMessage(error))
+                    } else {
+                        it
+                    }
+                }
             }
         }
     }
@@ -2110,6 +2210,9 @@ private fun isUnavailableAlbumError(
         is MusicdApiException.InvalidResponse -> includeInvalidResponse
         else -> false
     }
+
+private fun RendererDto.supportsDirectVolume(): Boolean =
+    kind == "upnp" && directAccess
 
 private const val TRACKS_WARNING_MESSAGE = "Track library unavailable right now."
 private const val PLAYBACK_EVENT_RECONNECTING_MESSAGE = "Reconnecting live playback updates…"

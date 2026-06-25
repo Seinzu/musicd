@@ -841,6 +841,75 @@ pub(crate) fn handle_api_renderer_discover_request(
     respond_json(writer, "200 OK", &body)
 }
 
+pub(crate) fn handle_api_renderer_volume_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
+    match state.renderer_volume(&renderer_location) {
+        Ok(volume) => api_renderer_volume_response(writer, &renderer_location, volume),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            api_error(writer, "501 Not Implemented", &error.to_string())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("renderer volume query failed: {error}"),
+        ),
+    }
+}
+
+pub(crate) fn handle_api_renderer_volume_set_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let renderer_location = match required_request_value(request, "renderer_location") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+    let volume = match required_request_value(request, "volume")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+    {
+        Some(value) if value <= 100 => value as u8,
+        _ => {
+            return api_error(
+                writer,
+                "400 Bad Request",
+                "volume must be between 0 and 100",
+            );
+        }
+    };
+    if !authorize_direct_renderer_access(writer, request, state, &renderer_location)? {
+        return Ok(());
+    }
+    match state.set_renderer_volume(&renderer_location, volume) {
+        Ok(volume) => api_renderer_volume_response(writer, &renderer_location, volume),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            api_error(writer, "501 Not Implemented", &error.to_string())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("renderer volume set failed: {error}"),
+        ),
+    }
+}
+
 pub(crate) fn handle_api_renderer_group_create_request(
     writer: &mut ResponseWriter,
     request: &HttpRequest,
@@ -2535,6 +2604,19 @@ pub(crate) fn api_renderer_state_response(
         json_escape(renderer_location),
         render_queue_json_for_renderer(state, renderer_location),
         session_payload_json_for_renderer(state, renderer_location),
+    );
+    respond_json(writer, "200 OK", &body)
+}
+
+pub(crate) fn api_renderer_volume_response(
+    writer: &mut ResponseWriter,
+    renderer_location: &str,
+    volume: u8,
+) -> io::Result<()> {
+    let body = format!(
+        r#"{{"ok":true,"renderer_location":"{}","volume":{}}}"#,
+        json_escape(renderer_location),
+        volume,
     );
     respond_json(writer, "200 OK", &body)
 }

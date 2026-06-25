@@ -2,9 +2,9 @@ use std::io;
 
 use musicd_upnp::{
     RendererPlaylist, StreamResource, TransportSnapshot, clear_next_av_transport_uri,
-    clear_playlist_extension_queue, get_transport_snapshot, inspect_renderer, next, pause, play,
-    previous, query_playlist_extension_queue, seek, set_av_transport_uri,
-    set_next_av_transport_uri, stop, sync_playlist_extension_queue_after_current,
+    clear_playlist_extension_queue, get_transport_snapshot, get_volume, inspect_renderer, next,
+    pause, play, previous, query_playlist_extension_queue, seek, set_av_transport_uri,
+    set_next_av_transport_uri, set_volume, stop, sync_playlist_extension_queue_after_current,
 };
 
 use crate::ids::normalized_renderer_name;
@@ -133,6 +133,16 @@ impl RendererBackend for UpnpRendererBackend {
     fn transport_snapshot(&self, renderer: &RendererRecord) -> io::Result<TransportSnapshot> {
         get_transport_snapshot(upnp_control_url(renderer)?)
     }
+
+    fn get_volume(&self, renderer: &RendererRecord) -> io::Result<u8> {
+        let control_url = upnp_rendering_control_url(renderer)?;
+        get_volume(&control_url)
+    }
+
+    fn set_volume(&self, renderer: &RendererRecord, volume: u8) -> io::Result<()> {
+        let control_url = upnp_rendering_control_url(renderer)?;
+        set_volume(&control_url, volume)
+    }
 }
 
 fn upnp_control_url(renderer: &RendererRecord) -> io::Result<&str> {
@@ -140,4 +150,10 @@ fn upnp_control_url(renderer: &RendererRecord) -> io::Result<&str> {
         .av_transport_control_url
         .as_deref()
         .ok_or_else(|| io::Error::other("renderer is missing an AVTransport control URL"))
+}
+
+fn upnp_rendering_control_url(renderer: &RendererRecord) -> io::Result<String> {
+    inspect_renderer(&renderer.location)?
+        .rendering_control_url
+        .ok_or_else(|| io::Error::other("renderer is missing a RenderingControl URL"))
 }

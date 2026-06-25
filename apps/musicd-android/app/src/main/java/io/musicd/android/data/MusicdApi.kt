@@ -56,6 +56,13 @@ data class RendererGroupMemberDto(
 )
 
 @Serializable
+data class RendererVolumeDto(
+    val ok: Boolean = true,
+    @SerialName("renderer_location") val rendererLocation: String,
+    val volume: Int,
+)
+
+@Serializable
 data class ServerInfoDto(
     val name: String,
     @SerialName("base_url") val baseUrl: String,
@@ -418,6 +425,27 @@ class MusicdApi(
 
     suspend fun discoverRenderers(baseUrl: String): List<RendererDto> =
         get("$baseUrl/api/renderers/discover")
+
+    suspend fun getRendererVolume(
+        baseUrl: String,
+        rendererLocation: String,
+        clientId: String,
+    ): RendererVolumeDto =
+        get("$baseUrl/api/renderers/volume?renderer_location=${rendererLocation.encodeForUrl()}&client_id=${clientId.encodeForUrl()}")
+
+    suspend fun setRendererVolume(
+        baseUrl: String,
+        rendererLocation: String,
+        volume: Int,
+        clientId: String,
+    ): RendererVolumeDto = post(
+        "$baseUrl/api/renderers/volume",
+        mapOf(
+            "renderer_location" to rendererLocation,
+            "volume" to volume.coerceIn(0, 100).toString(),
+            "client_id" to clientId,
+        ),
+    )
 
     suspend fun createRendererGroup(
         baseUrl: String,

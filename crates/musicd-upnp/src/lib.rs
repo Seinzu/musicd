@@ -493,6 +493,30 @@ pub fn get_transport_snapshot(control_url: &str) -> io::Result<TransportSnapshot
     })
 }
 
+pub fn get_volume(control_url: &str) -> io::Result<u8> {
+    let body = build_get_volume_envelope(0, "Master");
+    let response = service_action(
+        RENDERING_CONTROL_SERVICE,
+        control_url,
+        "GetVolume",
+        body.as_bytes(),
+    )?;
+    expect_successful_soap("GetVolume", response.clone())?;
+    parse_get_volume_response(&response.body)
+}
+
+pub fn set_volume(control_url: &str, volume: u8) -> io::Result<()> {
+    let desired_volume = volume.min(100).to_string();
+    let body = build_set_volume_envelope(0, "Master", &desired_volume);
+    let response = service_action(
+        RENDERING_CONTROL_SERVICE,
+        control_url,
+        "SetVolume",
+        body.as_bytes(),
+    )?;
+    expect_successful_soap("SetVolume", response)
+}
+
 pub fn query_av_transport_action(
     control_url: &str,
     action: &str,
@@ -849,6 +873,28 @@ pub fn build_get_position_info_envelope(instance_id: u32) -> String {
     )
 }
 
+pub fn build_get_volume_envelope(instance_id: u32, channel: &str) -> String {
+    let instance_id = instance_id.to_string();
+    build_action_envelope(
+        RENDERING_CONTROL_SERVICE,
+        "GetVolume",
+        &[("InstanceID", &instance_id), ("Channel", channel)],
+    )
+}
+
+pub fn build_set_volume_envelope(instance_id: u32, channel: &str, desired_volume: &str) -> String {
+    let instance_id = instance_id.to_string();
+    build_action_envelope(
+        RENDERING_CONTROL_SERVICE,
+        "SetVolume",
+        &[
+            ("InstanceID", &instance_id),
+            ("Channel", channel),
+            ("DesiredVolume", desired_volume),
+        ],
+    )
+}
+
 fn build_instance_id_only_envelope(action: &str, instance_id: u32) -> String {
     format!(
         r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:{action} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1"><InstanceID>{instance_id}</InstanceID></u:{action}></s:Body></s:Envelope>"#
@@ -1053,6 +1099,31 @@ fn parse_position_info_response(body: &[u8]) -> io::Result<PositionInfo> {
         rel_time_seconds,
         track_duration_seconds,
     })
+}
+
+fn parse_get_volume_response(body: &[u8]) -> io::Result<u8> {
+    let xml = String::from_utf8(body.to_vec()).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("GetVolume response body was not valid UTF-8: {error}"),
+        )
+    })?;
+    let volume = extract_first_tag(&xml, "CurrentVolume")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "GetVolume response was missing CurrentVolume",
+            )
+        })?
+        .trim()
+        .parse::<u16>()
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("GetVolume response had invalid CurrentVolume: {error}"),
+            )
+        })?;
+    Ok(volume.min(100) as u8)
 }
 
 fn extract_action_values(action: &str, xml: &str) -> Vec<(String, String)> {
@@ -1816,12 +1887,12 @@ impl fmt::Display for RendererDescription {
 mod tests {
     use super::{
         build_clear_next_av_transport_uri_envelope, build_get_position_info_envelope,
-        build_get_transport_info_envelope, build_next_envelope, build_pause_envelope,
-        build_play_envelope, build_previous_envelope, build_seek_envelope,
+        build_get_transport_info_envelope, build_get_volume_envelope, build_next_envelope,
+        build_pause_envelope, build_play_envelope, build_previous_envelope, build_seek_envelope,
         build_set_av_transport_uri_envelope, build_set_next_av_transport_uri_envelope,
-        build_stop_envelope, decode_playlist_id_array, format_upnp_time,
-        is_transition_not_available_fault, parse_device_description, parse_http_url,
-        parse_playlist_metadata_list, parse_position_info_response,
+        build_set_volume_envelope, build_stop_envelope, decode_playlist_id_array, format_upnp_time,
+        is_transition_not_available_fault, parse_device_description, parse_get_volume_response,
+        parse_http_url, parse_playlist_metadata_list, parse_position_info_response,
         parse_service_action_descriptions, parse_service_actions, parse_ssdp_response,
         parse_transport_info_response, resolve_url, select_renderer_device_section,
     };
@@ -1980,6 +2051,26 @@ mod tests {
     fn position_info_envelope_contains_action() {
         let body = build_get_position_info_envelope(0);
         assert!(body.contains("GetPositionInfo"));
+    }
+
+    #[test]
+    fn volume_envelopes_target_rendering_control_master_channel() {
+        let get_body = build_get_volume_envelope(0, "Master");
+        assert!(get_body.contains("urn:schemas-upnp-org:service:RenderingControl:1"));
+        assert!(get_body.contains("<u:GetVolume"));
+        assert!(get_body.contains("<Channel>Master</Channel>"));
+
+        let set_body = build_set_volume_envelope(0, "Master", "42");
+        assert!(set_body.contains("urn:schemas-upnp-org:service:RenderingControl:1"));
+        assert!(set_body.contains("<u:SetVolume"));
+        assert!(set_body.contains("<DesiredVolume>42</DesiredVolume>"));
+    }
+
+    #[test]
+    fn parses_get_volume_response() {
+        let body = br#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:GetVolumeResponse xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1"><CurrentVolume>37</CurrentVolume></u:GetVolumeResponse></s:Body></s:Envelope>"#;
+
+        assert_eq!(parse_get_volume_response(body).unwrap(), 37);
     }
 
     #[test]

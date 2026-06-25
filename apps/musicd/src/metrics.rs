@@ -268,6 +268,7 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/renderers/discover",
     "/api/renderers/register-android-local",
     "/api/renderers/register-cli-local",
+    "/api/renderers/volume",
     "/api/server",
     "/api/session",
     "/api/tidal/auth-url",

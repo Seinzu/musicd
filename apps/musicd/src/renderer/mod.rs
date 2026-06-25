@@ -98,6 +98,20 @@ pub(crate) trait RendererBackend: Send + Sync {
     fn seek(&self, renderer: &RendererRecord, position_seconds: u64) -> io::Result<()>;
 
     fn transport_snapshot(&self, renderer: &RendererRecord) -> io::Result<TransportSnapshot>;
+
+    fn get_volume(&self, _renderer: &RendererRecord) -> io::Result<u8> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "renderer volume is not supported for this renderer",
+        ))
+    }
+
+    fn set_volume(&self, _renderer: &RendererRecord, _volume: u8) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "renderer volume is not supported for this renderer",
+        ))
+    }
 }
 
 impl RendererBackends {
