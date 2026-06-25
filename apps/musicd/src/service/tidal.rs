@@ -303,7 +303,8 @@ impl ServiceState {
             Some(queued.track_id.as_str()),
         ])
         .to_string();
-        let duration_seconds = resolved.duration_seconds.or(queued.duration_seconds);
+        let duration_seconds =
+            normalize_tidal_duration_seconds(resolved.duration_seconds.or(queued.duration_seconds));
         let artwork_url = resolved.artwork_url.or(queued.artwork_url);
         Ok(QueuePlayableResource {
             id: format!("tidal:{}", resolved.track_id),
@@ -399,7 +400,7 @@ impl ServiceState {
                     title: Some(track.title),
                     artist: track.artist,
                     album: track.album.or_else(|| Some(album_title.clone())),
-                    duration_seconds: track.duration_seconds,
+                    duration_seconds: normalize_tidal_duration_seconds(track.duration_seconds),
                     artwork_url: track.artwork_url.or_else(|| album_artwork_url.clone()),
                 })
             })
@@ -557,6 +558,7 @@ fn tidal_queue_entry(queued_track: TidalQueuedTrack) -> io::Result<QueueMutation
     }
     let source_ref = serde_json::to_string(&TidalQueuedTrack {
         track_id: track_id.clone(),
+        duration_seconds: normalize_tidal_duration_seconds(queued_track.duration_seconds),
         ..queued_track
     })
     .map_err(tidal_json_error)?;
@@ -570,7 +572,10 @@ fn tidal_queue_entry(queued_track: TidalQueuedTrack) -> io::Result<QueueMutation
 
 fn tidal_queued_track(entry: &QueueEntry) -> io::Result<TidalQueuedTrack> {
     if let Some(source_ref) = entry.source_ref.as_deref() {
-        return serde_json::from_str(source_ref).map_err(tidal_json_error);
+        let mut track: TidalQueuedTrack =
+            serde_json::from_str(source_ref).map_err(tidal_json_error)?;
+        track.duration_seconds = normalize_tidal_duration_seconds(track.duration_seconds);
+        return Ok(track);
     }
     entry
         .track_id
@@ -584,6 +589,18 @@ fn tidal_queued_track(entry: &QueueEntry) -> io::Result<TidalQueuedTrack> {
             artwork_url: None,
         })
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing TIDAL track metadata"))
+}
+
+fn normalize_tidal_duration_seconds(value: Option<u64>) -> Option<u64> {
+    let mut duration = value?;
+    if duration > 100_000_000_000 {
+        duration = duration.saturating_add(500_000_000) / 1_000_000_000;
+    } else if duration > 100_000_000 {
+        duration = duration.saturating_add(500_000) / 1_000_000;
+    } else if duration > 86_400 {
+        duration = duration.saturating_add(500) / 1_000;
+    }
+    (duration > 0 && duration <= 86_400).then_some(duration)
 }
 
 fn first_non_empty<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> &'a str {

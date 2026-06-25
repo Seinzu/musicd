@@ -13,6 +13,10 @@ import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.net.UnknownServiceException
+import java.util.concurrent.TimeUnit
+
+private const val MUTATION_READ_TIMEOUT_SECONDS = 45L
+private const val MUTATION_CALL_TIMEOUT_SECONDS = 60L
 
 @Serializable
 data class RendererDto(
@@ -352,6 +356,11 @@ class MusicdApi(
         coerceInputValues = true
                                   },
 ) {
+    private val mutationClient: OkHttpClient = client.newBuilder()
+        .readTimeout(MUTATION_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(MUTATION_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .build()
+
     suspend fun getServerInfo(baseUrl: String): ServerInfoDto =
         get("$baseUrl/api/server")
 
@@ -880,7 +889,7 @@ class MusicdApi(
             .url(url)
             .post(bodyBuilder.build())
             .build()
-        val body = executeRequest(request)
+        val body = executeRequest(request, mutationClient)
         return decodeBody(body, url)
     }
 
@@ -914,9 +923,9 @@ class MusicdApi(
         album.artworkUrl?.takeIf { it.isNotBlank() }?.let { put("artwork_url", it) }
     }
 
-    private fun executeRequest(request: Request): String {
+    private fun executeRequest(request: Request, requestClient: OkHttpClient = client): String {
         try {
-            client.newCall(request).execute().use { response ->
+            requestClient.newCall(request).execute().use { response ->
                 return response.requireSuccessfulBody(json)
             }
         } catch (error: MusicdApiException) {

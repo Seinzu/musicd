@@ -968,7 +968,9 @@ class MusicdPlaybackNotificationService : Service() {
 
     private fun nextQueuedTrackId(event: PlaybackEventDto): String? {
         val entries = event.queue.entries
-        val currentEntryId = event.queue.currentEntryId
+        val currentEntryId = event.nowPlaying.session?.queueEntryId
+            ?: event.queue.session?.queueEntryId
+            ?: event.queue.currentEntryId
         val currentIndex = currentEntryId?.let { targetId ->
             entries.indexOfFirst { it.id == targetId }
                 .takeIf { index -> index >= 0 }

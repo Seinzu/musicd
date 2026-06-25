@@ -158,7 +158,7 @@ def track_json(track: Any) -> dict[str, Any]:
         "title": track.title,
         "artist": getattr(artist, "name", None),
         "album": getattr(album, "name", None) or getattr(album, "title", None),
-        "duration_seconds": getattr(track, "duration", None),
+        "duration_seconds": normalized_duration_seconds(getattr(track, "duration", None)),
         "artwork_url": artwork_url,
     }
 
@@ -180,7 +180,7 @@ def album_json(album: Any) -> dict[str, Any]:
             or getattr(album, "number_of_tracks", None)
             or getattr(album, "track_count", None)
         ),
-        "duration_seconds": getattr(album, "duration", None),
+        "duration_seconds": normalized_duration_seconds(getattr(album, "duration", None)),
         "artwork_url": artwork_url,
         "release_date": str(release_date) if release_date is not None else None,
     }
@@ -199,6 +199,36 @@ def album_tracks(album: Any) -> list[Any]:
     if callable(items):
         return list(items())
     return []
+
+
+def normalized_duration_seconds(value: Any) -> int | None:
+    if value is None:
+        return None
+    total_seconds = getattr(value, "total_seconds", None)
+    if callable(total_seconds):
+        try:
+            value = total_seconds()
+        except Exception:
+            return None
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return None
+    if duration <= 0:
+        return None
+
+    # tidalapi/tidal clients have exposed durations in seconds, milliseconds,
+    # microseconds, and occasionally nanoseconds depending on object source.
+    if duration > 100_000_000_000:
+        duration /= 1_000_000_000
+    elif duration > 100_000_000:
+        duration /= 1_000_000
+    elif duration > 86_400:
+        duration /= 1_000
+
+    if duration <= 0 or duration > 86_400:
+        return None
+    return int(round(duration))
 
 
 def enum_value(value: Any) -> str:

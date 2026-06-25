@@ -610,7 +610,11 @@ pub(crate) fn render_queue_json_for_renderer(
             let duration_seconds = track
                 .as_ref()
                 .and_then(|track| track.duration_seconds)
-                .or_else(|| tidal_track.as_ref().and_then(|track| track.duration_seconds));
+                .or_else(|| {
+                    tidal_track
+                        .as_ref()
+                        .and_then(|track| normalize_tidal_duration_seconds(track.duration_seconds))
+                });
             format!(
                 r#"{{"id":{},"position":{},"track_id":"{}","album_id":{},"source_kind":"{}","source_ref":{},"entry_status":"{}","started_unix":{},"completed_unix":{},"title":{},"artist":{},"album":{},"duration_seconds":{}}}"#,
                 entry.id,
@@ -691,7 +695,7 @@ pub(crate) fn render_session_payload_json(
         option_i64_json(session.next_queue_entry_id),
         option_string_json(session.current_track_uri.as_deref()),
         option_u64_json(session.position_seconds),
-        option_u64_json(session.duration_seconds),
+        option_u64_json(normalize_tidal_duration_seconds(session.duration_seconds)),
         session.last_observed_unix,
         now_unix_timestamp(),
         option_string_json(session.last_error.as_deref()),
@@ -756,6 +760,18 @@ fn queue_entry_display_metadata(entry: &QueueEntry) -> Option<QueueEntryDisplayM
         artist: track.artist,
         album: track.album,
     })
+}
+
+fn normalize_tidal_duration_seconds(value: Option<u64>) -> Option<u64> {
+    let mut duration = value?;
+    if duration > 100_000_000_000 {
+        duration = duration.saturating_add(500_000_000) / 1_000_000_000;
+    } else if duration > 100_000_000 {
+        duration = duration.saturating_add(500_000) / 1_000_000;
+    } else if duration > 86_400 {
+        duration = duration.saturating_add(500) / 1_000;
+    }
+    (duration > 0 && duration <= 86_400).then_some(duration)
 }
 
 pub(crate) fn render_discovery_json(state: &ServiceState) -> String {

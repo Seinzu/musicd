@@ -1944,7 +1944,7 @@ private fun QueueScreen(
 ) {
     val entries = state.queue?.entries.orEmpty()
     val canNavigatePlayback = canRequestPlaybackNavigation(state)
-    val currentEntryId = state.queue?.currentEntryId
+    val currentEntryId = currentPlaybackQueueEntryId(state)
     val currentEntry = entries.firstOrNull {
         it.id == currentEntryId || isCurrentQueueEntryStatus(it.entryStatus)
     }
@@ -2332,6 +2332,7 @@ private fun RendererPickerSheet(
     val sheetBackground = Color(0xFF1F1F25)
     val physicalRenderers = renderers.filter { it.kind != "group" && it.directAccess }
     val groupRenderers = renderers.filter { it.kind == "group" }
+    val selectedRenderer = renderers.firstOrNull { it.location == selectedRendererLocation }
     var pendingDeleteGroup by remember { mutableStateOf<RendererDto?>(null) }
     val targetSummary = listOfNotNull(
         groupRenderers.size.takeIf { it > 0 }?.let { "$it GROUP${if (it == 1) "" else "S"}" },
@@ -4157,7 +4158,7 @@ private fun playbackSubtitle(state: MusicdUiState): String {
 
 private fun currentPlaybackQueueEntry(state: MusicdUiState): QueueEntryDto? {
     val queue = state.queue ?: return null
-    val sessionEntryId = state.nowPlaying?.session?.queueEntryId
+    val sessionEntryId = currentPlaybackQueueEntryId(state)
     if (sessionEntryId != null) {
         return queue.entries.firstOrNull { entry -> entry.id == sessionEntryId }
     }
@@ -4166,6 +4167,11 @@ private fun currentPlaybackQueueEntry(state: MusicdUiState): QueueEntryDto? {
         entry.id == currentEntryId && isCurrentQueueEntryStatus(entry.entryStatus)
     }
 }
+
+private fun currentPlaybackQueueEntryId(state: MusicdUiState): Long? =
+    state.nowPlaying?.session?.queueEntryId
+        ?: state.queue?.session?.queueEntryId
+        ?: state.queue?.currentEntryId
 
 private fun humanizeTransportState(state: String?): String =
     when (state?.trim()?.uppercase()) {
