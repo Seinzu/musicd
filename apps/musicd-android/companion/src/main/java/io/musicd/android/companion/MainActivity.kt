@@ -208,7 +208,7 @@ private fun CompanionScreen(
                 ) {
                     Icon(Icons.Rounded.LibraryMusic, contentDescription = null, modifier = Modifier.size(36.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("musicd Companion", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                        Text("feltsloth Companion", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                         Text(
                             "Local storage roots for the Android standalone engine.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -343,7 +343,7 @@ private fun PairingPanel(pairedClientId: String?, onResetPairing: () -> Unit) {
             Text("Controller pairing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 if (pairedClientId == null) {
-                    "No controller is paired yet. Open local companion mode in the main musicd app to allow playback and queue changes."
+                    "No controller is paired yet. Open local companion mode in the main feltsloth app to allow playback and queue changes."
                 } else {
                     "Paired with controller ...${pairedClientId.takeLast(8)}. Only that controller can send playback and queue changes."
                 },

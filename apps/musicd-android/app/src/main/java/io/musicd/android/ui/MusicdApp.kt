@@ -720,7 +720,7 @@ private fun ServerSetupScreen(
         ) {
             Column(modifier = Modifier.padding(24.dp)) {
                 Text(
-                    serverName?.takeIf { it.isNotBlank() } ?: "musicd",
+                    serverName?.takeIf { it.isNotBlank() } ?: "feltsloth",
                     style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                 )
@@ -753,7 +753,7 @@ private fun ServerSetupScreen(
                     Text("Use local companion")
                 }
                 TextButton(onClick = onOpenLocalCompanion, modifier = Modifier.fillMaxWidth()) {
-                    Text("Open musicd Companion")
+                    Text("Open feltsloth Companion")
                 }
                 Spacer(Modifier.height(20.dp))
                 DiscoveredServersSection(
@@ -4546,14 +4546,14 @@ private fun LocalCompanionLibraryPanel(onOpenLocalCompanion: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("Local companion library", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Open musicd Companion, add a music folder, run Scan music folders, then return here. The controller refreshes local tracks when it comes back into focus.",
+                    "Open feltsloth Companion, add a music folder, run Scan music folders, then return here. The controller refreshes local tracks when it comes back into focus.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
         Spacer(Modifier.height(12.dp))
         Button(onClick = onOpenLocalCompanion, modifier = Modifier.fillMaxWidth()) {
-            Text("Open musicd Companion")
+            Text("Open feltsloth Companion")
         }
     }
 }

@@ -161,7 +161,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 sourceKind = MusicSourceKind.LocalCompanion,
                 serverInput = "",
                 baseUrl = LocalCompanionRepository.LOCAL_COMPANION_BASE_URL,
-                serverName = "musicd Companion",
+                serverName = "feltsloth Companion",
                 connected = true,
                 showServerEditor = false,
                 selectedTab = MusicdTab.Library,
@@ -183,9 +183,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 discoveredServers = emptyList(),
                 errorMessage = null,
                 warningMessage = if (!companionInstalled) {
-                    "Install or run the musicd Companion app to add local music folders."
+                    "Install or run the feltsloth Companion app to add local music folders."
                 } else if (!paired) {
-                    "Open or reinstall the musicd Companion app to finish local pairing."
+                    "Open or reinstall the feltsloth Companion app to finish local pairing."
                 } else {
                     null
                 },
@@ -203,9 +203,9 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         val launched = localCompanionRepository.launchCompanion()
         _uiState.update {
             it.copy(
-                errorMessage = if (launched) null else "musicd Companion is not installed on this device.",
+                errorMessage = if (launched) null else "feltsloth Companion is not installed on this device.",
                 infoMessage = if (launched) {
-                    "Opened musicd Companion. Return here after scanning to refresh the local library."
+                    "Opened feltsloth Companion. Return here after scanning to refresh the local library."
                 } else {
                     it.infoMessage
                 },
@@ -492,7 +492,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                         queue = queue,
                         isLoading = false,
                         warningMessage = if (albums.isEmpty() && tracks.isEmpty()) {
-                            "No local tracks indexed yet. Open musicd Companion to add folders and scan."
+                            "No local tracks indexed yet. Open feltsloth Companion to add folders and scan."
                         } else {
                             null
                         },
@@ -507,7 +507,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         renderers = listOf(localCompanionRenderer()),
                         isLoading = false,
-                        warningMessage = "Open musicd Companion, add folders, then scan. ${connectionErrorMessage(error)}",
+                        warningMessage = "Open feltsloth Companion, add folders, then scan. ${connectionErrorMessage(error)}",
                     )
                 }
             }
@@ -667,7 +667,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     _uiState.update {
                         it.withLastfmSettings(lastfmRepository.loadSettings()).copy(
                             isLastfmBusy = false,
-                            infoMessage = "Authorize musicd in Last.fm, then return here to complete sign-in.",
+                            infoMessage = "Authorize feltsloth in Last.fm, then return here to complete sign-in.",
                         )
                     }
                     openExternalUrl(LastfmRepository.authUrl(uiState.value.lastfmApiKey, token))

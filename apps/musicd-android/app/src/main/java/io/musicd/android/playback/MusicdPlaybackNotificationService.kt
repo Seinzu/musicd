@@ -307,7 +307,7 @@ class MusicdPlaybackNotificationService : Service() {
         val metadata = MediaMetadataCompat.Builder()
             .putString(
                 MediaMetadataCompat.METADATA_KEY_TITLE,
-                currentTrack?.title ?: event.nowPlaying.session?.title ?: "musicd",
+                currentTrack?.title ?: event.nowPlaying.session?.title ?: "feltsloth",
             )
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentTrack?.artist ?: event.nowPlaying.session?.artist)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, currentTrack?.album ?: event.nowPlaying.session?.album)
@@ -350,7 +350,7 @@ class MusicdPlaybackNotificationService : Service() {
     private fun buildBootstrapNotification() =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle(currentServerName ?: "musicd")
+            .setContentTitle(currentServerName ?: "feltsloth")
             .setContentText("Connecting to playback updates…")
             .setSubText(notificationContextLine())
             .setContentIntent(appLaunchPendingIntent())
@@ -408,7 +408,7 @@ class MusicdPlaybackNotificationService : Service() {
             ?: event.nowPlaying.session?.title
             ?: event.queue.entries.firstOrNull()?.title
             ?: currentServerName
-            ?: "musicd"
+            ?: "feltsloth"
 
     private fun notificationText(event: PlaybackEventDto): String {
         val currentTrack = event.nowPlaying.currentTrack
@@ -426,7 +426,7 @@ class MusicdPlaybackNotificationService : Service() {
         return when {
             event.queue.entries.isNotEmpty() -> "${event.queue.entries.size} items queued"
             !currentRendererLocation.isBlank() -> currentRendererLocation
-            else -> currentServerName ?: "musicd"
+            else -> currentServerName ?: "feltsloth"
         }
     }
 
@@ -435,7 +435,7 @@ class MusicdPlaybackNotificationService : Service() {
         val rendererName = event?.nowPlaying?.renderer?.name
             ?.takeIf { it.isNotBlank() }
             ?: currentServerName
-            ?: "musicd"
+            ?: "feltsloth"
         return listOfNotNull(transportState, rendererName)
             .joinToString(" • ")
     }
@@ -1056,7 +1056,7 @@ class MusicdPlaybackNotificationService : Service() {
             "Playback controls",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Remote playback controls for musicd"
+            description = "Remote playback controls for feltsloth"
         }
         manager.createNotificationChannel(channel)
     }

@@ -1,6 +1,6 @@
-# musicd Android
+# feltsloth Android
 
-This directory contains the native Android controller for `musicd`.
+This directory contains the native Android controller for the `musicd` server.
 
 What is included:
 
@@ -77,6 +77,6 @@ The companion app currently supports:
 - exposing a localhost-only read/mutation API
 - local queue and direct `content://` playback through Media3/ExoPlayer
 
-The companion app must be running for the controller to reach the localhost API. Open `musicd Companion`, add a music folder, then run `Scan music folders` before expecting local albums/tracks to appear in the controller.
+The companion app must be running for the controller to reach the localhost API. Open `feltsloth Companion`, add a music folder, then run `Scan music folders` before expecting local albums/tracks to appear in the controller.
 
 CI now also builds and uploads the debug APK from GitHub Actions through `.github/workflows/android-debug-apk.yml`.

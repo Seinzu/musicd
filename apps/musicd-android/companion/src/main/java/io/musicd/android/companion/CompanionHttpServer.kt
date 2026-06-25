@@ -221,7 +221,7 @@ private fun parseForm(body: String): Map<String, String> =
 private fun serverJson(): String =
     """
     {
-      "name": "musicd Companion",
+      "name": "feltsloth Companion",
       "base_url": "$LOCAL_COMPANION_BASE_URL",
       "bind_address": "127.0.0.1:$LOCAL_COMPANION_PORT"
     }

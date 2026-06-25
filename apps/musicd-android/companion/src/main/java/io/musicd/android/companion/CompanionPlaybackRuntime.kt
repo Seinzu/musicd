@@ -430,7 +430,7 @@ class CompanionPlaybackRuntime(private val service: Service) {
 
         return NotificationCompat.Builder(service, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_musicd)
-            .setContentTitle("musicd Companion")
+            .setContentTitle("feltsloth Companion")
             .setContentText(title)
             .setContentIntent(activityIntent())
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
@@ -582,7 +582,7 @@ class CompanionPlaybackRuntime(private val service: Service) {
         manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
-                "musicd Companion playback",
+                "feltsloth Companion playback",
                 NotificationManager.IMPORTANCE_LOW,
             ),
         )
