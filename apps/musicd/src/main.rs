@@ -3242,6 +3242,7 @@ mod tests {
             metrics: OnceLock::new(),
             events: crate::service::PlaybackEvents::new(),
             renderer_action_locks: Mutex::new(HashMap::new()),
+            tidal_stream_cache: Mutex::new(HashMap::new()),
             rescan_state: crate::service::RescanState::new(),
         }
     }

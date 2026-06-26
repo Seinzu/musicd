@@ -47,6 +47,7 @@ pub(crate) struct ServiceState {
     pub(crate) metrics: OnceLock<Arc<metrics::Metrics>>,
     pub(crate) events: PlaybackEvents,
     pub(crate) renderer_action_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    pub(crate) tidal_stream_cache: Mutex<HashMap<String, tidal::TidalStreamSource>>,
     /// State for tracking concurrent rescans
     pub(crate) rescan_state: RescanState,
 }
@@ -145,6 +146,7 @@ impl ServiceState {
             metrics: OnceLock::new(),
             events: PlaybackEvents::new(),
             renderer_action_locks: Mutex::new(HashMap::new()),
+            tidal_stream_cache: Mutex::new(HashMap::new()),
             rescan_state: RescanState::new(),
         };
 

@@ -15,6 +15,7 @@ use super::ServiceState;
 
 const TIDAL_HELPER_TIMEOUT: Duration = Duration::from_secs(20);
 const TIDAL_STREAM_SCHEMA_VERSION: u32 = 2;
+const TIDAL_STREAM_CACHE_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TidalQueuedTrack {
@@ -73,6 +74,15 @@ pub(crate) enum TidalStreamSource {
         mime_type: String,
         stream_format: String,
     },
+}
+
+impl TidalStreamSource {
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Direct { .. } => "direct",
+            Self::Segments { .. } => "segments",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -295,6 +305,8 @@ impl ServiceState {
     ) -> io::Result<QueuePlayableResource> {
         let queued = tidal_queued_track(entry)?;
         let resolved = self.resolve_tidal_track(&queued.track_id)?;
+        let stream_source = self.tidal_stream_source_from_resolved(&resolved)?;
+        self.cache_tidal_stream_source(&resolved.track_id, stream_source);
         let artist = resolved.artist.or(queued.artist.clone());
         let album = resolved.album.or(queued.album.clone());
         let title = first_non_empty([
@@ -323,7 +335,27 @@ impl ServiceState {
     }
 
     pub(crate) fn tidal_stream_source(&self, track_id: &str) -> io::Result<TidalStreamSource> {
+        if let Some(source) = self.cached_tidal_stream_source(track_id) {
+            self.debug_log(
+                "tidal-stream-cache-hit",
+                format!("track_id={track_id} source={}", source.kind_name()),
+            );
+            return Ok(source);
+        }
+        self.debug_log(
+            "tidal-stream-cache-miss",
+            format!("track_id={track_id} resolving=true"),
+        );
         let resolved = self.resolve_tidal_track(track_id)?;
+        let source = self.tidal_stream_source_from_resolved(&resolved)?;
+        self.cache_tidal_stream_source(track_id, source.clone());
+        Ok(source)
+    }
+
+    fn tidal_stream_source_from_resolved(
+        &self,
+        resolved: &TidalResolvedTrack,
+    ) -> io::Result<TidalStreamSource> {
         resolved.ensure_supported_stream_schema()?;
         let mime_type = normalize_tidal_mime_type(resolved.mime_type.as_deref());
         let urls = resolved.stream_urls();
@@ -345,6 +377,28 @@ impl ServiceState {
             mime_type,
             stream_format,
         })
+    }
+
+    fn cached_tidal_stream_source(&self, track_id: &str) -> Option<TidalStreamSource> {
+        self.tidal_stream_cache
+            .lock()
+            .expect("TIDAL stream cache should not be poisoned")
+            .get(track_id)
+            .cloned()
+    }
+
+    fn cache_tidal_stream_source(&self, track_id: &str, source: TidalStreamSource) {
+        let mut cache = self
+            .tidal_stream_cache
+            .lock()
+            .expect("TIDAL stream cache should not be poisoned");
+        if cache.len() >= TIDAL_STREAM_CACHE_LIMIT
+            && !cache.contains_key(track_id)
+            && let Some(key) = cache.keys().next().cloned()
+        {
+            cache.remove(&key);
+        }
+        cache.insert(track_id.to_string(), source);
     }
 
     fn tidal_proxy_stream_url(&self, track_id: &str) -> String {
