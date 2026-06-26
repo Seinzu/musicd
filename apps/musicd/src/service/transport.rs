@@ -152,6 +152,31 @@ impl ServiceState {
             Ok(backend) => operation(backend),
             Err(error) => Err(error),
         };
+        match &result {
+            Ok(_) => self.debug_log(
+                "renderer-action-ok",
+                format!(
+                    "renderer={} action={} name={:?} manufacturer={:?} model={:?}",
+                    renderer_location,
+                    action,
+                    renderer.name,
+                    renderer.manufacturer.as_deref(),
+                    renderer.model_name.as_deref()
+                ),
+            ),
+            Err(error) => self.debug_log(
+                "renderer-action-failed",
+                format!(
+                    "renderer={} action={} name={:?} manufacturer={:?} model={:?} error={}",
+                    renderer_location,
+                    action,
+                    renderer.name,
+                    renderer.manufacturer.as_deref(),
+                    renderer.model_name.as_deref(),
+                    error
+                ),
+            ),
+        }
         self.debug_log_private_queue_snapshot(renderer_location, renderer, action, "after");
         result
     }

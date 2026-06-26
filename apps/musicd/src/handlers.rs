@@ -2775,18 +2775,63 @@ fn handle_tidal_direct_stream(
         upstream_status.as_u16(),
         upstream_status.canonical_reason().unwrap_or("OK")
     );
+    let upstream_content_length = upstream
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let upstream_content_range = upstream
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let headers = tidal_direct_stream_response_headers(mime_type, upstream.headers());
     state.debug_log(
         "tidal-stream-proxy",
         format!(
-            "track_id={} status={} mime_type={} format={} range={:?} upstream_url={}",
-            track_id, status, mime_type, stream_format, request.range_header, stream_url
+            "track_id={} method={} status={} mime_type={} format={} range={:?} upstream_length={:?} upstream_range={:?} upstream_url={}",
+            track_id,
+            request.method,
+            status,
+            mime_type,
+            stream_format,
+            request.range_header,
+            upstream_content_length,
+            upstream_content_range,
+            stream_url
         ),
     );
     write_response_owned(writer, &status, &headers, None)?;
     if request.method != "HEAD" {
-        io::copy(&mut upstream, writer)?;
+        let copied = match io::copy(&mut upstream, writer) {
+            Ok(copied) => copied,
+            Err(error) => {
+                state.debug_log(
+                    "tidal-stream-copy-failed",
+                    format!(
+                        "track_id={} method={} range={:?} error={}",
+                        track_id, request.method, request.range_header, error
+                    ),
+                );
+                return Err(error);
+            }
+        };
         writer.flush()?;
+        state.debug_log(
+            "tidal-stream-copy-finished",
+            format!(
+                "track_id={} method={} range={:?} bytes={}",
+                track_id, request.method, request.range_header, copied
+            ),
+        );
+    } else {
+        state.debug_log(
+            "tidal-stream-head-finished",
+            format!(
+                "track_id={} range={:?} response_length={:?} response_range={:?}",
+                track_id, request.range_header, upstream_content_length, upstream_content_range
+            ),
+        );
     }
     Ok(())
 }
@@ -2803,8 +2848,9 @@ fn handle_tidal_segment_stream(
     state.debug_log(
         "tidal-segment-stream-start",
         format!(
-            "track_id={} segments={} mime_type={} format={} range={:?}",
+            "track_id={} method={} segments={} mime_type={} format={} range={:?}",
             track_id,
+            request.method,
             urls.len(),
             mime_type,
             stream_format,
@@ -2817,6 +2863,10 @@ fn handle_tidal_segment_stream(
     ];
     write_response_owned(writer, "200 OK", &headers, None)?;
     if request.method == "HEAD" {
+        state.debug_log(
+            "tidal-segment-stream-head-finished",
+            format!("track_id={} segments={}", track_id, urls.len()),
+        );
         return Ok(());
     }
 
@@ -2824,6 +2874,7 @@ fn handle_tidal_segment_stream(
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .map_err(tidal_stream_error)?;
+    let mut copied_total = 0_u64;
     for (index, url) in urls.iter().enumerate() {
         let mut upstream = client.get(url).send().map_err(tidal_stream_error)?;
         if !upstream.status().is_success() {
@@ -2842,12 +2893,29 @@ fn handle_tidal_segment_stream(
                 upstream.status()
             )));
         }
-        io::copy(&mut upstream, writer)?;
+        match io::copy(&mut upstream, writer) {
+            Ok(copied) => copied_total += copied,
+            Err(error) => {
+                state.debug_log(
+                    "tidal-segment-stream-copy-failed",
+                    format!(
+                        "track_id={} segment={} copied_total={} error={}",
+                        track_id, index, copied_total, error
+                    ),
+                );
+                return Err(error);
+            }
+        }
     }
     writer.flush()?;
     state.debug_log(
         "tidal-segment-stream-finished",
-        format!("track_id={} segments={}", track_id, urls.len()),
+        format!(
+            "track_id={} segments={} bytes={}",
+            track_id,
+            urls.len(),
+            copied_total
+        ),
     );
     Ok(())
 }
