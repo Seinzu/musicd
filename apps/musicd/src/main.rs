@@ -671,6 +671,60 @@ mod tests {
     }
 
     #[test]
+    fn resume_paused_renderer_that_reset_position_restarts_and_seeks() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let backend = Arc::new(FakeRendererBackend::new(
+            renderer_location,
+            vec![
+                transport_snapshot("PAUSED_PLAYBACK", &track, 0, 180),
+                playing_snapshot(&track, 0, 180),
+            ],
+        ));
+        let state = sample_state_with_backend(vec![track.clone()], backend.clone());
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Manual",
+                &[queue_entry_for_track(&track)],
+            )
+            .expect("queue should be created");
+        let resource = state.stream_resource_for_track(&track);
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                queue.entries[0].id,
+                &track.id,
+                &resource.stream_url,
+                track.duration_seconds,
+            )
+            .expect("queue session should be marked started");
+        state
+            .database
+            .record_transport_snapshot(
+                renderer_location,
+                "PAUSED_PLAYBACK",
+                Some(&resource.stream_url),
+                Some(42),
+                track.duration_seconds,
+            )
+            .expect("paused renderer snapshot should be recorded");
+
+        state
+            .resume_renderer(renderer_location)
+            .expect("paused renderer that reset to zero should resume");
+
+        let played = backend.played_streams();
+        assert_eq!(played.len(), 1);
+        assert_eq!(played[0].stream_url, resource.stream_url);
+        assert_eq!(backend.seek_positions(), vec![42]);
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
     fn paused_queues_remain_active_poll_targets() {
         let renderer_location = "http://renderer.local/description.xml";
         let track = sample_track("track-1", Some(1), Some(1), "Track 1");

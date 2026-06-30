@@ -16,6 +16,7 @@ use super::ServiceState;
 const TIDAL_HELPER_TIMEOUT: Duration = Duration::from_secs(20);
 const TIDAL_STREAM_SCHEMA_VERSION: u32 = 2;
 const TIDAL_STREAM_CACHE_LIMIT: usize = 64;
+const TIDAL_COMPATIBILITY_QUALITIES: &[&str] = &["HIGH", "LOW"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TidalQueuedTrack {
@@ -82,6 +83,10 @@ impl TidalStreamSource {
             Self::Direct { .. } => "direct",
             Self::Segments { .. } => "segments",
         }
+    }
+
+    fn needs_compatibility_fallback(&self) -> bool {
+        matches!(self, Self::Segments { .. })
     }
 }
 
@@ -305,7 +310,7 @@ impl ServiceState {
     ) -> io::Result<QueuePlayableResource> {
         let queued = tidal_queued_track(entry)?;
         let resolved = self.resolve_tidal_track(&queued.track_id)?;
-        let stream_source = self.tidal_stream_source_from_resolved(&resolved)?;
+        let stream_source = self.compatible_tidal_stream_source(&queued.track_id, &resolved)?;
         self.cache_tidal_stream_source(&resolved.track_id, stream_source);
         let artist = resolved.artist.or(queued.artist.clone());
         let album = resolved.album.or(queued.album.clone());
@@ -347,8 +352,67 @@ impl ServiceState {
             format!("track_id={track_id} resolving=true"),
         );
         let resolved = self.resolve_tidal_track(track_id)?;
-        let source = self.tidal_stream_source_from_resolved(&resolved)?;
+        let source = self.compatible_tidal_stream_source(track_id, &resolved)?;
         self.cache_tidal_stream_source(track_id, source.clone());
+        Ok(source)
+    }
+
+    fn compatible_tidal_stream_source(
+        &self,
+        track_id: &str,
+        resolved: &TidalResolvedTrack,
+    ) -> io::Result<TidalStreamSource> {
+        let source = self.tidal_stream_source_from_resolved(resolved)?;
+        if !source.needs_compatibility_fallback() {
+            return Ok(source);
+        }
+        self.debug_log(
+            "tidal-stream-compat-fallback",
+            format!(
+                "track_id={} original_source={} original_quality={}",
+                track_id,
+                source.kind_name(),
+                self.config.tidal_audio_quality
+            ),
+        );
+        for quality in TIDAL_COMPATIBILITY_QUALITIES {
+            if quality.eq_ignore_ascii_case(&self.config.tidal_audio_quality) {
+                continue;
+            }
+            match self.resolve_tidal_track_with_quality(track_id, quality) {
+                Ok(candidate) => match self.tidal_stream_source_from_resolved(&candidate) {
+                    Ok(candidate_source) if !candidate_source.needs_compatibility_fallback() => {
+                        self.debug_log(
+                            "tidal-stream-compat-selected",
+                            format!(
+                                "track_id={} quality={} source={}",
+                                track_id,
+                                quality,
+                                candidate_source.kind_name()
+                            ),
+                        );
+                        return Ok(candidate_source);
+                    }
+                    Ok(candidate_source) => self.debug_log(
+                        "tidal-stream-compat-skipped",
+                        format!(
+                            "track_id={} quality={} source={} reason=still-segmented",
+                            track_id,
+                            quality,
+                            candidate_source.kind_name()
+                        ),
+                    ),
+                    Err(error) => self.debug_log(
+                        "tidal-stream-compat-skipped",
+                        format!("track_id={} quality={} error={}", track_id, quality, error),
+                    ),
+                },
+                Err(error) => self.debug_log(
+                    "tidal-stream-compat-skipped",
+                    format!("track_id={} quality={} error={}", track_id, quality, error),
+                ),
+            }
+        }
         Ok(source)
     }
 
@@ -414,6 +478,15 @@ impl ServiceState {
         serde_json::from_str::<TidalResolvedTrack>(&output).map_err(tidal_json_error)
     }
 
+    fn resolve_tidal_track_with_quality(
+        &self,
+        track_id: &str,
+        quality: &str,
+    ) -> io::Result<TidalResolvedTrack> {
+        let output = self.run_tidal_helper_with_quality(quality, &["resolve-track", track_id])?;
+        serde_json::from_str::<TidalResolvedTrack>(&output).map_err(tidal_json_error)
+    }
+
     fn tidal_album_tracks(&self, album_id: &str) -> io::Result<TidalAlbumTracks> {
         let output = self.run_tidal_helper(&["album-tracks", album_id])?;
         serde_json::from_str::<TidalAlbumTracks>(&output).map_err(tidal_json_error)
@@ -469,13 +542,17 @@ impl ServiceState {
     }
 
     fn run_tidal_helper(&self, args: &[&str]) -> io::Result<String> {
+        self.run_tidal_helper_with_quality(&self.config.tidal_audio_quality, args)
+    }
+
+    fn run_tidal_helper_with_quality(&self, quality: &str, args: &[&str]) -> io::Result<String> {
         let (program, helper_args) = self.tidal_helper_command_parts()?;
         let mut command = Command::new(&program);
         command.args(&helper_args);
         command.arg("--session-file");
         command.arg(&self.config.tidal_session_path);
         command.arg("--quality");
-        command.arg(&self.config.tidal_audio_quality);
+        command.arg(quality);
         command.args(args);
         let output = command.output().map_err(|error| {
             io::Error::new(

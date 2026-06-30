@@ -5,7 +5,9 @@ use std::time::Duration;
 use musicd_upnp::{RendererPlaylist, TransportSnapshot};
 
 use crate::renderer::{RendererBackend, RendererKind, renderer_kind_for_location};
-use crate::types::{LibraryTrack, PlaybackQueue, RendererRecord, StartedQueueItem};
+use crate::types::{
+    LibraryTrack, PlaybackQueue, PlaybackSession, RendererRecord, StartedQueueItem,
+};
 
 use super::ServiceState;
 use super::poll::{
@@ -335,6 +337,44 @@ impl ServiceState {
         }
 
         let renderer = self.resolve_renderer(renderer_location)?;
+        if let (Some(queue), Some(session), Some(current_entry_id)) =
+            (queue.as_ref(), session.as_ref(), current_queue_entry_id)
+        {
+            if self.paused_renderer_needs_restart_for_resume(renderer_location, &renderer, session)
+            {
+                let resume_position_seconds = session
+                    .queue_entry_id
+                    .filter(|entry_id| *entry_id == current_entry_id)
+                    .and_then(|_| {
+                        resumable_position_seconds(
+                            session.position_seconds,
+                            session.duration_seconds,
+                        )
+                    });
+                let (started, _, renderer_name, resolved_renderer_location) =
+                    self.start_current_queue_entry(renderer_location)?;
+                if let Some(track) = started.local_track.as_ref() {
+                    self.seek_restarted_renderer_to_position(
+                        &resolved_renderer_location,
+                        track,
+                        resume_position_seconds,
+                    );
+                }
+                self.debug_log(
+                    "resume-restart-paused-renderer",
+                    format!(
+                        "renderer={} queue_current={:?} queue_entries={}",
+                        renderer_location,
+                        queue.current_entry_id,
+                        queue.entries.len()
+                    ),
+                );
+                return Ok(format!(
+                    "Now playing '{}' on {}.",
+                    started.title, renderer_name
+                ));
+            }
+        }
         if let Err(error) = self.run_renderer_action_with_private_queue_log(
             renderer_location,
             &renderer,
@@ -357,6 +397,91 @@ impl ServiceState {
             &snapshot.transport_info.transport_state,
         )?;
         Ok("Playback resumed.".to_string())
+    }
+
+    fn paused_renderer_needs_restart_for_resume(
+        &self,
+        renderer_location: &str,
+        renderer: &RendererRecord,
+        session: &PlaybackSession,
+    ) -> bool {
+        if session.transport_state != "PAUSED_PLAYBACK" {
+            return false;
+        }
+        let Some(resume_position_seconds) =
+            resumable_position_seconds(session.position_seconds, session.duration_seconds)
+        else {
+            return false;
+        };
+        let snapshot = match self
+            .renderer_backend(renderer_location)
+            .and_then(|backend| backend.transport_snapshot(renderer))
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.debug_log(
+                    "resume-paused-snapshot-failed",
+                    format!(
+                        "renderer={} target={} error={}",
+                        renderer_location, resume_position_seconds, error
+                    ),
+                );
+                return true;
+            }
+        };
+        if matches!(
+            snapshot.transport_info.transport_state.as_str(),
+            "STOPPED" | "NO_MEDIA_PRESENT" | "READY" | "COMPLETED"
+        ) {
+            self.debug_log(
+                "resume-paused-restart-needed",
+                format!(
+                    "renderer={} reason=state state={} target={} uri={:?} position={:?}",
+                    renderer_location,
+                    snapshot.transport_info.transport_state,
+                    resume_position_seconds,
+                    snapshot.position_info.track_uri,
+                    snapshot.position_info.rel_time_seconds
+                ),
+            );
+            return true;
+        }
+        if let (Some(expected_uri), Some(observed_uri)) = (
+            session.current_track_uri.as_deref(),
+            snapshot.position_info.track_uri.as_deref(),
+        ) {
+            if expected_uri != observed_uri {
+                self.debug_log(
+                    "resume-paused-restart-needed",
+                    format!(
+                        "renderer={} reason=uri target={} expected_uri={} observed_uri={}",
+                        renderer_location, resume_position_seconds, expected_uri, observed_uri
+                    ),
+                );
+                return true;
+            }
+        } else if session.current_track_uri.is_some() {
+            self.debug_log(
+                "resume-paused-restart-needed",
+                format!(
+                    "renderer={} reason=missing-uri target={} observed_uri={:?}",
+                    renderer_location, resume_position_seconds, snapshot.position_info.track_uri
+                ),
+            );
+            return true;
+        }
+        let observed_position = snapshot.position_info.rel_time_seconds.unwrap_or(0);
+        if observed_position.saturating_add(3) < resume_position_seconds {
+            self.debug_log(
+                "resume-paused-restart-needed",
+                format!(
+                    "renderer={} reason=position target={} observed={}",
+                    renderer_location, resume_position_seconds, observed_position
+                ),
+            );
+            return true;
+        }
+        false
     }
 
     pub(crate) fn pause_renderer(&self, renderer_location: &str) -> io::Result<String> {
