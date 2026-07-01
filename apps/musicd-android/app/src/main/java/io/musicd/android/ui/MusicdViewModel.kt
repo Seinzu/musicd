@@ -1855,6 +1855,12 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun transportSeek(positionSeconds: Long) {
+        transportAction { baseUrl, renderer ->
+            repository.transportSeek(baseUrl, renderer, positionSeconds.coerceAtLeast(0L))
+        }
+    }
+
     private fun queueMutationAction(
         fallbackMessage: String,
         unavailableAlbumId: String? = null,

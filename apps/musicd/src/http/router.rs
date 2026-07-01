@@ -24,7 +24,8 @@ use crate::handlers::{
     handle_api_tidal_play_track_request, handle_api_tidal_search_albums_request,
     handle_api_tidal_search_tracks_request, handle_api_transport_next_request,
     handle_api_transport_pause_request, handle_api_transport_play_request,
-    handle_api_transport_previous_request, handle_api_transport_stop_request,
+    handle_api_transport_previous_request, handle_api_transport_seek_request,
+    handle_api_transport_stop_request,
     handle_play_album_request, handle_play_request, handle_queue_append_album_request,
     handle_queue_append_track_request, handle_queue_clear_request, handle_queue_move_down_request,
     handle_queue_move_up_request, handle_queue_play_next_album_request,
@@ -428,6 +429,9 @@ pub(crate) fn handle_service_request(
         ("POST", "/api/transport/previous") => {
             handle_api_transport_previous_request(writer, request, &state)
         }
+        ("POST", "/api/transport/seek") => {
+            handle_api_transport_seek_request(writer, request, &state)
+        }
         ("POST", "/api/queue/append-track") => {
             handle_api_queue_append_track_request(writer, request, &state)
         }
@@ -584,6 +588,7 @@ pub(crate) fn handle_service_request(
         | ("HEAD", "/api/transport/stop")
         | ("HEAD", "/api/transport/next")
         | ("HEAD", "/api/transport/previous")
+        | ("HEAD", "/api/transport/seek")
         | ("HEAD", "/api/queue/append-track")
         | ("HEAD", "/api/queue/append-album")
         | ("HEAD", "/api/queue/play-next-track")

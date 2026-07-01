@@ -428,6 +428,19 @@ class MusicdRepository(
     suspend fun transportPrevious(baseUrl: String, rendererLocation: String): MutationResponseDto =
         transport(baseUrl, "/api/transport/previous", rendererLocation)
 
+    suspend fun transportSeek(
+        baseUrl: String,
+        rendererLocation: String,
+        positionSeconds: Long,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.transportSeek(
+            baseUrl.normalizeBaseUrl(),
+            rendererLocation,
+            positionSeconds.coerceAtLeast(0L),
+            loadClientId(),
+        )
+    }
+
     private suspend fun transport(
         baseUrl: String,
         path: String,

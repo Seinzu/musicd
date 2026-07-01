@@ -566,6 +566,20 @@ class MusicdApi(
             mapOf("renderer_location" to rendererLocation, "client_id" to clientId),
         )
 
+    suspend fun transportSeek(
+        baseUrl: String,
+        rendererLocation: String,
+        positionSeconds: Long,
+        clientId: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/transport/seek",
+        mapOf(
+            "renderer_location" to rendererLocation,
+            "client_id" to clientId,
+            "position_seconds" to positionSeconds.coerceAtLeast(0L).toString(),
+        ),
+    )
+
     suspend fun playTrack(
         baseUrl: String,
         rendererLocation: String,

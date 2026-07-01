@@ -707,6 +707,50 @@ impl ServiceState {
         Ok("Moved to the previous track.".to_string())
     }
 
+    pub(crate) fn seek_renderer(
+        &self,
+        renderer_location: &str,
+        position_seconds: u64,
+    ) -> io::Result<String> {
+        if matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::Group | RendererKind::AndroidLocal | RendererKind::CliLocal
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "seek is not supported for this renderer",
+            ));
+        }
+
+        let renderer = self.resolve_renderer(renderer_location)?;
+        if renderer.capabilities.supports_seek() == Some(false) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "renderer does not support seek",
+            ));
+        }
+        self.debug_log(
+            "seek-request",
+            format!("renderer={renderer_location} target={position_seconds}"),
+        );
+        if let Err(error) = self.run_renderer_action_with_private_queue_log(
+            renderer_location,
+            &renderer,
+            "seek",
+            |backend| backend.seek(&renderer, position_seconds),
+        ) {
+            let _ = self.mark_renderer_unreachable(renderer_location, &error);
+            return Err(error);
+        }
+        let snapshot = self.refresh_transport_state(renderer_location)?;
+        self.database.set_queue_status(
+            renderer_location,
+            queue_status_for_transport(&snapshot.transport_info.transport_state),
+            &snapshot.transport_info.transport_state,
+        )?;
+        Ok(format!("Seeked to {position_seconds}s."))
+    }
+
     pub(crate) fn preload_next_queue_entry(
         &self,
         renderer_location: &str,

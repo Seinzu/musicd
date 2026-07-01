@@ -114,6 +114,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 import kotlin.random.Random
 
 private data class LibrarySearchResults(
@@ -199,6 +200,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onStop = viewModel::transportStop,
         onNext = viewModel::transportNext,
         onPrevious = viewModel::transportPrevious,
+        onSeek = viewModel::transportSeek,
         onSearchQueryChange = viewModel::updateSearchQuery,
         onRadioQueryChange = viewModel::updateRadioQuery,
         onRadioCountryCodeChange = viewModel::updateRadioCountryCode,
@@ -274,6 +276,7 @@ private fun MusicdRoot(
     onStop: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
+    onSeek: (Long) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onRadioQueryChange: (String) -> Unit,
     onRadioCountryCodeChange: (String) -> Unit,
@@ -431,6 +434,7 @@ private fun MusicdRoot(
                         onPlay = onPlay,
                         onPause = onPause,
                         onNext = onNext,
+                        onSeek = onSeek,
                     )
                 }
                 NavigationBar(modifier = Modifier.navigationBarsPadding()) {
@@ -537,6 +541,7 @@ private fun MusicdRoot(
                     onStop = onStop,
                     onNext = onNext,
                     onPrevious = onPrevious,
+                    onSeek = onSeek,
                     onOpenAlbum = onOpenAlbum,
                     onPlayAlbum = onPlayAlbum,
                     onLikeAlbum = onLikeAlbum,
@@ -620,6 +625,7 @@ private fun MiniPlayerBar(
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onNext: () -> Unit,
+    onSeek: (Long) -> Unit,
 ) {
     val track = state.nowPlaying?.currentTrack
     val queueEntry = currentPlaybackQueueEntry(state)
@@ -681,11 +687,12 @@ private fun MiniPlayerBar(
                 }
             }
             if (progress != null && session != null) {
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier.fillMaxWidth(),
+                PlaybackSeekBar(
+                    session = session,
+                    enabled = canRequestPlaybackSeek(state),
+                    onSeek = onSeek,
+                    compact = true,
                 )
-                PlaybackTimeRow(session = session)
             }
         }
     }
@@ -875,6 +882,7 @@ private fun HomeScreen(
     onStop: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
+    onSeek: (Long) -> Unit,
     onOpenAlbum: (String) -> Unit,
     onPlayAlbum: (String) -> Unit,
     onLikeAlbum: (String) -> Unit,
@@ -927,6 +935,7 @@ private fun HomeScreen(
                     onStop = onStop,
                     onNext = onNext,
                     onPrevious = onPrevious,
+                    onSeek = onSeek,
                 )
             }
         }
@@ -4133,6 +4142,18 @@ private fun canRequestPlaybackResume(state: MusicdUiState): Boolean =
         state.nowPlaying?.currentTrack != null ||
         state.nowPlaying?.session?.currentTrackUri?.isNotBlank() == true
 
+private fun canRequestPlaybackSeek(state: MusicdUiState): Boolean {
+    val nowPlaying = state.nowPlaying ?: return false
+    val session = nowPlaying.session ?: return false
+    return state.selectedRendererLocation.isNotBlank() &&
+        session.durationSeconds?.let { it > 0L } == true &&
+        (
+            nowPlaying.currentTrack != null ||
+                session.currentTrackUri?.isNotBlank() == true ||
+                session.queueEntryId != null
+            )
+}
+
 private fun playbackTitle(state: MusicdUiState): String =
     state.nowPlaying?.currentTrack?.title
         ?: state.nowPlaying?.session?.title?.takeIf { it.isNotBlank() }
@@ -4196,6 +4217,7 @@ private fun NowPlayingContent(
     onStop: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
+    onSeek: (Long) -> Unit,
 ) {
     val canNavigatePlayback = canRequestPlaybackNavigation(state)
     val canResumePlayback = canRequestPlaybackResume(state)
@@ -4226,11 +4248,11 @@ private fun NowPlayingContent(
                 val progress = sessionProgress(session)
                 if (progress != null) {
                     Spacer(Modifier.height(10.dp))
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier.fillMaxWidth(),
+                    PlaybackSeekBar(
+                        session = session,
+                        enabled = canRequestPlaybackSeek(state),
+                        onSeek = onSeek,
                     )
-                    PlaybackTimeRow(session = session)
                 }
             }
             Spacer(Modifier.height(14.dp))
@@ -4256,13 +4278,74 @@ private fun NowPlayingContent(
 }
 
 @Composable
-private fun PlaybackTimeRow(session: io.musicd.android.data.SessionDto) {
-    val elapsed = session.positionSeconds?.let(::formatDuration) ?: "--:--"
-    val total = session.durationSeconds?.let(::formatDuration) ?: "--:--"
+private fun PlaybackSeekBar(
+    session: io.musicd.android.data.SessionDto,
+    enabled: Boolean,
+    onSeek: (Long) -> Unit,
+    compact: Boolean = false,
+) {
+    val duration = session.durationSeconds?.takeIf { it > 0L }
+    if (duration == null) {
+        sessionProgress(session)?.let { progress ->
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        PlaybackTimeRow(
+            positionSeconds = session.positionSeconds,
+            durationSeconds = session.durationSeconds,
+            compact = compact,
+        )
+        return
+    }
+
+    val position = session.positionSeconds?.coerceIn(0L, duration) ?: 0L
+    val sliderKey = "${session.queueEntryId}:${session.currentTrackUri}:$duration"
+    var sliderPosition by remember(sliderKey) { mutableStateOf(position.toFloat()) }
+    var isScrubbing by remember(sliderKey) { mutableStateOf(false) }
+
+    LaunchedEffect(position, isScrubbing, sliderKey) {
+        if (!isScrubbing) {
+            sliderPosition = position.toFloat()
+        }
+    }
+
+    Slider(
+        value = sliderPosition.coerceIn(0f, duration.toFloat()),
+        onValueChange = { value ->
+            isScrubbing = true
+            sliderPosition = value.coerceIn(0f, duration.toFloat())
+        },
+        onValueChangeFinished = {
+            val target = sliderPosition.roundToLong().coerceIn(0L, duration)
+            sliderPosition = target.toFloat()
+            isScrubbing = false
+            onSeek(target)
+        },
+        enabled = enabled,
+        valueRange = 0f..duration.toFloat(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    PlaybackTimeRow(
+        positionSeconds = sliderPosition.roundToLong().coerceIn(0L, duration),
+        durationSeconds = duration,
+        compact = compact,
+    )
+}
+
+@Composable
+private fun PlaybackTimeRow(
+    positionSeconds: Long?,
+    durationSeconds: Long?,
+    compact: Boolean = false,
+) {
+    val elapsed = positionSeconds?.let(::formatDuration) ?: "--:--"
+    val total = durationSeconds?.let(::formatDuration) ?: "--:--"
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 4.dp, vertical = 4.dp),
+            .padding(horizontal = 4.dp, vertical = if (compact) 0.dp else 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
