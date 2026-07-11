@@ -2262,7 +2262,13 @@ pub(crate) fn handle_api_transport_seek_request(
         .and_then(|value| value.trim().parse::<u64>().ok())
     {
         Some(value) => value,
-        None => return api_error(writer, "400 Bad Request", "missing or invalid position_seconds"),
+        None => {
+            return api_error(
+                writer,
+                "400 Bad Request",
+                "missing or invalid position_seconds",
+            );
+        }
     };
     handle_api_transport_action(writer, request, state, |state, renderer| {
         state.seek_renderer(renderer, position_seconds)

@@ -10,6 +10,7 @@ use musicd_upnp::{StreamResource, discover_renderers, inspect_renderer, play_str
 
 use crate::discovery::{discover_musicd_servers, spawn_server_discovery_advertiser};
 use crate::http::{ServerMode, serve_tcp};
+use crate::mcp;
 use crate::metrics;
 use crate::service::{ServiceState, spawn_library_watcher, spawn_queue_worker};
 use crate::util::{infer_mime_type, inferred_title};
@@ -22,6 +23,7 @@ pub(crate) fn run() -> io::Result<()> {
             Ok(())
         }
         Some("serve") => run_serve(),
+        Some("mcp") => mcp::run_stdio(),
         Some("discover") => {
             let timeout_ms = args
                 .next()
@@ -321,6 +323,7 @@ fn print_status() {
     println!();
     println!("Commands:");
     println!("- serve");
+    println!("- mcp");
     println!("- discover [timeout_ms]");
     println!("- discover-servers [timeout_ms]");
     println!("- inspect <renderer_location_url>");
@@ -337,6 +340,11 @@ fn print_help() {
     println!("Commands:");
     println!("  serve");
     println!("    Scan the library and run the long-lived browser UI and stream service.");
+    println!();
+    println!("  mcp");
+    println!(
+        "    Run a stdio Model Context Protocol server for library, queue, and transport tools."
+    );
     println!();
     println!("  status");
     println!("    Show the current scaffold status and command summary.");

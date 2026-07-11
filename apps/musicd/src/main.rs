@@ -7,6 +7,7 @@ mod handlers;
 mod http;
 mod ids;
 mod library;
+mod mcp;
 mod metrics;
 mod renderer;
 mod service;
@@ -2409,6 +2410,71 @@ mod tests {
             .expect("session should load")
             .expect("session should exist");
         assert_eq!(session.transport_state, "PAUSED_PLAYBACK");
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
+    fn renderer_group_start_clears_member_private_queues() {
+        let cxn_location = "http://cxn.local/description.xml";
+        let sonos_location = "http://sonos.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let mut fake_backend = FakeRendererBackend::new(cxn_location, Vec::new());
+        fake_backend
+            .renderer
+            .capabilities
+            .has_playlist_extension_service = Some(true);
+        let backend = Arc::new(fake_backend);
+        let state =
+            sample_state_with_backend(vec![track_1.clone(), track_2.clone()], backend.clone());
+        let group = create_sample_renderer_group(&state, "Mixed", &[cxn_location, sonos_location]);
+        let group_location = renderer_group_queue_key(&group.id);
+        state
+            .database
+            .replace_queue(
+                &group_location,
+                "Mixed",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("group queue should be created");
+
+        state
+            .start_current_queue_entry(&group_location)
+            .expect("group playback should start");
+
+        assert_eq!(
+            backend.private_queue_clear_count(),
+            2,
+            "group playback should clear stale private queues on each member before sending the current track"
+        );
+        assert_eq!(
+            backend.played_streams().len(),
+            2,
+            "the current track should still be fanned out to both members"
+        );
+        assert_eq!(
+            backend
+                .played_streams()
+                .iter()
+                .map(|resource| resource.stream_url.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                state.stream_resource_for_track(&track_1).stream_url,
+                state.stream_resource_for_track(&track_1).stream_url,
+            ]
+        );
+        assert!(
+            backend.private_queue_syncs().is_empty(),
+            "group playback should not seed a PlaylistExtension member with successors that other members cannot see"
+        );
+        assert!(
+            backend.preloaded_streams().is_empty(),
+            "native next preloading is disabled by default for grouped playback"
+        );
 
         let _ = std::fs::remove_dir_all(state.config.config_path);
     }

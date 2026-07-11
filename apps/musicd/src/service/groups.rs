@@ -817,6 +817,7 @@ impl ServiceState {
         resource: &StreamResource,
     ) -> io::Result<RendererRecord> {
         let renderer = self.resolve_renderer(renderer_location)?;
+        self.clear_renderer_private_queue(renderer_location, &renderer, "group-start-current");
         if let Err(error) = self.run_renderer_action_with_private_queue_log(
             renderer_location,
             &renderer,
