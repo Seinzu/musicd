@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 use musicd_core::AppConfig;
 use serde_json::{Map, Value, json};
 
+use crate::http::{HttpRequest, ResponseWriter, respond_json, respond_text};
 use crate::service::ServiceState;
 use crate::types::{AlbumSummary, ArtistSummary, LibraryTrack, PlaybackQueue, PlaybackSession};
 
@@ -37,6 +38,41 @@ pub(crate) fn run_stdio() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn handle_http_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    if request.body.is_empty() {
+        return respond_json(
+            writer,
+            "400 Bad Request",
+            &error_response(Value::Null, -32600, "Invalid Request", None).to_string(),
+        );
+    }
+
+    let response = match serde_json::from_slice::<Value>(&request.body) {
+        Ok(message) => handle_message(state, message),
+        Err(error) => Some(error_response(
+            Value::Null,
+            -32700,
+            "Parse error",
+            Some(json!(error.to_string())),
+        )),
+    };
+
+    match response {
+        Some(response) => respond_json(writer, "200 OK", &response.to_string()),
+        None => respond_text(
+            writer,
+            "202 Accepted",
+            "text/plain; charset=utf-8",
+            b"",
+            false,
+        ),
+    }
 }
 
 fn handle_message(state: &ServiceState, message: Value) -> Option<Value> {

@@ -49,6 +49,7 @@ use crate::views::{
 };
 
 use crate::assets;
+use crate::mcp;
 
 use super::ResponseWriter;
 use super::request::{HttpRequest, request_value};
@@ -155,6 +156,8 @@ pub(crate) fn handle_service_request(
                 request.method == "HEAD",
             )
         }
+        ("POST", "/mcp") => mcp::handle_http_request(writer, request, &state),
+        ("GET", "/mcp") | ("HEAD", "/mcp") => respond_method_not_allowed(writer),
         ("GET", "/api/tracks") | ("HEAD", "/api/tracks") => {
             let body = render_tracks_json(&state, request);
             respond_text(
