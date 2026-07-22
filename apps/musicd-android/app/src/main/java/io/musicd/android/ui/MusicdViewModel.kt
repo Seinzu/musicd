@@ -1622,6 +1622,19 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun playAlbum(albumId: String) {
+        playAlbum(albumId, afterSuccess = {})
+    }
+
+    fun playHomeSpotlightAlbum(albumId: String) {
+        playAlbum(albumId) { baseUrl ->
+            replaceHomeSpotlightAfterAlbumPlayback(baseUrl, albumId)
+        }
+    }
+
+    private fun playAlbum(
+        albumId: String,
+        afterSuccess: (String) -> Unit,
+    ) {
         val baseUrl = uiState.value.baseUrl
         val rendererLocation = uiState.value.selectedRendererLocation
         if (baseUrl.isBlank() || rendererLocation.isBlank()) {
@@ -1630,24 +1643,26 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
-            runCatching { repository.playAlbum(baseUrl, rendererLocation, albumId) }
-                .onSuccess { response ->
-                    _uiState.update { it.copy(infoMessage = response.message) }
-                    syncPlaybackNotificationService()
-                    refreshPlaybackSurfaces()
-                }
-                .onFailure { error ->
-                    if (isUnavailableAlbumError(error)) {
-                        refreshLibraryAfterAlbumUnavailable(baseUrl, albumId)
-                    } else {
-                        _uiState.update {
-                            it.copy(
-                                isLoading = false,
-                                errorMessage = connectionErrorMessage(error),
-                            )
-                        }
+            val playbackResult = runCatching { repository.playAlbum(baseUrl, rendererLocation, albumId) }
+            val response = playbackResult.getOrNull()
+            if (response != null) {
+                runCatching { afterSuccess(baseUrl) }
+                _uiState.update { it.copy(infoMessage = response.message) }
+                syncPlaybackNotificationService()
+                refreshPlaybackSurfaces()
+            } else {
+                val error = playbackResult.exceptionOrNull() ?: return@launch
+                if (isUnavailableAlbumError(error)) {
+                    refreshLibraryAfterAlbumUnavailable(baseUrl, albumId)
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = connectionErrorMessage(error),
+                        )
                     }
                 }
+            }
         }
     }
 
@@ -1704,6 +1719,22 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun playTidalAlbum(album: TidalAlbumDto) {
+        playTidalAlbum(album, afterSuccess = {})
+    }
+
+    fun playHomeRecommendation(
+        recommendation: AlbumRecommendationDto,
+        album: TidalAlbumDto,
+    ) {
+        playTidalAlbum(album) { baseUrl ->
+            replaceHomeRecommendationAfterPlayback(baseUrl, recommendation)
+        }
+    }
+
+    private fun playTidalAlbum(
+        album: TidalAlbumDto,
+        afterSuccess: (String) -> Unit,
+    ) {
         val baseUrl = uiState.value.baseUrl
         val rendererLocation = uiState.value.selectedRendererLocation
         if (baseUrl.isBlank() || rendererLocation.isBlank()) {
@@ -1712,20 +1743,98 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null, warningMessage = null) }
-            runCatching { repository.playTidalAlbum(baseUrl, rendererLocation, album) }
-                .onSuccess { response ->
-                    _uiState.update { it.copy(infoMessage = response.message ?: "TIDAL album started.") }
-                    syncPlaybackNotificationService()
-                    refreshPlaybackSurfaces()
+            val playbackResult = runCatching { repository.playTidalAlbum(baseUrl, rendererLocation, album) }
+            val response = playbackResult.getOrNull()
+            if (response != null) {
+                runCatching { afterSuccess(baseUrl) }
+                _uiState.update { it.copy(infoMessage = response.message ?: "TIDAL album started.") }
+                syncPlaybackNotificationService()
+                refreshPlaybackSurfaces()
+            } else {
+                val error = playbackResult.exceptionOrNull() ?: return@launch
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = connectionErrorMessage(error),
+                    )
                 }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorMessage = connectionErrorMessage(error),
-                        )
-                    }
+            }
+        }
+    }
+
+    private fun replaceHomeSpotlightAfterAlbumPlayback(
+        baseUrl: String,
+        albumId: String,
+    ) {
+        _uiState.update { state ->
+            if (state.baseUrl != baseUrl) {
+                return@update state
+            }
+            state.copy(suppressedSpotlightAlbumIds = state.suppressedSpotlightAlbumIds + albumId)
+        }
+        viewModelScope.launch {
+            val seedRecommendations = runCatching {
+                repository.getAlbumRecommendations(baseUrl, albumId).recommendations
+            }.getOrDefault(emptyList())
+            _uiState.update { state ->
+                if (state.baseUrl != baseUrl) {
+                    return@update state
                 }
+                val replacement = chooseHomeRecommendationReplacement(
+                    candidates = seedRecommendations,
+                    state = state,
+                    extraExcludedKeys = emptySet(),
+                )
+                state.copy(
+                    homeRecommendations = replacement?.let {
+                        prependHomeRecommendation(state.homeRecommendations, it)
+                    } ?: state.homeRecommendations,
+                )
+            }
+        }
+    }
+
+    private fun replaceHomeRecommendationAfterPlayback(
+        baseUrl: String,
+        playedRecommendation: AlbumRecommendationDto,
+    ) {
+        viewModelScope.launch {
+            val seedAlbumId = uiState.value
+                .takeIf { it.baseUrl == baseUrl }
+                ?.let { findLibraryAlbumForHomeRecommendation(playedRecommendation, it.albums)?.id }
+                ?: playedRecommendation.seedAlbumId.takeIf { it.isNotBlank() }
+            val seedCandidates = seedAlbumId
+                ?.let { seedAlbumId ->
+                    runCatching {
+                        repository.getAlbumRecommendations(baseUrl, seedAlbumId).recommendations
+                    }.getOrDefault(emptyList())
+                }
+                .orEmpty()
+            val collectionCandidates = runCatching {
+                repository.getCollectionRecommendations(baseUrl, HOME_RECOMMENDATION_LIMIT * 2).recommendations
+            }.getOrDefault(emptyList())
+
+            _uiState.update { state ->
+                if (state.baseUrl != baseUrl) {
+                    return@update state
+                }
+                val replacement = chooseHomeRecommendationReplacement(
+                    candidates = seedCandidates,
+                    state = state,
+                    extraExcludedKeys = setOf(playedRecommendation.recommendationKey),
+                ) ?: chooseHomeRecommendationReplacement(
+                    candidates = collectionCandidates,
+                    state = state,
+                    extraExcludedKeys = setOf(playedRecommendation.recommendationKey),
+                )
+                state.copy(
+                    homeRecommendations = replaceHomeRecommendation(
+                        recommendations = state.homeRecommendations,
+                        playedRecommendationKey = playedRecommendation.recommendationKey,
+                        replacement = replacement,
+                    ),
+                )
+            }
         }
     }
 
@@ -2187,6 +2296,102 @@ private fun MusicdUiState.applyLikeResponse(response: LikeResponseDto): MusicdUi
         )
         else -> this
     }
+
+private fun chooseHomeRecommendationReplacement(
+    candidates: List<AlbumRecommendationDto>,
+    state: MusicdUiState,
+    extraExcludedKeys: Set<String>,
+): AlbumRecommendationDto? {
+    val excludedKeys = state.homeRecommendations
+        .map { it.recommendationKey }
+        .toSet() + extraExcludedKeys
+    val excludedIdentities = state.homeRecommendations
+        .map(::homeRecommendationIdentity)
+        .toSet()
+    val eligible = candidates
+        .filter { it.status.equals("suggested", ignoreCase = true) }
+        .filterNot { it.recommendationKey in excludedKeys }
+        .filterNot { homeRecommendationIdentity(it) in excludedIdentities }
+        .filter { findLibraryAlbumForHomeRecommendation(it, state.albums) == null }
+    return eligible.firstOrNull { tidalAlbumIdFromHomeRecommendation(it) != null }
+        ?: eligible.firstOrNull()
+}
+
+private fun prependHomeRecommendation(
+    recommendations: List<AlbumRecommendationDto>,
+    replacement: AlbumRecommendationDto,
+): List<AlbumRecommendationDto> =
+    (listOf(replacement) + recommendations.filterNot { it.recommendationKey == replacement.recommendationKey })
+        .take(HOME_RECOMMENDATION_LIMIT)
+
+private fun replaceHomeRecommendation(
+    recommendations: List<AlbumRecommendationDto>,
+    playedRecommendationKey: String,
+    replacement: AlbumRecommendationDto?,
+): List<AlbumRecommendationDto> {
+    val index = recommendations.indexOfFirst { it.recommendationKey == playedRecommendationKey }
+    if (index < 0) {
+        return recommendations
+    }
+    val updated = recommendations.toMutableList()
+    if (replacement == null) {
+        updated.removeAt(index)
+    } else {
+        updated[index] = replacement
+    }
+    return updated
+        .distinctBy { it.recommendationKey }
+        .take(HOME_RECOMMENDATION_LIMIT)
+}
+
+private fun homeRecommendationIdentity(recommendation: AlbumRecommendationDto): String =
+    recommendation.suggestedMusicbrainzReleaseGroupId
+        ?.takeIf { it.isNotBlank() }
+        ?.let { "release-group:$it" }
+        ?: recommendation.suggestedMusicbrainzReleaseId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "release:$it" }
+        ?: "artist-title:${normalizeRecommendationMatchText(recommendation.suggestedArtist)}:" +
+            normalizeRecommendationMatchText(recommendation.suggestedTitle)
+
+private fun findLibraryAlbumForHomeRecommendation(
+    recommendation: AlbumRecommendationDto,
+    albums: List<AlbumSummaryDto>,
+): AlbumSummaryDto? {
+    recommendation.suggestedMusicbrainzReleaseId?.takeIf { it.isNotBlank() }?.let { releaseId ->
+        albums.firstOrNull { it.metadata?.musicbrainzReleaseId == releaseId }?.let { return it }
+    }
+    recommendation.suggestedMusicbrainzReleaseGroupId?.takeIf { it.isNotBlank() }?.let { releaseGroupId ->
+        albums.firstOrNull { it.metadata?.musicbrainzReleaseGroupId == releaseGroupId }?.let { return it }
+    }
+    recommendation.artworkUrl?.let(::albumIdFromRecommendationArtworkUrl)?.let { albumId ->
+        albums.firstOrNull { it.id == albumId }?.let { return it }
+    }
+
+    val recommendedArtist = normalizeRecommendationMatchText(recommendation.suggestedArtist)
+    val recommendedTitle = normalizeRecommendationMatchText(recommendation.suggestedTitle)
+    return albums.firstOrNull {
+        normalizeRecommendationMatchText(it.artist) == recommendedArtist &&
+            normalizeRecommendationMatchText(it.title) == recommendedTitle
+    }
+}
+
+private fun albumIdFromRecommendationArtworkUrl(url: String): String? =
+    url
+        .substringBefore('?')
+        .trimEnd('/')
+        .substringAfterLast('/')
+        .takeIf { url.contains("/artwork/album/") && it.isNotBlank() }
+
+private fun normalizeRecommendationMatchText(value: String): String =
+    value.trim().lowercase().replace(Regex("""\s+"""), " ")
+
+private fun tidalAlbumIdFromHomeRecommendation(recommendation: AlbumRecommendationDto): String? {
+    val url = recommendation.tidalUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null
+    val match = Regex("""^https?://(?:www\.)?(?:listen\.)?tidal\.com/(?:browse/)?album/([0-9]+)(?:[/?#].*)?$""")
+        .matchEntire(url)
+    return match?.groupValues?.getOrNull(1)
+}
 
 private sealed interface RendererGroupQuickAddMutation {
     data class CreateAdHocGroup(
