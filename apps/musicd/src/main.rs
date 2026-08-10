@@ -48,6 +48,7 @@ mod tests {
         cleanup_track_label, infer_artist_and_album, infer_disc_and_track_numbers,
         should_skip_entry,
     };
+    use crate::views::json::current_track_for_renderer;
     use crate::views::{render_library_page, render_library_rows_json};
     use musicd_core::AppConfig;
     use musicd_upnp::{
@@ -1004,6 +1005,61 @@ mod tests {
         assert_eq!(sync.0.stream_url, second_stream_url);
         assert_eq!(sync.1.len(), 1);
         assert_eq!(sync.1[0].stream_url, third_stream_url);
+
+        let _ = std::fs::remove_dir_all(state.config.config_path.clone());
+    }
+
+    #[test]
+    fn now_playing_uses_observed_stream_uri_when_queue_entry_is_stale() {
+        let renderer_location = "http://renderer.local/description.xml";
+        let track_1 = sample_track("track-1", Some(1), Some(1), "Track 1");
+        let track_2 = sample_track("track-2", Some(1), Some(2), "Track 2");
+        let state = sample_state(vec![track_1.clone(), track_2.clone()]);
+        let queue = state
+            .database
+            .replace_queue(
+                renderer_location,
+                "Two Tracks",
+                &[
+                    queue_entry_for_track(&track_1),
+                    queue_entry_for_track(&track_2),
+                ],
+            )
+            .expect("queue replace should succeed");
+        let first_stream_url = state.stream_resource_for_track(&track_1).stream_url;
+        let second_stream_url = state.stream_resource_for_track(&track_2).stream_url;
+        state
+            .database
+            .mark_queue_play_started(
+                renderer_location,
+                queue.entries[0].id,
+                &track_1.id,
+                &first_stream_url,
+                track_1.duration_seconds,
+            )
+            .expect("first queue entry should start");
+        state
+            .database
+            .record_transport_snapshot(
+                renderer_location,
+                "PLAYING",
+                Some(&second_stream_url),
+                Some(12),
+                track_2.duration_seconds,
+            )
+            .expect("renderer snapshot should be recorded");
+
+        let current_track = current_track_for_renderer(&state, renderer_location)
+            .expect("observed musicd stream should resolve to a library track");
+
+        assert_eq!(current_track.id, track_2.id);
+        assert_eq!(
+            state
+                .queue_snapshot(renderer_location)
+                .and_then(|queue| queue.current_entry_id),
+            queue.current_entry_id,
+            "resolving display metadata must not mutate the playback queue"
+        );
 
         let _ = std::fs::remove_dir_all(state.config.config_path.clone());
     }

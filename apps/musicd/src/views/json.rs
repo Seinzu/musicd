@@ -829,9 +829,17 @@ pub(crate) fn current_track_for_renderer(
     state: &ServiceState,
     renderer_location: &str,
 ) -> Option<LibraryTrack> {
-    let session_entry_id = state
-        .playback_session(renderer_location)
-        .and_then(|session| session.queue_entry_id)?;
+    let session = state.playback_session(renderer_location)?;
+    if let Some(observed_track) = session
+        .current_track_uri
+        .as_deref()
+        .and_then(stream_track_id_from_uri)
+        .and_then(|track_id| state.find_track(track_id))
+    {
+        return Some(observed_track);
+    }
+
+    let session_entry_id = session.queue_entry_id?;
     let queue = state.queue_snapshot(renderer_location)?;
     let queue_entry_id = queue.current_entry_id?;
     if session_entry_id != queue_entry_id {
@@ -842,6 +850,18 @@ pub(crate) fn current_track_for_renderer(
         .into_iter()
         .find(|entry| entry.id == queue_entry_id)?;
     state.find_track(&entry.track_id)
+}
+
+fn stream_track_id_from_uri(uri: &str) -> Option<&str> {
+    let (_, track_id) = uri.split_once("/stream/track/")?;
+    Some(
+        track_id
+            .split(['?', '#'])
+            .next()
+            .unwrap_or(track_id)
+            .trim_end_matches('/'),
+    )
+    .filter(|track_id| !track_id.is_empty())
 }
 
 pub(crate) fn current_track_json_for_renderer(

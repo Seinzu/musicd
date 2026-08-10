@@ -901,10 +901,9 @@ private fun HomeScreen(
 ) {
     val spotlightDay = LocalDate.now()
     val spotlightAlbums = remember(state.albums, state.suppressedSpotlightAlbumIds, spotlightDay) {
-        val availableAlbums = state.albums.filterNot { it.id in state.suppressedSpotlightAlbumIds }
-        val eligibleAlbums = availableAlbums.filter { it.trackCount > 3 }
-        if (eligibleAlbums.isEmpty()) {
-            availableAlbums.take(3)
+        val eligibleAlbums = state.albums.filter { it.trackCount > 3 }
+        val orderedAlbums = if (eligibleAlbums.isEmpty()) {
+            state.albums
         } else {
             val dailySeed = eligibleAlbums
                 .map { it.id }
@@ -913,15 +912,33 @@ private fun HomeScreen(
                 .plus("|")
                 .plus(spotlightDay.toString())
                 .hashCode()
-            val maxCount = minOf(5, eligibleAlbums.size)
-            val minCount = minOf(3, maxCount)
-            val random = Random(dailySeed)
-            val targetCount = if (minCount == maxCount) {
-                maxCount
+            eligibleAlbums.shuffled(Random(dailySeed))
+        }
+        val maxCount = minOf(5, orderedAlbums.size)
+        val minCount = minOf(3, maxCount)
+        val targetCount = if (eligibleAlbums.isEmpty() || minCount == maxCount) {
+            maxCount
+        } else {
+            val countSeed = eligibleAlbums
+                .map { it.id }
+                .sorted()
+                .joinToString("|")
+                .plus("|")
+                .plus(spotlightDay.toString())
+                .hashCode()
+            Random(countSeed).nextInt(minCount, maxCount + 1)
+        }
+        val initialAlbums = orderedAlbums.take(targetCount)
+        val replacementAlbums = orderedAlbums
+            .drop(targetCount)
+            .filterNot { it.id in state.suppressedSpotlightAlbumIds }
+            .iterator()
+        initialAlbums.mapNotNull { album ->
+            if (album.id in state.suppressedSpotlightAlbumIds) {
+                if (replacementAlbums.hasNext()) replacementAlbums.next() else null
             } else {
-                random.nextInt(minCount, maxCount + 1)
+                album
             }
-            eligibleAlbums.shuffled(random).take(targetCount)
         }
     }
 
