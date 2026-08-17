@@ -30,7 +30,7 @@ mod tests {
     use crate::ids::{stable_album_id, stable_artist_id, stable_track_id};
     use crate::library::{
         Library, build_artist_summaries, compare_track_album_order, decode_id3v1_text,
-        parse_vorbis_comment_block,
+        discover_audio_files_until, parse_vorbis_comment_block,
     };
     use crate::renderer::{
         RendererBackend, RendererBackends, RendererKind, renderer_group_queue_key,
@@ -131,6 +131,35 @@ mod tests {
         let left = stable_track_id("Artist/Album/01 - Track.flac");
         let right = stable_track_id("Artist/Album/01 - Track.flac");
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn active_library_stream_guards_track_their_lifetime() {
+        let state = sample_state(Vec::new());
+        assert_eq!(state.active_library_stream_count(), 0);
+
+        let first = state.begin_library_stream();
+        assert_eq!(state.active_library_stream_count(), 1);
+        {
+            let _second = state.begin_library_stream();
+            assert_eq!(state.active_library_stream_count(), 2);
+        }
+        assert_eq!(state.active_library_stream_count(), 1);
+
+        drop(first);
+        assert_eq!(state.active_library_stream_count(), 0);
+    }
+
+    #[test]
+    fn cancellable_library_discovery_reports_deferral() {
+        let library_path = temp_config_path("cancelled-library-discovery");
+        std::fs::create_dir_all(&library_path).expect("library directory should be created");
+
+        let error = discover_audio_files_until(&library_path, || true)
+            .expect_err("discovery should be cancelled");
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+
+        let _ = std::fs::remove_dir_all(library_path);
     }
 
     #[test]
@@ -3419,6 +3448,7 @@ mod tests {
             events: crate::service::PlaybackEvents::new(),
             renderer_action_locks: Mutex::new(HashMap::new()),
             tidal_stream_cache: Mutex::new(HashMap::new()),
+            active_library_streams: AtomicUsize::new(0),
             rescan_state: crate::service::RescanState::new(),
         }
     }

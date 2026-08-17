@@ -2667,6 +2667,7 @@ pub(crate) fn handle_track_stream_request(
         ),
     );
     debug_log_stream_session_context(state, &track);
+    let _active_stream = (request.method == "GET").then(|| state.begin_library_stream());
     let result = respond_with_file(
         writer,
         &track.path,

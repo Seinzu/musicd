@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::library::{LibraryFileState, discover_audio_files, scan_library_file};
+use crate::library::{LibraryFileState, discover_audio_files_until, scan_library_file};
 use crate::service::ServiceState;
 use crate::types::LibraryTrack;
 
@@ -12,6 +12,16 @@ use crate::types::LibraryTrack;
 struct PendingFile {
     state: LibraryFileState,
     first_seen: Instant,
+}
+
+#[derive(Debug, Default)]
+struct PollSummary {
+    discovered_files: usize,
+    visited_dirs: usize,
+    skipped_entries: usize,
+    upserted: usize,
+    removed: usize,
+    scan_failures: usize,
 }
 
 pub(crate) fn spawn_library_watcher(state: Arc<ServiceState>) {
@@ -38,18 +48,72 @@ fn run_library_watcher(state: Arc<ServiceState>, interval: Duration, settle: Dur
 
     loop {
         thread::sleep(interval);
-        if let Err(error) = poll_library(&state, settle, &mut pending) {
-            eprintln!("library watcher: poll failed: {error}");
+        if state.active_library_stream_count() > 0 {
+            record_deferred_poll(&state);
+            continue;
+        }
+
+        let started = Instant::now();
+        match poll_library(&state, settle, &mut pending) {
+            Ok(summary) => {
+                let outcome = if summary.scan_failures > 0 {
+                    "partial"
+                } else {
+                    "completed"
+                };
+                if let Some(metrics) = state.metrics() {
+                    metrics.record_library_watcher_poll(
+                        outcome,
+                        started.elapsed(),
+                        summary.discovered_files,
+                        summary.visited_dirs,
+                        summary.skipped_entries,
+                        summary.upserted,
+                        summary.removed,
+                    );
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                record_deferred_poll(&state);
+            }
+            Err(error) => {
+                if let Some(metrics) = state.metrics() {
+                    metrics.record_library_watcher_error(started.elapsed());
+                }
+                eprintln!("library watcher: poll failed: {error}");
+            }
         }
     }
+}
+
+fn record_deferred_poll(state: &ServiceState) {
+    if let Some(metrics) = state.metrics() {
+        metrics.record_library_watcher_deferred();
+    }
+    state.debug_log(
+        "library-watcher-deferred",
+        format!(
+            "active_library_streams={}",
+            state.active_library_stream_count()
+        ),
+    );
 }
 
 fn poll_library(
     state: &ServiceState,
     settle: Duration,
     pending: &mut HashMap<String, PendingFile>,
-) -> io::Result<()> {
-    let files = discover_audio_files(&state.config.library_path)?;
+) -> io::Result<PollSummary> {
+    let discovery = discover_audio_files_until(&state.config.library_path, || {
+        state.active_library_stream_count() > 0
+    })?;
+    let mut summary = PollSummary {
+        discovered_files: discovery.files.len(),
+        visited_dirs: discovery.visited_dirs,
+        skipped_entries: discovery.skipped_entries,
+        ..PollSummary::default()
+    };
+    let files = discovery.files;
     let current_files = files
         .iter()
         .map(|file| (file.relative_path.clone(), file.clone()))
@@ -84,12 +148,18 @@ fn poll_library(
     pending.retain(|relative_path, _| current_files.contains_key(relative_path));
 
     if ready_files.is_empty() && deleted_relative_paths.is_empty() {
-        return Ok(());
+        return Ok(summary);
     }
 
     let mut upsert_tracks = Vec::new();
     let mut completed_relative_paths = Vec::new();
     for file in &ready_files {
+        if state.active_library_stream_count() > 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "library watcher deferred for active playback",
+            ));
+        }
         match scan_library_file(
             &state.config.library_path,
             &file.path,
@@ -101,6 +171,7 @@ fn poll_library(
             }
             Ok(None) => completed_relative_paths.push(file.relative_path.clone()),
             Err(error) => {
+                summary.scan_failures += 1;
                 eprintln!(
                     "library watcher: failed to scan {}: {error}",
                     file.path.display()
@@ -109,7 +180,7 @@ fn poll_library(
         }
     }
 
-    let summary =
+    let change_summary =
         state.apply_library_file_changes(upsert_tracks, deleted_relative_paths.clone())?;
     for relative_path in completed_relative_paths {
         pending.remove(&relative_path);
@@ -118,14 +189,17 @@ fn poll_library(
         pending.remove(&relative_path);
     }
 
-    if summary.upserted > 0 || summary.removed > 0 {
+    if change_summary.upserted > 0 || change_summary.removed > 0 {
         eprintln!(
             "library watcher: applied {} upserts and {} removals",
-            summary.upserted, summary.removed
+            change_summary.upserted, change_summary.removed
         );
     }
 
-    Ok(())
+    summary.upserted = change_summary.upserted;
+    summary.removed = change_summary.removed;
+
+    Ok(summary)
 }
 
 fn file_changed(track: &LibraryTrack, file: &LibraryFileState) -> bool {

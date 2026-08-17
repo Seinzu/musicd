@@ -39,6 +39,13 @@ struct ScanProgress {
     skipped_entries: usize,
 }
 
+#[derive(Debug)]
+pub(crate) struct LibraryDiscovery {
+    pub(crate) files: Vec<LibraryFileState>,
+    pub(crate) visited_dirs: usize,
+    pub(crate) skipped_entries: usize,
+}
+
 /// Progress event emitted during library scan (for SSE streaming)
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScanProgressEvent {
@@ -102,7 +109,13 @@ pub(crate) fn scan_library(root: &Path, config_path: &Path) -> io::Result<Vec<Li
     Ok(tracks)
 }
 
-pub(crate) fn discover_audio_files(root: &Path) -> io::Result<Vec<LibraryFileState>> {
+pub(crate) fn discover_audio_files_until<F>(
+    root: &Path,
+    should_cancel: F,
+) -> io::Result<LibraryDiscovery>
+where
+    F: Fn() -> bool,
+{
     if !root.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -112,8 +125,12 @@ pub(crate) fn discover_audio_files(root: &Path) -> io::Result<Vec<LibraryFileSta
 
     let mut audio_files = Vec::new();
     let mut progress = ScanProgress::default();
-    collect_audio_files(root, &mut audio_files, &mut progress)?;
-    Ok(audio_files)
+    walk_dir_until(root, root, &mut audio_files, &mut progress, &should_cancel)?;
+    Ok(LibraryDiscovery {
+        files: audio_files,
+        visited_dirs: progress.visited_dirs,
+        skipped_entries: progress.skipped_entries,
+    })
 }
 
 pub(crate) fn scan_library_file(
@@ -192,6 +209,73 @@ fn walk_dir(
 
         if metadata.is_dir() {
             walk_dir(root, &path, output, progress)?;
+            continue;
+        }
+
+        if !is_supported_audio_file(&path) {
+            continue;
+        }
+
+        progress.audio_files += 1;
+        if progress.audio_files % 1000 == 0 {
+            eprintln!(
+                "library scan: found {} audio files so far",
+                progress.audio_files
+            );
+        }
+        output.push(file_state(root, &path, &metadata)?);
+    }
+    Ok(())
+}
+
+fn walk_dir_until<F>(
+    root: &Path,
+    dir: &Path,
+    output: &mut Vec<LibraryFileState>,
+    progress: &mut ScanProgress,
+    should_cancel: &F,
+) -> io::Result<()>
+where
+    F: Fn() -> bool,
+{
+    if should_cancel() {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "library discovery deferred for active playback",
+        ));
+    }
+
+    progress.visited_dirs += 1;
+    if progress.visited_dirs == 1 || progress.visited_dirs % 250 == 0 {
+        eprintln!(
+            "library scan: walking directories visited={} audio_files={}",
+            progress.visited_dirs, progress.audio_files
+        );
+    }
+
+    let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        if should_cancel() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "library discovery deferred for active playback",
+            ));
+        }
+
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if should_skip_entry(&file_name) {
+            progress.skipped_entries += 1;
+            continue;
+        }
+
+        if metadata.is_dir() {
+            walk_dir_until(root, &path, output, progress, should_cancel)?;
             continue;
         }
 

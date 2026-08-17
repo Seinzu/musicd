@@ -9,7 +9,7 @@ use prometheus_client::encoding::text::encode;
 use prometheus_client::encoding::{DescriptorEncoder, EncodeLabelSet, EncodeMetric};
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
-use prometheus_client::metrics::gauge::ConstGauge;
+use prometheus_client::metrics::gauge::{ConstGauge, Gauge};
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 
@@ -28,17 +28,42 @@ pub struct DurationLabels {
     pub route: String,
 }
 
+#[derive(Clone, Debug, Hash, Eq, PartialEq, EncodeLabelSet)]
+pub struct OutcomeLabels {
+    pub outcome: String,
+}
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq, EncodeLabelSet)]
+pub struct ChangeLabels {
+    pub kind: String,
+}
+
 #[derive(Debug)]
 pub struct Metrics {
     registry: Registry,
     request_count: Family<RequestLabels, Counter>,
     request_duration: Family<DurationLabels, Histogram, fn() -> Histogram>,
+    library_watcher_poll_count: Family<OutcomeLabels, Counter>,
+    library_watcher_poll_duration: Histogram,
+    library_watcher_directories_examined: Gauge,
+    library_watcher_files_examined: Gauge,
+    library_watcher_skipped_entries: Gauge,
+    library_watcher_change_count: Family<ChangeLabels, Counter>,
 }
 
 fn build_histogram() -> Histogram {
     Histogram::new(
         [
             0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        ]
+        .into_iter(),
+    )
+}
+
+fn build_library_watcher_histogram() -> Histogram {
+    Histogram::new(
+        [
+            0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0,
         ]
         .into_iter(),
     )
@@ -63,12 +88,60 @@ impl Metrics {
             request_duration.clone(),
         );
 
+        let library_watcher_poll_count = Family::<OutcomeLabels, Counter>::default();
+        registry.register(
+            "musicd_library_watcher_polls",
+            "Library watcher poll attempts partitioned by outcome",
+            library_watcher_poll_count.clone(),
+        );
+
+        let library_watcher_poll_duration = build_library_watcher_histogram();
+        registry.register(
+            "musicd_library_watcher_poll_duration_seconds",
+            "Time spent in attempted library watcher polls",
+            library_watcher_poll_duration.clone(),
+        );
+
+        let library_watcher_directories_examined = Gauge::default();
+        registry.register(
+            "musicd_library_watcher_directories_examined",
+            "Directories examined by the most recent completed library watcher poll",
+            library_watcher_directories_examined.clone(),
+        );
+
+        let library_watcher_files_examined = Gauge::default();
+        registry.register(
+            "musicd_library_watcher_files_examined",
+            "Audio files examined by the most recent completed library watcher poll",
+            library_watcher_files_examined.clone(),
+        );
+
+        let library_watcher_skipped_entries = Gauge::default();
+        registry.register(
+            "musicd_library_watcher_skipped_entries",
+            "Entries skipped by the most recent completed library watcher poll",
+            library_watcher_skipped_entries.clone(),
+        );
+
+        let library_watcher_change_count = Family::<ChangeLabels, Counter>::default();
+        registry.register(
+            "musicd_library_watcher_changes",
+            "Library changes applied by the watcher partitioned by kind",
+            library_watcher_change_count.clone(),
+        );
+
         registry.register_collector(Box::new(SnapshotCollector { state }));
 
         Self {
             registry,
             request_count,
             request_duration,
+            library_watcher_poll_count,
+            library_watcher_poll_duration,
+            library_watcher_directories_examined,
+            library_watcher_files_examined,
+            library_watcher_skipped_entries,
+            library_watcher_change_count,
         }
     }
 
@@ -87,6 +160,60 @@ impl Metrics {
                 route: route.to_string(),
             })
             .observe(duration.as_secs_f64());
+    }
+
+    pub(crate) fn record_library_watcher_deferred(&self) {
+        self.library_watcher_poll_count
+            .get_or_create(&OutcomeLabels {
+                outcome: "deferred".to_string(),
+            })
+            .inc();
+    }
+
+    pub(crate) fn record_library_watcher_error(&self, duration: Duration) {
+        self.library_watcher_poll_count
+            .get_or_create(&OutcomeLabels {
+                outcome: "error".to_string(),
+            })
+            .inc();
+        self.library_watcher_poll_duration
+            .observe(duration.as_secs_f64());
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_library_watcher_poll(
+        &self,
+        outcome: &str,
+        duration: Duration,
+        files_examined: usize,
+        directories_examined: usize,
+        skipped_entries: usize,
+        upserted: usize,
+        removed: usize,
+    ) {
+        self.library_watcher_poll_count
+            .get_or_create(&OutcomeLabels {
+                outcome: outcome.to_string(),
+            })
+            .inc();
+        self.library_watcher_poll_duration
+            .observe(duration.as_secs_f64());
+        self.library_watcher_files_examined
+            .set(saturating_i64(files_examined));
+        self.library_watcher_directories_examined
+            .set(saturating_i64(directories_examined));
+        self.library_watcher_skipped_entries
+            .set(saturating_i64(skipped_entries));
+        self.library_watcher_change_count
+            .get_or_create(&ChangeLabels {
+                kind: "upserted".to_string(),
+            })
+            .inc_by(upserted as u64);
+        self.library_watcher_change_count
+            .get_or_create(&ChangeLabels {
+                kind: "removed".to_string(),
+            })
+            .inc_by(removed as u64);
     }
 
     pub fn encode(&self) -> String {
@@ -126,7 +253,7 @@ impl Collector for SnapshotCollector {
         let (artwork_files, artwork_bytes) =
             directory_metrics(&state.config.config_path.join("artwork")).unwrap_or((0, 0));
 
-        let entries: [(&str, &str, i64); 9] = [
+        let entries: [(&str, &str, i64); 10] = [
             (
                 "musicd_tracks_total",
                 "Number of indexed tracks",
@@ -156,6 +283,11 @@ impl Collector for SnapshotCollector {
                 "musicd_playback_queues_playing",
                 "Number of renderer queues currently marked as playing",
                 playing_queue_renderers as i64,
+            ),
+            (
+                "musicd_library_streams_active",
+                "Number of active local-library audio streams",
+                saturating_i64(state.active_library_stream_count()),
             ),
             (
                 "musicd_sqlite_bytes",
@@ -337,4 +469,42 @@ fn directory_metrics(path: &Path) -> io::Result<(u64, u64)> {
         }
     }
     Ok((file_count, total_bytes))
+}
+
+fn saturating_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Metrics;
+    use crate::service::ServiceState;
+    use std::sync::Weak;
+    use std::time::Duration;
+
+    #[test]
+    fn exports_library_watcher_metrics() {
+        let metrics = Metrics::new(Weak::<ServiceState>::new());
+        metrics.record_library_watcher_deferred();
+        metrics.record_library_watcher_error(Duration::from_millis(250));
+        metrics.record_library_watcher_poll(
+            "completed",
+            Duration::from_millis(1500),
+            16_034,
+            4_750,
+            12,
+            2,
+            1,
+        );
+
+        let encoded = metrics.encode();
+        assert!(encoded.contains("musicd_library_watcher_polls_total{outcome=\"deferred\"} 1"));
+        assert!(encoded.contains("musicd_library_watcher_polls_total{outcome=\"error\"} 1"));
+        assert!(encoded.contains("musicd_library_watcher_polls_total{outcome=\"completed\"} 1"));
+        assert!(encoded.contains("musicd_library_watcher_files_examined 16034"));
+        assert!(encoded.contains("musicd_library_watcher_directories_examined 4750"));
+        assert!(encoded.contains("musicd_library_watcher_skipped_entries 12"));
+        assert!(encoded.contains("musicd_library_watcher_changes_total{kind=\"upserted\"} 2"));
+        assert!(encoded.contains("musicd_library_watcher_changes_total{kind=\"removed\"} 1"));
+    }
 }

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use arc_swap::ArcSwap;
@@ -48,8 +49,20 @@ pub(crate) struct ServiceState {
     pub(crate) events: PlaybackEvents,
     pub(crate) renderer_action_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) tidal_stream_cache: Mutex<HashMap<String, tidal::TidalStreamSource>>,
+    pub(crate) active_library_streams: AtomicUsize,
     /// State for tracking concurrent rescans
     pub(crate) rescan_state: RescanState,
+}
+
+#[derive(Debug)]
+pub(crate) struct ActiveLibraryStreamGuard<'a> {
+    active_library_streams: &'a AtomicUsize,
+}
+
+impl Drop for ActiveLibraryStreamGuard<'_> {
+    fn drop(&mut self) {
+        self.active_library_streams.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// State for tracking an active rescan operation
@@ -147,6 +160,7 @@ impl ServiceState {
             events: PlaybackEvents::new(),
             renderer_action_locks: Mutex::new(HashMap::new()),
             tidal_stream_cache: Mutex::new(HashMap::new()),
+            active_library_streams: AtomicUsize::new(0),
             rescan_state: RescanState::new(),
         };
 
@@ -197,6 +211,17 @@ impl ServiceState {
 
     pub(crate) fn track_count(&self) -> usize {
         self.library_snapshot().tracks.len()
+    }
+
+    pub(crate) fn begin_library_stream(&self) -> ActiveLibraryStreamGuard<'_> {
+        self.active_library_streams.fetch_add(1, Ordering::AcqRel);
+        ActiveLibraryStreamGuard {
+            active_library_streams: &self.active_library_streams,
+        }
+    }
+
+    pub(crate) fn active_library_stream_count(&self) -> usize {
+        self.active_library_streams.load(Ordering::Acquire)
     }
 
     pub(crate) fn tracks_snapshot(&self) -> Arc<[LibraryTrack]> {
