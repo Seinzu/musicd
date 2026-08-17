@@ -113,7 +113,7 @@ fn run_serve() -> io::Result<()> {
     println!(
         "Library watcher: {}",
         if config.library_watch_enabled {
-            "enabled"
+            config.library_watch_mode.label()
         } else {
             "disabled"
         }
@@ -312,7 +312,7 @@ fn print_status() {
     println!(
         "Library watcher: {}",
         if config.library_watch_enabled {
-            "enabled"
+            config.library_watch_mode.label()
         } else {
             "disabled"
         }

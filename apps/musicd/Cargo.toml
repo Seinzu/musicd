@@ -12,6 +12,7 @@ arc-swap = "1.7"
 lofty = "0.24"
 musicd-core = { path = "../../crates/musicd-core" }
 musicd-upnp = { path = "../../crates/musicd-upnp" }
+notify = "8.2"
 prometheus-client = "0.22"
 r2d2 = "0.8"
 r2d2_sqlite = "0.31"

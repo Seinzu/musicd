@@ -31,6 +31,28 @@ pub enum RendererProtocol {
     Chromecast,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryWatchMode {
+    Hybrid,
+    Poll,
+}
+
+impl LibraryWatchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::Poll => "poll",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "poll" | "polling" => Self::Poll,
+            _ => Self::Hybrid,
+        }
+    }
+}
+
 impl RendererProtocol {
     pub fn label(self) -> &'static str {
         match self {
@@ -65,8 +87,10 @@ pub struct AppConfig {
     pub native_next_preload_enabled: bool,
     pub native_next_preload_playlist_extension_enabled: bool,
     pub library_watch_enabled: bool,
+    pub library_watch_mode: LibraryWatchMode,
     pub library_watch_interval_ms: u64,
     pub library_watch_settle_ms: u64,
+    pub library_watch_reconcile_interval_ms: u64,
     pub tidal_helper_command: Option<String>,
     pub tidal_session_path: PathBuf,
     pub tidal_audio_quality: String,
@@ -111,8 +135,16 @@ impl AppConfig {
                 "MUSICD_NATIVE_NEXT_PRELOAD_PLAYLIST_EXTENSION",
             ),
             library_watch_enabled: parse_bool_env_default("MUSICD_LIBRARY_WATCH", true),
+            library_watch_mode: std::env::var("MUSICD_LIBRARY_WATCH_MODE")
+                .ok()
+                .map(|value| LibraryWatchMode::parse(&value))
+                .unwrap_or(LibraryWatchMode::Hybrid),
             library_watch_interval_ms: parse_u64_env("MUSICD_LIBRARY_WATCH_INTERVAL_MS", 10_000),
             library_watch_settle_ms: parse_u64_env("MUSICD_LIBRARY_WATCH_SETTLE_MS", 3_000),
+            library_watch_reconcile_interval_ms: parse_u64_env(
+                "MUSICD_LIBRARY_RECONCILE_INTERVAL_MS",
+                6 * 60 * 60 * 1_000,
+            ),
             tidal_helper_command: std::env::var("MUSICD_TIDAL_HELPER_COMMAND")
                 .ok()
                 .map(|value| value.trim().to_string())
@@ -225,7 +257,7 @@ fn format_host_for_url(host: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, resolve_public_base_url};
+    use super::{AppConfig, LibraryWatchMode, resolve_public_base_url};
     use std::path::PathBuf;
 
     #[test]
@@ -253,13 +285,26 @@ mod tests {
             native_next_preload_enabled: false,
             native_next_preload_playlist_extension_enabled: false,
             library_watch_enabled: true,
+            library_watch_mode: LibraryWatchMode::Hybrid,
             library_watch_interval_ms: 10_000,
             library_watch_settle_ms: 3_000,
+            library_watch_reconcile_interval_ms: 6 * 60 * 60 * 1_000,
             tidal_helper_command: None,
             tidal_session_path: PathBuf::from("/config/tidal/session.json"),
             tidal_audio_quality: "LOSSLESS".to_string(),
         };
 
         assert_eq!(config.resolved_base_url(), "http://192.168.1.20:8787");
+    }
+
+    #[test]
+    fn parses_library_watch_modes_with_hybrid_as_the_safe_default() {
+        assert_eq!(LibraryWatchMode::parse("poll"), LibraryWatchMode::Poll);
+        assert_eq!(LibraryWatchMode::parse("polling"), LibraryWatchMode::Poll);
+        assert_eq!(LibraryWatchMode::parse("hybrid"), LibraryWatchMode::Hybrid);
+        assert_eq!(
+            LibraryWatchMode::parse("unexpected"),
+            LibraryWatchMode::Hybrid
+        );
     }
 }

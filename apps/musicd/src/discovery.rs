@@ -247,7 +247,7 @@ mod tests {
         MUSICD_SERVER_ST, build_ssdp_response, matches_musicd_search_target,
         parse_musicd_ssdp_response, render_musicd_device_description_xml,
     };
-    use musicd_core::AppConfig;
+    use musicd_core::{AppConfig, LibraryWatchMode};
     use std::path::PathBuf;
 
     fn config() -> AppConfig {
@@ -266,8 +266,10 @@ mod tests {
             native_next_preload_enabled: false,
             native_next_preload_playlist_extension_enabled: false,
             library_watch_enabled: true,
+            library_watch_mode: LibraryWatchMode::Hybrid,
             library_watch_interval_ms: 10_000,
             library_watch_settle_ms: 3_000,
+            library_watch_reconcile_interval_ms: 6 * 60 * 60 * 1_000,
             tidal_helper_command: None,
             tidal_session_path: PathBuf::from("/config/tidal/session.json"),
             tidal_audio_quality: "LOSSLESS".to_string(),

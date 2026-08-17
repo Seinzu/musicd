@@ -50,7 +50,7 @@ mod tests {
     };
     use crate::views::json::current_track_for_renderer;
     use crate::views::{render_library_page, render_library_rows_json};
-    use musicd_core::AppConfig;
+    use musicd_core::{AppConfig, LibraryWatchMode};
     use musicd_upnp::{
         PositionInfo, RendererCapabilities, StreamResource, TransportInfo, TransportSnapshot,
     };
@@ -3431,8 +3431,10 @@ mod tests {
                 native_next_preload_enabled: false,
                 native_next_preload_playlist_extension_enabled: false,
                 library_watch_enabled: true,
+                library_watch_mode: LibraryWatchMode::Hybrid,
                 library_watch_interval_ms: 10_000,
                 library_watch_settle_ms: 3_000,
+                library_watch_reconcile_interval_ms: 6 * 60 * 60 * 1_000,
                 tidal_helper_command: None,
                 tidal_session_path: config_path.join("tidal").join("session.json"),
                 tidal_audio_quality: "LOSSLESS".to_string(),

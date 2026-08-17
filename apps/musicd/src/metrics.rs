@@ -49,6 +49,10 @@ pub struct Metrics {
     library_watcher_files_examined: Gauge,
     library_watcher_skipped_entries: Gauge,
     library_watcher_change_count: Family<ChangeLabels, Counter>,
+    library_watcher_event_count: Family<OutcomeLabels, Counter>,
+    library_watcher_event_batch_count: Family<OutcomeLabels, Counter>,
+    library_watcher_pending_paths: Gauge,
+    library_watcher_native_active: Gauge,
 }
 
 fn build_histogram() -> Histogram {
@@ -130,6 +134,34 @@ impl Metrics {
             library_watcher_change_count.clone(),
         );
 
+        let library_watcher_event_count = Family::<OutcomeLabels, Counter>::default();
+        registry.register(
+            "musicd_library_watcher_events",
+            "Native filesystem events received by the library watcher partitioned by outcome",
+            library_watcher_event_count.clone(),
+        );
+
+        let library_watcher_event_batch_count = Family::<OutcomeLabels, Counter>::default();
+        registry.register(
+            "musicd_library_watcher_event_batches",
+            "Debounced native filesystem event batches partitioned by outcome",
+            library_watcher_event_batch_count.clone(),
+        );
+
+        let library_watcher_pending_paths = Gauge::default();
+        registry.register(
+            "musicd_library_watcher_pending_paths",
+            "Filesystem paths currently pending debounce or retry",
+            library_watcher_pending_paths.clone(),
+        );
+
+        let library_watcher_native_active = Gauge::default();
+        registry.register(
+            "musicd_library_watcher_native_active",
+            "Whether the native filesystem watcher is active (1 active, 0 inactive)",
+            library_watcher_native_active.clone(),
+        );
+
         registry.register_collector(Box::new(SnapshotCollector { state }));
 
         Self {
@@ -142,6 +174,10 @@ impl Metrics {
             library_watcher_files_examined,
             library_watcher_skipped_entries,
             library_watcher_change_count,
+            library_watcher_event_count,
+            library_watcher_event_batch_count,
+            library_watcher_pending_paths,
+            library_watcher_native_active,
         }
     }
 
@@ -204,6 +240,42 @@ impl Metrics {
             .set(saturating_i64(directories_examined));
         self.library_watcher_skipped_entries
             .set(saturating_i64(skipped_entries));
+        self.record_library_watcher_changes(upserted, removed);
+    }
+
+    pub(crate) fn record_library_watcher_event(&self, outcome: &str) {
+        self.library_watcher_event_count
+            .get_or_create(&OutcomeLabels {
+                outcome: outcome.to_string(),
+            })
+            .inc();
+    }
+
+    pub(crate) fn record_library_watcher_event_batch(
+        &self,
+        outcome: &str,
+        upserted: usize,
+        removed: usize,
+    ) {
+        self.library_watcher_event_batch_count
+            .get_or_create(&OutcomeLabels {
+                outcome: outcome.to_string(),
+            })
+            .inc();
+        self.record_library_watcher_changes(upserted, removed);
+    }
+
+    pub(crate) fn set_library_watcher_pending_paths(&self, count: usize) {
+        self.library_watcher_pending_paths
+            .set(saturating_i64(count));
+    }
+
+    pub(crate) fn set_library_watcher_native_active(&self, active: bool) {
+        self.library_watcher_native_active
+            .set(if active { 1 } else { 0 });
+    }
+
+    fn record_library_watcher_changes(&self, upserted: usize, removed: usize) {
         self.library_watcher_change_count
             .get_or_create(&ChangeLabels {
                 kind: "upserted".to_string(),
@@ -496,6 +568,10 @@ mod tests {
             2,
             1,
         );
+        metrics.record_library_watcher_event("received");
+        metrics.record_library_watcher_event_batch("completed", 3, 2);
+        metrics.set_library_watcher_pending_paths(4);
+        metrics.set_library_watcher_native_active(true);
 
         let encoded = metrics.encode();
         assert!(encoded.contains("musicd_library_watcher_polls_total{outcome=\"deferred\"} 1"));
@@ -504,7 +580,13 @@ mod tests {
         assert!(encoded.contains("musicd_library_watcher_files_examined 16034"));
         assert!(encoded.contains("musicd_library_watcher_directories_examined 4750"));
         assert!(encoded.contains("musicd_library_watcher_skipped_entries 12"));
-        assert!(encoded.contains("musicd_library_watcher_changes_total{kind=\"upserted\"} 2"));
-        assert!(encoded.contains("musicd_library_watcher_changes_total{kind=\"removed\"} 1"));
+        assert!(encoded.contains("musicd_library_watcher_changes_total{kind=\"upserted\"} 5"));
+        assert!(encoded.contains("musicd_library_watcher_changes_total{kind=\"removed\"} 3"));
+        assert!(encoded.contains("musicd_library_watcher_events_total{outcome=\"received\"} 1"));
+        assert!(
+            encoded.contains("musicd_library_watcher_event_batches_total{outcome=\"completed\"} 1")
+        );
+        assert!(encoded.contains("musicd_library_watcher_pending_paths 4"));
+        assert!(encoded.contains("musicd_library_watcher_native_active 1"));
     }
 }
