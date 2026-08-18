@@ -38,11 +38,22 @@ pub struct ChangeLabels {
     pub kind: String,
 }
 
+#[derive(Clone, Debug, Hash, Eq, PartialEq, EncodeLabelSet)]
+pub struct StageLabels {
+    pub stage: String,
+}
+
 #[derive(Debug)]
 pub struct Metrics {
     registry: Registry,
     request_count: Family<RequestLabels, Counter>,
     request_duration: Family<DurationLabels, Histogram, fn() -> Histogram>,
+    stream_transfer_count: Family<OutcomeLabels, Counter>,
+    stream_transfer_bytes: Counter,
+    stream_transfer_duration: Histogram,
+    stream_max_file_read_duration: Histogram,
+    stream_max_socket_write_duration: Histogram,
+    stream_stall_count: Family<StageLabels, Counter>,
     library_watcher_poll_count: Family<OutcomeLabels, Counter>,
     library_watcher_poll_duration: Histogram,
     library_watcher_directories_examined: Gauge,
@@ -73,6 +84,24 @@ fn build_library_watcher_histogram() -> Histogram {
     )
 }
 
+fn build_stream_transfer_histogram() -> Histogram {
+    Histogram::new(
+        [
+            1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0,
+        ]
+        .into_iter(),
+    )
+}
+
+fn build_stream_operation_histogram() -> Histogram {
+    Histogram::new(
+        [
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0,
+        ]
+        .into_iter(),
+    )
+}
+
 impl Metrics {
     pub fn new(state: Weak<ServiceState>) -> Self {
         let mut registry = Registry::default();
@@ -90,6 +119,48 @@ impl Metrics {
             "musicd_http_request_duration_seconds",
             "HTTP request handler duration in seconds, partitioned by method and route",
             request_duration.clone(),
+        );
+
+        let stream_transfer_count = Family::<OutcomeLabels, Counter>::default();
+        registry.register(
+            "musicd_stream_transfers",
+            "Local-library stream transfers partitioned by outcome",
+            stream_transfer_count.clone(),
+        );
+
+        let stream_transfer_bytes = Counter::default();
+        registry.register(
+            "musicd_stream_bytes",
+            "Local-library audio bytes written to renderers",
+            stream_transfer_bytes.clone(),
+        );
+
+        let stream_transfer_duration = build_stream_transfer_histogram();
+        registry.register(
+            "musicd_stream_transfer_duration_seconds",
+            "End-to-end duration of finished local-library stream requests",
+            stream_transfer_duration.clone(),
+        );
+
+        let stream_max_file_read_duration = build_stream_operation_histogram();
+        registry.register(
+            "musicd_stream_max_file_read_duration_seconds",
+            "Longest individual file read in each finished local-library stream request",
+            stream_max_file_read_duration.clone(),
+        );
+
+        let stream_max_socket_write_duration = build_stream_operation_histogram();
+        registry.register(
+            "musicd_stream_max_socket_write_duration_seconds",
+            "Longest socket write or flush in each finished local-library stream request",
+            stream_max_socket_write_duration.clone(),
+        );
+
+        let stream_stall_count = Family::<StageLabels, Counter>::default();
+        registry.register(
+            "musicd_stream_stalls",
+            "Slow local-library stream operations partitioned by stage",
+            stream_stall_count.clone(),
         );
 
         let library_watcher_poll_count = Family::<OutcomeLabels, Counter>::default();
@@ -168,6 +239,12 @@ impl Metrics {
             registry,
             request_count,
             request_duration,
+            stream_transfer_count,
+            stream_transfer_bytes,
+            stream_transfer_duration,
+            stream_max_file_read_duration,
+            stream_max_socket_write_duration,
+            stream_stall_count,
             library_watcher_poll_count,
             library_watcher_poll_duration,
             library_watcher_directories_examined,
@@ -196,6 +273,36 @@ impl Metrics {
                 route: route.to_string(),
             })
             .observe(duration.as_secs_f64());
+    }
+
+    pub(crate) fn record_stream_stall(&self, stage: &str) {
+        self.stream_stall_count
+            .get_or_create(&StageLabels {
+                stage: stage.to_string(),
+            })
+            .inc();
+    }
+
+    pub(crate) fn record_stream_transfer(
+        &self,
+        outcome: &str,
+        bytes: u64,
+        duration: Duration,
+        max_file_read: Duration,
+        max_socket_write: Duration,
+    ) {
+        self.stream_transfer_count
+            .get_or_create(&OutcomeLabels {
+                outcome: outcome.to_string(),
+            })
+            .inc();
+        self.stream_transfer_bytes.inc_by(bytes);
+        self.stream_transfer_duration
+            .observe(duration.as_secs_f64());
+        self.stream_max_file_read_duration
+            .observe(max_file_read.as_secs_f64());
+        self.stream_max_socket_write_duration
+            .observe(max_socket_write.as_secs_f64());
     }
 
     pub(crate) fn record_library_watcher_deferred(&self) {
@@ -572,6 +679,14 @@ mod tests {
         metrics.record_library_watcher_event_batch("completed", 3, 2);
         metrics.set_library_watcher_pending_paths(4);
         metrics.set_library_watcher_native_active(true);
+        metrics.record_stream_stall("socket_write");
+        metrics.record_stream_transfer(
+            "completed",
+            1_048_576,
+            Duration::from_secs(90),
+            Duration::from_millis(25),
+            Duration::from_secs(3),
+        );
 
         let encoded = metrics.encode();
         assert!(encoded.contains("musicd_library_watcher_polls_total{outcome=\"deferred\"} 1"));
@@ -588,5 +703,11 @@ mod tests {
         );
         assert!(encoded.contains("musicd_library_watcher_pending_paths 4"));
         assert!(encoded.contains("musicd_library_watcher_native_active 1"));
+        assert!(encoded.contains("musicd_stream_stalls_total{stage=\"socket_write\"} 1"));
+        assert!(encoded.contains("musicd_stream_transfers_total{outcome=\"completed\"} 1"));
+        assert!(encoded.contains("musicd_stream_bytes_total 1048576"));
+        assert!(encoded.contains("musicd_stream_transfer_duration_seconds_count 1"));
+        assert!(encoded.contains("musicd_stream_max_file_read_duration_seconds_count 1"));
+        assert!(encoded.contains("musicd_stream_max_socket_write_duration_seconds_count 1"));
     }
 }

@@ -5,8 +5,9 @@ use std::time::Duration;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
 
 use crate::http::{
-    HttpRequest, ResponseWriter, api_error, redirect_album, redirect_home, redirect_to_path,
-    request_value, respond_json, respond_not_found, respond_text, respond_with_file,
+    FileTransferStall, FileTransferTelemetry, HttpRequest, ResponseWriter, api_error,
+    is_expected_client_disconnect, redirect_album, redirect_home, redirect_to_path, request_value,
+    respond_json, respond_not_found, respond_text, respond_with_file, respond_with_file_telemetry,
     write_response_owned, write_sse_comment, write_sse_event,
 };
 use crate::library::ScanProgressEvent;
@@ -2668,12 +2669,18 @@ pub(crate) fn handle_track_stream_request(
     );
     debug_log_stream_session_context(state, &track);
     let _active_stream = (request.method == "GET").then(|| state.begin_library_stream());
-    let result = respond_with_file(
-        writer,
-        &track.path,
-        request.method == "HEAD",
-        request.range_header.clone(),
-    );
+    let result = if request.method == "GET" {
+        let (result, telemetry) = respond_with_file_telemetry(
+            writer,
+            &track.path,
+            request.range_header.clone(),
+            |stall| record_stream_stall(state, &track, stall),
+        );
+        record_stream_transfer(state, &track, request, &result, &telemetry);
+        result
+    } else {
+        respond_with_file(writer, &track.path, true, request.range_header.clone())
+    };
     match &result {
         Ok(()) => state.debug_log(
             "stream-file-close",
@@ -2698,6 +2705,70 @@ pub(crate) fn handle_track_stream_request(
         ),
     }
     result
+}
+
+fn record_stream_stall(state: &ServiceState, track: &LibraryTrack, stall: FileTransferStall) {
+    if let Some(metrics) = state.metrics() {
+        metrics.record_stream_stall(stall.stage.label());
+    }
+    eprintln!(
+        "[musicd-stream][stall] track_id={} stage={} duration_ms={} bytes_transferred={} operation_bytes={} relative_path={:?}",
+        track.id,
+        stall.stage.label(),
+        stall.duration.as_millis(),
+        stall.bytes_transferred,
+        stall.operation_bytes,
+        track.relative_path,
+    );
+}
+
+fn record_stream_transfer(
+    state: &ServiceState,
+    track: &LibraryTrack,
+    request: &HttpRequest,
+    result: &io::Result<()>,
+    telemetry: &FileTransferTelemetry,
+) {
+    let outcome = match result {
+        Err(error) if is_expected_client_disconnect(error) => "client_disconnected",
+        Err(_) => "error",
+        Ok(()) if telemetry.bytes_transferred < telemetry.expected_bytes => "short",
+        Ok(()) => "completed",
+    };
+    let max_socket_duration = telemetry.max_write_duration.max(telemetry.flush_duration);
+    if let Some(metrics) = state.metrics() {
+        metrics.record_stream_transfer(
+            outcome,
+            telemetry.bytes_transferred,
+            telemetry.elapsed,
+            telemetry.max_read_duration,
+            max_socket_duration,
+        );
+    }
+    let average_kib_per_second = if telemetry.elapsed.is_zero() {
+        0.0
+    } else {
+        telemetry.bytes_transferred as f64 / 1024.0 / telemetry.elapsed.as_secs_f64()
+    };
+    eprintln!(
+        "[musicd-stream][transfer] track_id={} outcome={} bytes_transferred={} expected_bytes={} elapsed_ms={} average_kib_per_second={:.1} read_operations={} total_read_ms={} max_read_ms={} write_operations={} total_write_ms={} max_write_ms={} flush_ms={} range={:?} relative_path={:?} error={:?}",
+        track.id,
+        outcome,
+        telemetry.bytes_transferred,
+        telemetry.expected_bytes,
+        telemetry.elapsed.as_millis(),
+        average_kib_per_second,
+        telemetry.read_operations,
+        telemetry.total_read_duration.as_millis(),
+        telemetry.max_read_duration.as_millis(),
+        telemetry.write_operations,
+        telemetry.total_write_duration.as_millis(),
+        telemetry.max_write_duration.as_millis(),
+        telemetry.flush_duration.as_millis(),
+        request.range_header,
+        track.relative_path,
+        result.as_ref().err(),
+    );
 }
 
 pub(crate) fn handle_tidal_stream_request(
