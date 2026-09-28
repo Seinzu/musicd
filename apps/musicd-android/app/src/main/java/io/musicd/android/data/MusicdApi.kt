@@ -236,6 +236,17 @@ data class ArtistDetailDto(
 )
 
 @Serializable
+data class RendererPlaybackHealthDto(
+    val state: String,
+    val reason: String,
+    @SerialName("detected_unix") val detectedUnix: Long,
+    @SerialName("position_seconds") val positionSeconds: Long? = null,
+    @SerialName("stalled_for_seconds") val stalledForSeconds: Long = 0L,
+    @SerialName("recommended_action") val recommendedAction: String,
+    val message: String,
+)
+
+@Serializable
 data class SessionDto(
     @SerialName("transport_state") val transportState: String,
     @SerialName("queue_entry_id") val queueEntryId: Long? = null,
@@ -246,6 +257,7 @@ data class SessionDto(
     @SerialName("last_observed_unix") val lastObservedUnix: Long = 0L,
     @SerialName("server_unix") val serverUnix: Long = 0L,
     @SerialName("last_error") val lastError: String? = null,
+    @SerialName("playback_health") val playbackHealth: RendererPlaybackHealthDto? = null,
     val title: String? = null,
     val artist: String? = null,
     val album: String? = null,

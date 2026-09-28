@@ -258,6 +258,11 @@ class MusicdRepository(
     suspend fun transportPlay(baseUrl: String, rendererLocation: String): MutationResponseDto =
         transport(baseUrl, "/api/transport/play", rendererLocation)
 
+    suspend fun retryRendererPlayback(
+        baseUrl: String,
+        rendererLocation: String,
+    ): MutationResponseDto = transport(baseUrl, "/api/transport/retry", rendererLocation)
+
     suspend fun playTrack(
         baseUrl: String,
         rendererLocation: String,

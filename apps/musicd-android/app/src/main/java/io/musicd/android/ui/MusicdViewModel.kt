@@ -121,6 +121,7 @@ data class MusicdUiState(
     val errorMessage: String? = null,
     val warningMessage: String? = null,
     val infoMessage: String? = null,
+    val dismissedRendererHealthDetectedUnix: Long? = null,
 )
 
 class MusicdViewModel(application: Application) : AndroidViewModel(application) {
@@ -1313,6 +1314,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 selectedRendererLocation = location,
                 showRendererPicker = false,
+                dismissedRendererHealthDetectedUnix = null,
                 infoMessage = "Renderer updated.",
             )
         }
@@ -1575,6 +1577,39 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
         transportAction { baseUrl, renderer ->
             repository.transportPlay(baseUrl, renderer)
+        }
+    }
+
+    fun retryRendererPlayback() {
+        val state = uiState.value
+        val baseUrl = state.baseUrl
+        val rendererLocation = state.selectedRendererLocation
+        val detectedUnix = state.nowPlaying?.session?.playbackHealth?.detectedUnix
+        if (baseUrl.isBlank() || rendererLocation.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "Choose a renderer first.") }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            runCatching { repository.retryRendererPlayback(baseUrl, rendererLocation) }
+                .onSuccess { response ->
+                    _uiState.update {
+                        it.copy(
+                            dismissedRendererHealthDetectedUnix = detectedUnix,
+                            infoMessage = response.message ?: "Playback retry sent.",
+                        )
+                    }
+                    syncPlaybackNotificationService()
+                    refreshPlaybackSurfaces()
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = connectionErrorMessage(error),
+                        )
+                    }
+                }
         }
     }
 
@@ -2147,6 +2182,11 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         _uiState.update { it.copy(warningMessage = null) }
     }
 
+    fun dismissRendererHealth() {
+        val detectedUnix = uiState.value.nowPlaying?.session?.playbackHealth?.detectedUnix
+        _uiState.update { it.copy(dismissedRendererHealthDetectedUnix = detectedUnix) }
+    }
+
     private fun stopPlaybackEventSubscription() {
         playbackEventsJob?.cancel()
         playbackEventsJob = null
@@ -2194,6 +2234,12 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     nowPlaying = event.nowPlaying,
                     queue = event.queue,
                     warningMessage = event.nowPlaying.session?.lastError,
+                    dismissedRendererHealthDetectedUnix =
+                        if (event.nowPlaying.session?.playbackHealth == null) {
+                            null
+                        } else {
+                            it.dismissedRendererHealthDetectedUnix
+                        },
                 )
             }
         }

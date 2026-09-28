@@ -14,6 +14,8 @@ const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 const RENDERING_CONTROL_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 const PLAYLIST_EXTENSION_SERVICE: &str = "urn:UuVol-com:service:PlaylistExtension:1";
 const SM_SEARCH_SERVICE: &str = "urn:UuVol-com:service:SMSearch:1";
+const PLAY_RETRY_DELAY: Duration = Duration::from_millis(250);
+const PLAY_TRANSITION_RETRY_COUNT: usize = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamResource {
@@ -383,41 +385,30 @@ pub fn clear_next_av_transport_uri(control_url: &str) -> io::Result<()> {
 
 pub fn play(control_url: &str) -> io::Result<()> {
     let body = build_play_envelope(0, 1);
-    let response = av_transport_action(control_url, "Play", body.as_bytes())?;
+    let mut response = av_transport_action(control_url, "Play", body.as_bytes())?;
 
-    if expect_successful_soap("Play", response.clone()).is_ok() {
-        return Ok(());
-    }
+    for attempt in 0..=PLAY_TRANSITION_RETRY_COUNT {
+        if expect_successful_soap("Play", response.clone()).is_ok() {
+            return Ok(());
+        }
 
-    if is_transition_not_available_fault(&response) {
-        std::thread::sleep(Duration::from_millis(250));
+        if !is_transition_not_available_fault(&response) {
+            return expect_successful_soap("Play", response);
+        }
+
+        std::thread::sleep(PLAY_RETRY_DELAY);
         if transport_is_starting_or_playing(control_url) {
             return Ok(());
         }
 
-        let retry = http_request(
-            "POST",
-            control_url,
-            &[
-                ("Content-Type", "text/xml; charset=\"utf-8\""),
-                (
-                    "SOAPACTION",
-                    "\"urn:schemas-upnp-org:service:AVTransport:1#Play\"",
-                ),
-            ],
-            Some(body.as_bytes()),
-        )?;
-        if expect_successful_soap("Play", retry.clone()).is_ok()
-            || (is_transition_not_available_fault(&retry)
-                && transport_is_starting_or_playing(control_url))
-        {
-            return Ok(());
+        if attempt == PLAY_TRANSITION_RETRY_COUNT {
+            return expect_successful_soap("Play", response);
         }
 
-        return expect_successful_soap("Play", retry);
+        response = av_transport_action(control_url, "Play", body.as_bytes())?;
     }
 
-    expect_successful_soap("Play", response)
+    unreachable!("the retry loop always returns")
 }
 
 pub fn pause(control_url: &str) -> io::Result<()> {

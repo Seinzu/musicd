@@ -189,6 +189,8 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onDismissRendererPicker = { viewModel.toggleRendererPicker(false) },
         onDismissError = viewModel::dismissError,
         onDismissWarning = viewModel::dismissWarning,
+        onRetryRendererPlayback = viewModel::retryRendererPlayback,
+        onDismissRendererHealth = viewModel::dismissRendererHealth,
         onSelectRenderer = viewModel::selectRenderer,
         onDiscoverRenderers = viewModel::discoverRenderers,
         onDeleteRendererGroup = viewModel::deleteRendererGroup,
@@ -267,6 +269,8 @@ private fun MusicdRoot(
     onDismissRendererPicker: () -> Unit,
     onDismissError: () -> Unit,
     onDismissWarning: () -> Unit,
+    onRetryRendererPlayback: () -> Unit,
+    onDismissRendererHealth: () -> Unit,
     onSelectRenderer: (String) -> Unit,
     onDiscoverRenderers: () -> Unit,
     onDeleteRendererGroup: (String) -> Unit,
@@ -532,6 +536,21 @@ private fun MusicdRoot(
                     onAction = onDismissWarning,
                 )
             }
+            state.nowPlaying
+                ?.session
+                ?.playbackHealth
+                ?.takeIf {
+                    it.detectedUnix != state.dismissedRendererHealthDetectedUnix
+                }
+                ?.let { health ->
+                    Spacer(Modifier.height(8.dp))
+                    RendererHealthMessage(
+                        text = health.message,
+                        isRetrying = state.isLoading,
+                        onRetry = onRetryRendererPlayback,
+                        onDismiss = onDismissRendererHealth,
+                    )
+                }
             state.infoMessage?.let {
                 Spacer(Modifier.height(8.dp))
                 Text(it, color = MaterialTheme.colorScheme.secondary)
@@ -2335,6 +2354,47 @@ private fun InlineMessage(
         )
         TextButton(onClick = onAction) {
             Text(actionLabel)
+        }
+    }
+}
+
+@Composable
+private fun RendererHealthMessage(
+    text: String,
+    isRetrying: Boolean,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text(
+                text = "Renderer may be stuck",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("Dismiss")
+                }
+                TextButton(onClick = onRetry, enabled = !isRetrying) {
+                    Text(if (isRetrying) "Retrying…" else "Retry playback")
+                }
+            }
         }
     }
 }
