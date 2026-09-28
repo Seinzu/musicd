@@ -24,14 +24,15 @@ use crate::handlers::{
     handle_api_tidal_play_track_request, handle_api_tidal_search_albums_request,
     handle_api_tidal_search_tracks_request, handle_api_transport_next_request,
     handle_api_transport_pause_request, handle_api_transport_play_request,
-    handle_api_transport_previous_request, handle_api_transport_seek_request,
-    handle_api_transport_stop_request, handle_play_album_request, handle_play_request,
-    handle_queue_append_album_request, handle_queue_append_track_request,
-    handle_queue_clear_request, handle_queue_move_down_request, handle_queue_move_up_request,
-    handle_queue_play_next_album_request, handle_queue_play_next_track_request,
-    handle_queue_remove_entry_request, handle_rescan_progress_request, handle_rescan_request,
-    handle_tidal_stream_request, handle_track_artwork_request, handle_track_stream_request,
-    handle_transport_next_request, handle_transport_pause_request, handle_transport_play_request,
+    handle_api_transport_previous_request, handle_api_transport_retry_request,
+    handle_api_transport_seek_request, handle_api_transport_stop_request,
+    handle_play_album_request, handle_play_request, handle_queue_append_album_request,
+    handle_queue_append_track_request, handle_queue_clear_request, handle_queue_move_down_request,
+    handle_queue_move_up_request, handle_queue_play_next_album_request,
+    handle_queue_play_next_track_request, handle_queue_remove_entry_request,
+    handle_rescan_progress_request, handle_rescan_request, handle_tidal_stream_request,
+    handle_track_artwork_request, handle_track_stream_request, handle_transport_next_request,
+    handle_transport_pause_request, handle_transport_play_request,
     handle_transport_previous_request, handle_transport_stop_request,
 };
 use crate::service::ServiceState;
@@ -419,6 +420,9 @@ pub(crate) fn handle_service_request(
         ("POST", "/api/transport/play") => {
             handle_api_transport_play_request(writer, request, &state)
         }
+        ("POST", "/api/transport/retry") => {
+            handle_api_transport_retry_request(writer, request, &state)
+        }
         ("POST", "/api/transport/pause") => {
             handle_api_transport_pause_request(writer, request, &state)
         }
@@ -586,6 +590,7 @@ pub(crate) fn handle_service_request(
         | ("HEAD", "/api/radio/play")
         | ("HEAD", "/api/like")
         | ("HEAD", "/api/transport/play")
+        | ("HEAD", "/api/transport/retry")
         | ("HEAD", "/api/transport/pause")
         | ("HEAD", "/api/transport/stop")
         | ("HEAD", "/api/transport/next")

@@ -2214,6 +2214,16 @@ pub(crate) fn handle_api_transport_play_request(
     })
 }
 
+pub(crate) fn handle_api_transport_retry_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    handle_api_transport_action(writer, request, state, |state, renderer| {
+        state.retry_renderer_playback(renderer)
+    })
+}
+
 pub(crate) fn handle_api_transport_pause_request(
     writer: &mut ResponseWriter,
     request: &HttpRequest,
@@ -2668,7 +2678,7 @@ pub(crate) fn handle_track_stream_request(
         ),
     );
     debug_log_stream_session_context(state, &track);
-    let _active_stream = (request.method == "GET").then(|| state.begin_library_stream());
+    let _active_stream = (request.method == "GET").then(|| state.begin_track_stream(&track.id));
     let result = if request.method == "GET" {
         let (result, telemetry) = respond_with_file_telemetry(
             writer,
@@ -2710,6 +2720,9 @@ pub(crate) fn handle_track_stream_request(
 fn record_stream_stall(state: &ServiceState, track: &LibraryTrack, stall: FileTransferStall) {
     if let Some(metrics) = state.metrics() {
         metrics.record_stream_stall(stall.stage.label());
+    }
+    if stall.stage.label().starts_with("socket_") {
+        state.record_stream_backpressure(&track.id);
     }
     eprintln!(
         "[musicd-stream][stall] track_id={} stage={} duration_ms={} bytes_transferred={} operation_bytes={} relative_path={:?}",

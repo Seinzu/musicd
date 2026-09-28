@@ -14,13 +14,14 @@ use crate::metrics;
 use crate::renderer::{RendererBackend, RendererBackends};
 use crate::types::{
     AlbumSummary, ArtistSummary, DirectStreamMetadata, LibraryTrack, LikeResult, PlaybackQueue,
-    PlaybackSession, RendererRecord,
+    PlaybackSession, RendererPlaybackHealth, RendererRecord,
 };
 use crate::util::now_unix_timestamp;
 
 mod artwork;
 pub(crate) mod events;
 mod groups;
+mod playback_health;
 mod poll;
 mod queue;
 mod radio;
@@ -31,6 +32,7 @@ mod transport;
 mod watcher;
 
 pub(crate) use events::PlaybackEvents;
+pub(crate) use playback_health::{PlaybackHealthMonitor, RendererHealthTransition};
 pub(crate) use poll::{
     next_queue_entry_after, previous_queue_entry_before, queue_status_for_transport,
     spawn_queue_worker,
@@ -50,6 +52,7 @@ pub(crate) struct ServiceState {
     pub(crate) renderer_action_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) tidal_stream_cache: Mutex<HashMap<String, tidal::TidalStreamSource>>,
     pub(crate) active_library_streams: AtomicUsize,
+    pub(crate) playback_health: PlaybackHealthMonitor,
     /// State for tracking concurrent rescans
     pub(crate) rescan_state: RescanState,
 }
@@ -57,6 +60,19 @@ pub(crate) struct ServiceState {
 #[derive(Debug)]
 pub(crate) struct ActiveLibraryStreamGuard<'a> {
     active_library_streams: &'a AtomicUsize,
+}
+
+#[derive(Debug)]
+pub(crate) struct ActiveTrackStreamGuard<'a> {
+    playback_health: &'a PlaybackHealthMonitor,
+    track_id: String,
+    _library_stream: ActiveLibraryStreamGuard<'a>,
+}
+
+impl Drop for ActiveTrackStreamGuard<'_> {
+    fn drop(&mut self) {
+        self.playback_health.stream_finished(&self.track_id);
+    }
 }
 
 impl Drop for ActiveLibraryStreamGuard<'_> {
@@ -161,6 +177,7 @@ impl ServiceState {
             renderer_action_locks: Mutex::new(HashMap::new()),
             tidal_stream_cache: Mutex::new(HashMap::new()),
             active_library_streams: AtomicUsize::new(0),
+            playback_health: PlaybackHealthMonitor::default(),
             rescan_state: RescanState::new(),
         };
 
@@ -222,6 +239,74 @@ impl ServiceState {
 
     pub(crate) fn active_library_stream_count(&self) -> usize {
         self.active_library_streams.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn begin_track_stream(&self, track_id: &str) -> ActiveTrackStreamGuard<'_> {
+        self.playback_health.stream_started(track_id);
+        ActiveTrackStreamGuard {
+            playback_health: &self.playback_health,
+            track_id: track_id.to_string(),
+            _library_stream: self.begin_library_stream(),
+        }
+    }
+
+    pub(crate) fn record_stream_backpressure(&self, track_id: &str) {
+        self.playback_health.record_backpressure(track_id);
+    }
+
+    pub(crate) fn renderer_playback_health(
+        &self,
+        renderer_location: &str,
+    ) -> Option<RendererPlaybackHealth> {
+        self.playback_health.health(renderer_location)
+    }
+
+    pub(crate) fn publish_renderer_health_transition(
+        &self,
+        renderer_location: &str,
+        transition: RendererHealthTransition,
+        position_seconds: Option<u64>,
+    ) {
+        let state_label = match transition {
+            RendererHealthTransition::Stalled => "stalled",
+            RendererHealthTransition::Recovered => "healthy",
+        };
+        if let Some(metrics) = self.metrics() {
+            metrics.record_renderer_health_transition(state_label);
+        }
+        match transition {
+            RendererHealthTransition::Stalled => {
+                if let Some(health) = self.renderer_playback_health(renderer_location) {
+                    eprintln!(
+                        "[musicd-renderer][health] renderer={:?} state=stalled reason={} position_seconds={:?} stalled_for_seconds={} recommendation={}",
+                        renderer_location,
+                        health.reason,
+                        health.position_seconds,
+                        health.stalled_for_seconds,
+                        health.recommended_action,
+                    );
+                }
+            }
+            RendererHealthTransition::Recovered => eprintln!(
+                "[musicd-renderer][health] renderer={:?} state=healthy previous_state=stalled position_seconds={:?}",
+                renderer_location, position_seconds,
+            ),
+        }
+        self.events.touch(renderer_location);
+    }
+
+    pub(crate) fn clear_renderer_playback_health(
+        &self,
+        renderer_location: &str,
+        position_seconds: Option<u64>,
+    ) {
+        if let Some(transition) = self.playback_health.clear_renderer(renderer_location) {
+            self.publish_renderer_health_transition(
+                renderer_location,
+                transition,
+                position_seconds,
+            );
+        }
     }
 
     pub(crate) fn tracks_snapshot(&self) -> Arc<[LibraryTrack]> {

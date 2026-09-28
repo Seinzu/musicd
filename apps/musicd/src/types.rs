@@ -247,6 +247,17 @@ pub(crate) struct PlaybackSession {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RendererPlaybackHealth {
+    pub(crate) state: String,
+    pub(crate) reason: String,
+    pub(crate) detected_unix: i64,
+    pub(crate) position_seconds: Option<u64>,
+    pub(crate) stalled_for_seconds: u64,
+    pub(crate) recommended_action: String,
+    pub(crate) message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectStreamMetadata {
     pub(crate) renderer_location: String,
     pub(crate) current_track_uri: String,

@@ -54,6 +54,7 @@ pub struct Metrics {
     stream_max_file_read_duration: Histogram,
     stream_max_socket_write_duration: Histogram,
     stream_stall_count: Family<StageLabels, Counter>,
+    renderer_health_transition_count: Family<OutcomeLabels, Counter>,
     library_watcher_poll_count: Family<OutcomeLabels, Counter>,
     library_watcher_poll_duration: Histogram,
     library_watcher_directories_examined: Gauge,
@@ -163,6 +164,13 @@ impl Metrics {
             stream_stall_count.clone(),
         );
 
+        let renderer_health_transition_count = Family::<OutcomeLabels, Counter>::default();
+        registry.register(
+            "musicd_renderer_health_transitions",
+            "Detected renderer playback health transitions partitioned by outcome",
+            renderer_health_transition_count.clone(),
+        );
+
         let library_watcher_poll_count = Family::<OutcomeLabels, Counter>::default();
         registry.register(
             "musicd_library_watcher_polls",
@@ -245,6 +253,7 @@ impl Metrics {
             stream_max_file_read_duration,
             stream_max_socket_write_duration,
             stream_stall_count,
+            renderer_health_transition_count,
             library_watcher_poll_count,
             library_watcher_poll_duration,
             library_watcher_directories_examined,
@@ -303,6 +312,14 @@ impl Metrics {
             .observe(max_file_read.as_secs_f64());
         self.stream_max_socket_write_duration
             .observe(max_socket_write.as_secs_f64());
+    }
+
+    pub(crate) fn record_renderer_health_transition(&self, outcome: &str) {
+        self.renderer_health_transition_count
+            .get_or_create(&OutcomeLabels {
+                outcome: outcome.to_string(),
+            })
+            .inc();
     }
 
     pub(crate) fn record_library_watcher_deferred(&self) {
@@ -593,6 +610,7 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/transport/pause",
     "/api/transport/play",
     "/api/transport/previous",
+    "/api/transport/retry",
     "/api/transport/stop",
     "/health",
     "/metrics",
@@ -680,6 +698,7 @@ mod tests {
         metrics.set_library_watcher_pending_paths(4);
         metrics.set_library_watcher_native_active(true);
         metrics.record_stream_stall("socket_write");
+        metrics.record_renderer_health_transition("stalled");
         metrics.record_stream_transfer(
             "completed",
             1_048_576,
@@ -704,6 +723,9 @@ mod tests {
         assert!(encoded.contains("musicd_library_watcher_pending_paths 4"));
         assert!(encoded.contains("musicd_library_watcher_native_active 1"));
         assert!(encoded.contains("musicd_stream_stalls_total{stage=\"socket_write\"} 1"));
+        assert!(
+            encoded.contains("musicd_renderer_health_transitions_total{outcome=\"stalled\"} 1")
+        );
         assert!(encoded.contains("musicd_stream_transfers_total{outcome=\"completed\"} 1"));
         assert!(encoded.contains("musicd_stream_bytes_total 1048576"));
         assert!(encoded.contains("musicd_stream_transfer_duration_seconds_count 1"));

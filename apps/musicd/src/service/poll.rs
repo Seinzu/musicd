@@ -196,6 +196,43 @@ impl ServiceState {
         Ok(())
     }
 
+    fn observe_renderer_playback_health(
+        &self,
+        renderer_location: &str,
+        queue: &PlaybackQueue,
+        snapshot: &TransportSnapshot,
+    ) {
+        let local_track_id = queue
+            .current_entry_id
+            .and_then(|current_entry_id| {
+                queue
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == current_entry_id)
+            })
+            .and_then(|entry| self.find_track(&entry.track_id))
+            .filter(|track| {
+                snapshot.position_info.track_uri.as_deref()
+                    == Some(self.stream_resource_for_track(track).stream_url.as_str())
+            })
+            .map(|track| track.id);
+        let transition = self.playback_health.observe_renderer(
+            renderer_location,
+            local_track_id.as_deref(),
+            &snapshot.transport_info.transport_state,
+            snapshot.position_info.rel_time_seconds,
+            snapshot.position_info.track_duration_seconds,
+            crate::util::now_unix_timestamp(),
+        );
+        if let Some(transition) = transition {
+            self.publish_renderer_health_transition(
+                renderer_location,
+                transition,
+                snapshot.position_info.rel_time_seconds,
+            );
+        }
+    }
+
     pub(crate) fn poll_renderer_queue(&self, renderer_location: &str) -> io::Result<()> {
         let mut queue = match self.queue_snapshot(renderer_location) {
             Some(queue) => queue,
@@ -234,6 +271,8 @@ impl ServiceState {
                 return Err(error);
             }
         };
+
+        self.observe_renderer_playback_health(renderer_location, &queue, &snapshot);
 
         let snapshot_fingerprint = fingerprint(&queue, &snapshot);
         let state_changed = self

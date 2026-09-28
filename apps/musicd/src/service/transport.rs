@@ -399,6 +399,49 @@ impl ServiceState {
         Ok("Playback resumed.".to_string())
     }
 
+    pub(crate) fn retry_renderer_playback(&self, renderer_location: &str) -> io::Result<String> {
+        if !matches!(
+            renderer_kind_for_location(renderer_location),
+            RendererKind::Upnp | RendererKind::Sonos
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "playback retry is only available for network renderers",
+            ));
+        }
+        let queue = self
+            .queue_snapshot(renderer_location)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queue is empty"))?;
+        let current_entry_id = queue
+            .current_entry_id
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "queue is empty"))?;
+        let session = self.playback_session(renderer_location);
+        let resume_position_seconds = session
+            .as_ref()
+            .filter(|session| session.queue_entry_id == Some(current_entry_id))
+            .and_then(|session| {
+                resumable_position_seconds(session.position_seconds, session.duration_seconds)
+            });
+        let (started, _, renderer_name, resolved_renderer_location) =
+            self.start_current_queue_entry(renderer_location)?;
+        if let Some(track) = started.local_track.as_ref() {
+            self.seek_restarted_renderer_to_position(
+                &resolved_renderer_location,
+                track,
+                resume_position_seconds,
+            );
+        }
+        self.clear_renderer_playback_health(renderer_location, resume_position_seconds);
+        Ok(format!(
+            "Retried '{}' on {}{}.",
+            started.title,
+            renderer_name,
+            resume_position_seconds
+                .map(|position| format!(" from {position} seconds"))
+                .unwrap_or_default(),
+        ))
+    }
+
     fn paused_renderer_needs_restart_for_resume(
         &self,
         renderer_location: &str,

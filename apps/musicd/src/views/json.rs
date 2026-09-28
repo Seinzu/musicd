@@ -688,8 +688,23 @@ pub(crate) fn render_session_payload_json(
     } else {
         None
     };
+    let playback_health_json = state
+        .renderer_playback_health(renderer_location)
+        .map(|health| {
+            format!(
+                r#"{{"state":"{}","reason":"{}","detected_unix":{},"position_seconds":{},"stalled_for_seconds":{},"recommended_action":"{}","message":"{}"}}"#,
+                json_escape(&health.state),
+                json_escape(&health.reason),
+                health.detected_unix,
+                option_u64_json(health.position_seconds),
+                health.stalled_for_seconds,
+                json_escape(&health.recommended_action),
+                json_escape(&health.message),
+            )
+        })
+        .unwrap_or_else(|| "null".to_string());
     format!(
-        r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"server_unix":{},"last_error":{},"title":{},"artist":{},"album":{}}}"#,
+        r#"{{"transport_state":"{}","queue_entry_id":{},"next_queue_entry_id":{},"current_track_uri":{},"position_seconds":{},"duration_seconds":{},"last_observed_unix":{},"server_unix":{},"last_error":{},"playback_health":{},"title":{},"artist":{},"album":{}}}"#,
         json_escape(&session.transport_state),
         option_i64_json(session.queue_entry_id),
         option_i64_json(session.next_queue_entry_id),
@@ -699,6 +714,7 @@ pub(crate) fn render_session_payload_json(
         session.last_observed_unix,
         now_unix_timestamp(),
         option_string_json(session.last_error.as_deref()),
+        playback_health_json,
         option_string_json(
             current_track
                 .as_ref()
