@@ -212,6 +212,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onSearchTidal = viewModel::searchTidalTracks,
         onPlayTidalAlbum = viewModel::playTidalAlbum,
         onPlayHomeRecommendation = viewModel::playHomeRecommendation,
+        onDismissHomeRecommendation = viewModel::dismissHomeRecommendation,
         onAppendTidalAlbum = viewModel::appendTidalAlbum,
         onPlayNextTidalAlbum = viewModel::playNextTidalAlbum,
         onPlayTidalTrack = viewModel::playTidalTrack,
@@ -292,6 +293,7 @@ private fun MusicdRoot(
     onSearchTidal: () -> Unit,
     onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayHomeRecommendation: (AlbumRecommendationDto, TidalAlbumDto) -> Unit,
+    onDismissHomeRecommendation: (AlbumRecommendationDto) -> Unit,
     onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayTidalTrack: (TidalTrackDto) -> Unit,
@@ -571,6 +573,7 @@ private fun MusicdRoot(
                     onAppendAlbum = onAppendAlbum,
                     onPlayNextAlbum = onPlayNextAlbum,
                     onPlayHomeRecommendation = onPlayHomeRecommendation,
+                    onDismissHomeRecommendation = onDismissHomeRecommendation,
                     onAppendTidalAlbum = onAppendTidalAlbum,
                     onPlayNextTidalAlbum = onPlayNextTidalAlbum,
                     onOpenRendererPicker = onOpenRendererPicker,
@@ -912,6 +915,7 @@ private fun HomeScreen(
     onAppendAlbum: (String) -> Unit,
     onPlayNextAlbum: (String) -> Unit,
     onPlayHomeRecommendation: (AlbumRecommendationDto, TidalAlbumDto) -> Unit,
+    onDismissHomeRecommendation: (AlbumRecommendationDto) -> Unit,
     onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
     onOpenRendererPicker: () -> Unit,
@@ -1021,6 +1025,7 @@ private fun HomeScreen(
                     onAppendTidalAlbum = onAppendTidalAlbum,
                     onPlayNextTidalAlbum = onPlayNextTidalAlbum,
                     onOpenAlbum = {},
+                    onDismiss = { onDismissHomeRecommendation(recommendation) },
                 )
             }
         }
@@ -3575,6 +3580,7 @@ private fun AlbumRecommendationRow(
     onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
     onOpenAlbum: () -> Unit,
+    onDismiss: (() -> Unit)? = null,
 ) {
     val uriHandler = LocalUriHandler.current
     val tidalUrl = recommendation.tidalUrl?.takeIf(::isWebUrl)
@@ -3631,6 +3637,11 @@ private fun AlbumRecommendationRow(
                     externalUrl?.let { url ->
                         IconButton(onClick = { uriHandler.openUri(url) }) {
                             Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = openDescription)
+                        }
+                    }
+                    onDismiss?.let { dismiss ->
+                        IconButton(onClick = dismiss) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Dismiss recommendation")
                         }
                     }
                 }

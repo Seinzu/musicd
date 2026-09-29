@@ -403,6 +403,14 @@ class MusicdApi(
     ): AlbumRecommendationsResponseDto =
         get("$baseUrl/api/recommendations?exclude_library=true&status=suggested&random=true&limit=$limit")
 
+    suspend fun dismissRecommendation(
+        baseUrl: String,
+        recommendationKey: String,
+    ): MutationResponseDto = post(
+        "$baseUrl/api/recommendations/dismiss",
+        mapOf("recommendation_key" to recommendationKey),
+    )
+
     suspend fun searchRadioStations(
         baseUrl: String,
         query: String,
