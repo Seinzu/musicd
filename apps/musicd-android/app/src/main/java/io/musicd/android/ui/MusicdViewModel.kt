@@ -1762,7 +1762,21 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         album: TidalAlbumDto,
     ) {
         playTidalAlbum(album) { baseUrl ->
-            replaceHomeRecommendationAfterPlayback(baseUrl, recommendation)
+            refillHomeRecommendation(baseUrl, recommendation)
+        }
+    }
+
+    fun dismissHomeRecommendation(recommendation: AlbumRecommendationDto) {
+        val baseUrl = uiState.value.baseUrl
+        if (baseUrl.isBlank()) {
+            return
+        }
+        viewModelScope.launch {
+            runCatching { repository.dismissRecommendation(baseUrl, recommendation.recommendationKey) }
+                .onSuccess { refillHomeRecommendation(baseUrl, recommendation) }
+                .onFailure { error ->
+                    _uiState.update { it.copy(errorMessage = connectionErrorMessage(error)) }
+                }
         }
     }
 
@@ -1829,15 +1843,19 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun replaceHomeRecommendationAfterPlayback(
+    /**
+     * Swaps [removedRecommendation] on the home screen for a fresh suggestion, preferring
+     * another pick from the same seed album and falling back to the wider collection.
+     */
+    private fun refillHomeRecommendation(
         baseUrl: String,
-        playedRecommendation: AlbumRecommendationDto,
+        removedRecommendation: AlbumRecommendationDto,
     ) {
         viewModelScope.launch {
             val seedAlbumId = uiState.value
                 .takeIf { it.baseUrl == baseUrl }
-                ?.let { findLibraryAlbumForHomeRecommendation(playedRecommendation, it.albums)?.id }
-                ?: playedRecommendation.seedAlbumId.takeIf { it.isNotBlank() }
+                ?.let { findLibraryAlbumForHomeRecommendation(removedRecommendation, it.albums)?.id }
+                ?: removedRecommendation.seedAlbumId.takeIf { it.isNotBlank() }
             val seedCandidates = seedAlbumId
                 ?.let { seedAlbumId ->
                     runCatching {
@@ -1856,16 +1874,16 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 val replacement = chooseHomeRecommendationReplacement(
                     candidates = seedCandidates,
                     state = state,
-                    extraExcludedKeys = setOf(playedRecommendation.recommendationKey),
+                    extraExcludedKeys = setOf(removedRecommendation.recommendationKey),
                 ) ?: chooseHomeRecommendationReplacement(
                     candidates = collectionCandidates,
                     state = state,
-                    extraExcludedKeys = setOf(playedRecommendation.recommendationKey),
+                    extraExcludedKeys = setOf(removedRecommendation.recommendationKey),
                 )
                 state.copy(
                     homeRecommendations = replaceHomeRecommendation(
                         recommendations = state.homeRecommendations,
-                        playedRecommendationKey = playedRecommendation.recommendationKey,
+                        playedRecommendationKey = removedRecommendation.recommendationKey,
                         replacement = replacement,
                     ),
                 )

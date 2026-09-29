@@ -98,6 +98,13 @@ class MusicdRepository(
         api.getCollectionRecommendations(baseUrl.normalizeBaseUrl(), limit)
     }
 
+    suspend fun dismissRecommendation(
+        baseUrl: String,
+        recommendationKey: String,
+    ): MutationResponseDto = withContext(Dispatchers.IO) {
+        api.dismissRecommendation(baseUrl.normalizeBaseUrl(), recommendationKey)
+    }
+
     suspend fun searchRadioStations(
         baseUrl: String,
         query: String,
