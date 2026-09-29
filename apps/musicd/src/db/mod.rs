@@ -228,7 +228,9 @@ impl Database {
                     artwork_url TEXT,
                     status TEXT NOT NULL DEFAULT 'suggested',
                     created_unix INTEGER NOT NULL,
-                    updated_unix INTEGER NOT NULL
+                    updated_unix INTEGER NOT NULL,
+                    dismiss_count INTEGER NOT NULL DEFAULT 0,
+                    last_dismissed_unix INTEGER
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_track_play_history_track_id
@@ -368,6 +370,18 @@ impl Database {
             "TEXT",
         )?;
         ensure_column(&connection, "album_recommendations", "tidal_url", "TEXT")?;
+        ensure_column(
+            &connection,
+            "album_recommendations",
+            "dismiss_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &connection,
+            "album_recommendations",
+            "last_dismissed_unix",
+            "INTEGER",
+        )?;
         if table_is_empty(&connection, "albums")? && !table_is_empty(&connection, "tracks")? {
             library::rebuild_normalized_library_tables(&connection)?;
         }

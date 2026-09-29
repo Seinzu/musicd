@@ -159,17 +159,19 @@ Each recommendation includes:
 - `external_url`
 - `tidal_url`
 - `artwork_url`
-- `status`: `suggested`, or `dismissed` once the user has dismissed it
+- `status`
+- `dismiss_count`: how many times this album has been dismissed from the home screen
+- `last_dismissed_unix`: when it was last dismissed, or `null`
 
 ### `POST /api/recommendations/dismiss`
 
-Dismisses a recommendation so it is no longer offered. The Android home screen uses this when a suggested album is dismissed.
+Records that a recommendation was dismissed. The Android home screen calls this when a suggested album is dismissed; hiding it is up to the app and only lasts for that session.
 
 Form fields:
 
 - `recommendation_key`
 
-Marks the recommendation, and any other recommendation of the same album from a different seed album, as `dismissed`. Re-importing the same recommendation keeps it dismissed unless the import sets an explicit `status`.
+Increments `dismiss_count` and sets `last_dismissed_unix` on the recommendation and on any other recommendation of the same album from a different seed album. The `status` is left unchanged, and re-imports keep the dismissal count.
 
 Response:
 
