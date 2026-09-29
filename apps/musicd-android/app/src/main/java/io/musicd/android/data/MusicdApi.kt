@@ -180,6 +180,8 @@ data class AlbumRecommendationDto(
     val status: String = "suggested",
     @SerialName("created_unix") val createdUnix: Long = 0L,
     @SerialName("updated_unix") val updatedUnix: Long = 0L,
+    @SerialName("dismiss_count") val dismissCount: Long = 0L,
+    @SerialName("last_dismissed_unix") val lastDismissedUnix: Long? = null,
 )
 
 @Serializable

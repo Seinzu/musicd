@@ -10,18 +10,48 @@ import org.junit.Test
 
 class HomeRecommendationsTest {
     @Test
-    fun replacementSkipsDismissedRecommendations() {
-        val dismissed = recommendation("dismissed", title = "Dismissed", status = "dismissed")
+    fun replacementSkipsRecommendationsThatAreNoLongerSuggested() {
+        val accepted = recommendation("accepted", title = "Accepted", status = "accepted")
         val suggested = recommendation("suggested", title = "Suggested")
 
         val replacement = chooseHomeRecommendationReplacement(
-            candidates = listOf(dismissed, suggested),
+            candidates = listOf(accepted, suggested),
             currentRecommendations = emptyList(),
             libraryAlbums = emptyList(),
             extraExcludedKeys = emptySet(),
         )
 
         assertEquals("suggested", replacement?.recommendationKey)
+    }
+
+    @Test
+    fun replacementSkipsAlbumsDismissedThisSessionEvenFromAnotherSeed() {
+        val dismissed = recommendation("seed-a-eden", title = "Spirit of Eden", releaseGroupId = "eden")
+        val sameAlbumOtherSeed = recommendation("seed-b-eden", title = "Spirit of Eden", releaseGroupId = "eden")
+        val fresh = recommendation("fresh", title = "Laughing Stock")
+
+        val replacement = chooseHomeRecommendationReplacement(
+            candidates = listOf(sameAlbumOtherSeed, fresh),
+            currentRecommendations = emptyList(),
+            libraryAlbums = emptyList(),
+            extraExcludedKeys = setOf(dismissed.recommendationKey),
+            dismissedIdentities = setOf(homeRecommendationIdentity(dismissed)),
+        )
+
+        assertEquals("fresh", replacement?.recommendationKey)
+    }
+
+    @Test
+    fun visibleRecommendationsHideAlbumsDismissedThisSession() {
+        val dismissed = recommendation("seed-a-eden", title = "Spirit of Eden", releaseGroupId = "eden")
+        val sameAlbumOtherSeed = recommendation("seed-b-eden", title = "Spirit of Eden", releaseGroupId = "eden")
+        val other = recommendation("other", title = "Laughing Stock")
+        val recommendations = listOf(dismissed, other, sameAlbumOtherSeed)
+
+        val visible = visibleHomeRecommendations(recommendations, setOf(homeRecommendationIdentity(dismissed)))
+
+        assertEquals(listOf("other"), visible.map { it.recommendationKey })
+        assertSame(recommendations, visibleHomeRecommendations(recommendations, emptySet()))
     }
 
     @Test
@@ -97,7 +127,7 @@ class HomeRecommendationsTest {
     @Test
     fun replacementIsNullWhenNothingIsEligible() {
         val replacement = chooseHomeRecommendationReplacement(
-            candidates = listOf(recommendation("gone", title = "Gone", status = "dismissed")),
+            candidates = listOf(recommendation("gone", title = "Gone", status = "accepted")),
             currentRecommendations = emptyList(),
             libraryAlbums = emptyList(),
             extraExcludedKeys = emptySet(),
