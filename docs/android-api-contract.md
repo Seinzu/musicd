@@ -159,7 +159,25 @@ Each recommendation includes:
 - `external_url`
 - `tidal_url`
 - `artwork_url`
-- `status`
+- `status`: `suggested`, or `dismissed` once the user has dismissed it
+
+### `POST /api/recommendations/dismiss`
+
+Dismisses a recommendation so it is no longer offered. The Android home screen uses this when a suggested album is dismissed.
+
+Form fields:
+
+- `recommendation_key`
+
+Marks the recommendation, and any other recommendation of the same album from a different seed album, as `dismissed`. Re-importing the same recommendation keeps it dismissed unless the import sets an explicit `status`.
+
+Response:
+
+- `ok`
+- `message`
+- `dismissed`: number of recommendations updated
+
+Returns `404` if no recommendation has that key.
 
 ### `GET /api/artists`
 
