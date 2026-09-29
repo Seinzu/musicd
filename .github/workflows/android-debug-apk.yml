@@ -38,6 +38,17 @@ jobs:
       - name: Ensure Gradle wrapper is executable
         run: chmod +x ./gradlew
 
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
+      - name: Upload unit test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: musicd-android-test-reports-${{ github.sha }}
+          path: apps/musicd-android/app/build/reports/tests/
+          retention-days: 14
+
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug
 
