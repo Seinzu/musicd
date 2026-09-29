@@ -2139,6 +2139,65 @@ mod tests {
     }
 
     #[test]
+    fn dismisses_album_recommendations_across_seeds_and_keeps_them_dismissed() {
+        let state = sample_state(Vec::new());
+        let item = |seed_album_id: &str, title: &str, group: &str| RecommendationImportItem {
+            recommendation_key: None,
+            source: None,
+            batch_id: None,
+            seed_album_id: seed_album_id.to_string(),
+            seed_musicbrainz_release_id: None,
+            suggested_artist: "Talk Talk".to_string(),
+            suggested_title: title.to_string(),
+            suggested_musicbrainz_release_id: None,
+            suggested_musicbrainz_release_group_id: Some(group.to_string()),
+            confidence: Some(0.9),
+            rationale: None,
+            external_url: None,
+            tidal_url: None,
+            artwork_url: None,
+            status: None,
+        };
+        let items = vec![
+            item("seed-a", "Spirit of Eden", "eden-group"),
+            item("seed-b", "Spirit of Eden", "eden-group"),
+            item("seed-a", "Laughing Stock", "laughing-group"),
+        ];
+        state
+            .database
+            .upsert_album_recommendations("llm-test", None, &items)
+            .expect("recommendation import should succeed");
+
+        let target_key = state
+            .album_recommendations(Some("seed-a"))
+            .into_iter()
+            .find(|recommendation| recommendation.suggested_title == "Spirit of Eden")
+            .expect("recommendation should exist")
+            .recommendation_key;
+        let dismissed = state
+            .dismiss_album_recommendation(&target_key)
+            .expect("dismiss should succeed");
+        assert_eq!(dismissed, 2);
+        assert!(
+            state
+                .dismiss_album_recommendation("missing-key")
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        );
+
+        // Re-importing without an explicit status keeps the dismissal.
+        state
+            .database
+            .upsert_album_recommendations("llm-test", None, &items)
+            .expect("recommendation re-import should succeed");
+        let suggested =
+            state.album_recommendations_for_display(None, Some("suggested"), false, false, None);
+        assert_eq!(suggested.len(), 1);
+        assert_eq!(suggested[0].suggested_title, "Laughing Stock");
+
+        let _ = std::fs::remove_dir_all(state.config.config_path);
+    }
+
+    #[test]
     fn deletes_album_recommendations() {
         let config_path = temp_config_path("album-recommendations-delete");
         let database = Database::open(&config_path).expect("database should open");

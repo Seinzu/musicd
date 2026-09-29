@@ -14,8 +14,8 @@ use crate::handlers::{
     handle_api_queue_play_next_tidal_album_request, handle_api_queue_play_next_tidal_track_request,
     handle_api_queue_play_next_track_request, handle_api_queue_remove_request,
     handle_api_radio_play_request, handle_api_radio_stations_request,
-    handle_api_recommendations_delete_request, handle_api_recommendations_import_request,
-    handle_api_register_android_local_renderer_request,
+    handle_api_recommendations_delete_request, handle_api_recommendations_dismiss_request,
+    handle_api_recommendations_import_request, handle_api_register_android_local_renderer_request,
     handle_api_register_cli_local_renderer_request, handle_api_renderer_discover_request,
     handle_api_renderer_group_create_request, handle_api_renderer_group_delete_request,
     handle_api_renderer_group_update_request, handle_api_renderer_volume_request,
@@ -416,6 +416,9 @@ pub(crate) fn handle_service_request(
         }
         ("POST", "/api/recommendations/import") => {
             handle_api_recommendations_import_request(writer, request, &state)
+        }
+        ("POST", "/api/recommendations/dismiss") => {
+            handle_api_recommendations_dismiss_request(writer, request, &state)
         }
         ("POST", "/api/transport/play") => {
             handle_api_transport_play_request(writer, request, &state)
