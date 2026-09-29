@@ -243,6 +243,11 @@ curl -sS -X POST http://localhost:8787/api/recommendations/import \
   --data-binary @scripts/recommender/recommendations-import.json
 ```
 
+Recommendations dismissed from the Android home screen are stored with status
+`dismissed` (via `POST /api/recommendations/dismiss` with `recommendation_key`).
+Re-importing the same recommendation keeps it dismissed unless the payload sets
+an explicit `status`.
+
 Add TIDAL deep links during import payload generation:
 
 ```sh

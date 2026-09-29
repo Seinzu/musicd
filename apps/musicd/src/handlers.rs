@@ -1738,6 +1738,35 @@ pub(crate) fn handle_api_recommendations_import_request(
     }
 }
 
+pub(crate) fn handle_api_recommendations_dismiss_request(
+    writer: &mut ResponseWriter,
+    request: &HttpRequest,
+    state: &ServiceState,
+) -> io::Result<()> {
+    let recommendation_key = match required_request_value(request, "recommendation_key") {
+        Ok(value) => value,
+        Err(error) => return api_error(writer, "400 Bad Request", error),
+    };
+
+    match state.dismiss_album_recommendation(&recommendation_key) {
+        Ok(dismissed) => {
+            let body = format!(
+                r#"{{"ok":true,"message":"Dismissed {} recommendation(s).","dismissed":{}}}"#,
+                dismissed, dismissed,
+            );
+            respond_json(writer, "200 OK", &body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            api_error(writer, "404 Not Found", &error.to_string())
+        }
+        Err(error) => api_error(
+            writer,
+            "500 Internal Server Error",
+            &format!("recommendation dismiss failed: {error}"),
+        ),
+    }
+}
+
 pub(crate) fn handle_api_recommendations_delete_request(
     writer: &mut ResponseWriter,
     _request: &HttpRequest,

@@ -584,6 +584,7 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/queue/tidal/play-next-track",
     "/api/recommendation-seeds",
     "/api/recommendations",
+    "/api/recommendations/dismiss",
     "/api/recommendations/import",
     "/api/renderer-groups",
     "/api/renderer-groups/delete",
