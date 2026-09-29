@@ -58,10 +58,9 @@ impl Database {
                 normalized_text(Some(&item.suggested_title)).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidInput, "suggested_title is required")
                 })?;
-            let explicit_status =
-                normalized_text(item.status.as_deref()).filter(|value| !value.is_empty());
-            let preserve_dismissed = explicit_status.is_none();
-            let status = explicit_status.unwrap_or_else(|| "suggested".to_string());
+            let status = normalized_text(item.status.as_deref())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "suggested".to_string());
             let batch_id = normalized_text(item.batch_id.as_deref())
                 .or_else(|| normalized_text(default_batch_id));
             let recommendation_key = normalized_text(item.recommendation_key.as_deref())
@@ -106,11 +105,7 @@ impl Database {
                        external_url = excluded.external_url,
                        tidal_url = excluded.tidal_url,
                        artwork_url = excluded.artwork_url,
-                       status = CASE
-                         WHEN ?18 AND album_recommendations.status = 'dismissed'
-                           THEN album_recommendations.status
-                         ELSE excluded.status
-                       END,
+                       status = excluded.status,
                        updated_unix = excluded.updated_unix",
                     params![
                         recommendation_key,
@@ -130,7 +125,6 @@ impl Database {
                         status,
                         existing_created_unix.unwrap_or(now),
                         now,
-                        preserve_dismissed,
                     ],
                 )
                 .map_err(db_error)?;
@@ -140,10 +134,11 @@ impl Database {
         Ok(imported)
     }
 
-    pub(crate) fn set_album_recommendation_status(
+    /// Counts a dismissal against each recommendation. Dismissals are not stored as a status
+    /// change: hiding a dismissed suggestion is up to the client and only temporary.
+    pub(crate) fn record_album_recommendation_dismissal(
         &self,
         recommendation_keys: &[String],
-        status: &str,
     ) -> io::Result<usize> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(db_error)?;
@@ -152,9 +147,10 @@ impl Database {
         for recommendation_key in recommendation_keys {
             updated += transaction
                 .execute(
-                    "UPDATE album_recommendations SET status = ?, updated_unix = ?
+                    "UPDATE album_recommendations
+                     SET dismiss_count = dismiss_count + 1, last_dismissed_unix = ?
                      WHERE recommendation_key = ?",
-                    params![status, now, recommendation_key],
+                    params![now, recommendation_key],
                 )
                 .map_err(db_error)?;
         }
@@ -176,7 +172,7 @@ fn recommendation_select_sql(filtered: bool) -> &'static str {
                 seed_musicbrainz_release_id, suggested_artist, suggested_title,
                 suggested_musicbrainz_release_id, suggested_musicbrainz_release_group_id,
                 confidence, rationale, external_url, tidal_url, artwork_url, status,
-                created_unix, updated_unix
+                created_unix, updated_unix, dismiss_count, last_dismissed_unix
          FROM album_recommendations
          WHERE seed_album_id = ?
          ORDER BY status ASC, confidence DESC, updated_unix DESC, suggested_artist ASC, suggested_title ASC"
@@ -185,7 +181,7 @@ fn recommendation_select_sql(filtered: bool) -> &'static str {
                 seed_musicbrainz_release_id, suggested_artist, suggested_title,
                 suggested_musicbrainz_release_id, suggested_musicbrainz_release_group_id,
                 confidence, rationale, external_url, tidal_url, artwork_url, status,
-                created_unix, updated_unix
+                created_unix, updated_unix, dismiss_count, last_dismissed_unix
          FROM album_recommendations
          ORDER BY seed_album_id ASC, status ASC, confidence DESC, updated_unix DESC"
     }
@@ -210,6 +206,8 @@ fn recommendation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AlbumRec
         status: row.get(14)?,
         created_unix: row.get(15)?,
         updated_unix: row.get(16)?,
+        dismiss_count: row.get(17)?,
+        last_dismissed_unix: row.get(18)?,
     })
 }
 

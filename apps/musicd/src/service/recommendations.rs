@@ -109,9 +109,10 @@ impl ServiceState {
         )
     }
 
-    /// Marks a recommendation as dismissed, along with any other recommendation
-    /// for the same album (e.g. suggested from a different seed), so it stops
-    /// being offered. Returns the number of recommendations updated.
+    /// Records that a recommendation was dismissed, counting it against every
+    /// recommendation for the same album (e.g. suggested from a different seed).
+    /// The recommendation stays `suggested`; dismissals are only temporary on the
+    /// client. Returns the number of recommendations updated.
     pub(crate) fn dismiss_album_recommendation(
         &self,
         recommendation_key: &str,
@@ -127,8 +128,7 @@ impl ServiceState {
             .filter(|recommendation| recommendation_identity_key(recommendation) == identity)
             .map(|recommendation| recommendation.recommendation_key.clone())
             .collect::<Vec<_>>();
-        self.database
-            .set_album_recommendation_status(&keys, "dismissed")
+        self.database.record_album_recommendation_dismissal(&keys)
     }
 
     pub(crate) fn delete_album_recommendations(&self) -> io::Result<usize> {
@@ -415,6 +415,8 @@ mod tests {
             status: "suggested".to_string(),
             created_unix: 0,
             updated_unix: 0,
+            dismiss_count: 0,
+            last_dismissed_unix: None,
         }
     }
 }

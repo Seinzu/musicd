@@ -360,6 +360,8 @@ pub(crate) struct AlbumRecommendation {
     pub(crate) status: String,
     pub(crate) created_unix: i64,
     pub(crate) updated_unix: i64,
+    pub(crate) dismiss_count: i64,
+    pub(crate) last_dismissed_unix: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -2139,7 +2139,7 @@ mod tests {
     }
 
     #[test]
-    fn dismisses_album_recommendations_across_seeds_and_keeps_them_dismissed() {
+    fn counts_album_recommendation_dismissals_across_seeds() {
         let state = sample_state(Vec::new());
         let item = |seed_album_id: &str, title: &str, group: &str| RecommendationImportItem {
             recommendation_key: None,
@@ -2184,15 +2184,36 @@ mod tests {
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
         );
 
-        // Re-importing without an explicit status keeps the dismissal.
+        // Dismissing is temporary: every recommendation is still suggested, with the
+        // dismissal counted against both copies of the dismissed album.
+        let recommendations = state.album_recommendations(None);
+        assert_eq!(recommendations.len(), 3);
+        for recommendation in &recommendations {
+            assert_eq!(recommendation.status, "suggested");
+            let expected = if recommendation.suggested_title == "Spirit of Eden" {
+                1
+            } else {
+                0
+            };
+            assert_eq!(recommendation.dismiss_count, expected);
+            assert_eq!(recommendation.last_dismissed_unix.is_some(), expected == 1);
+        }
+
+        state
+            .dismiss_album_recommendation(&target_key)
+            .expect("second dismiss should succeed");
+        // Re-importing keeps the count.
         state
             .database
             .upsert_album_recommendations("llm-test", None, &items)
             .expect("recommendation re-import should succeed");
-        let suggested =
-            state.album_recommendations_for_display(None, Some("suggested"), false, false, None);
-        assert_eq!(suggested.len(), 1);
-        assert_eq!(suggested[0].suggested_title, "Laughing Stock");
+        let target = state
+            .album_recommendations(Some("seed-a"))
+            .into_iter()
+            .find(|recommendation| recommendation.recommendation_key == target_key)
+            .expect("recommendation should still exist");
+        assert_eq!(target.dismiss_count, 2);
+        assert_eq!(target.status, "suggested");
 
         let _ = std::fs::remove_dir_all(state.config.config_path);
     }
