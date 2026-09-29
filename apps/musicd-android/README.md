@@ -52,6 +52,12 @@ Or build both:
 ./gradlew :app:assembleDebug :companion:assembleDebug
 ```
 
+Run the app's JVM unit tests (no device or emulator needed; CI runs these on every Android PR):
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
 Debug APK outputs:
 
 ```text

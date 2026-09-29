@@ -1831,7 +1831,8 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 val replacement = chooseHomeRecommendationReplacement(
                     candidates = seedRecommendations,
-                    state = state,
+                    currentRecommendations = state.homeRecommendations,
+                    libraryAlbums = state.albums,
                     extraExcludedKeys = emptySet(),
                 )
                 state.copy(
@@ -1873,17 +1874,19 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 val replacement = chooseHomeRecommendationReplacement(
                     candidates = seedCandidates,
-                    state = state,
+                    currentRecommendations = state.homeRecommendations,
+                    libraryAlbums = state.albums,
                     extraExcludedKeys = setOf(removedRecommendation.recommendationKey),
                 ) ?: chooseHomeRecommendationReplacement(
                     candidates = collectionCandidates,
-                    state = state,
+                    currentRecommendations = state.homeRecommendations,
+                    libraryAlbums = state.albums,
                     extraExcludedKeys = setOf(removedRecommendation.recommendationKey),
                 )
                 state.copy(
                     homeRecommendations = replaceHomeRecommendation(
                         recommendations = state.homeRecommendations,
-                        playedRecommendationKey = removedRecommendation.recommendationKey,
+                        removedRecommendationKey = removedRecommendation.recommendationKey,
                         replacement = replacement,
                     ),
                 )
@@ -2361,102 +2364,6 @@ private fun MusicdUiState.applyLikeResponse(response: LikeResponseDto): MusicdUi
         else -> this
     }
 
-private fun chooseHomeRecommendationReplacement(
-    candidates: List<AlbumRecommendationDto>,
-    state: MusicdUiState,
-    extraExcludedKeys: Set<String>,
-): AlbumRecommendationDto? {
-    val excludedKeys = state.homeRecommendations
-        .map { it.recommendationKey }
-        .toSet() + extraExcludedKeys
-    val excludedIdentities = state.homeRecommendations
-        .map(::homeRecommendationIdentity)
-        .toSet()
-    val eligible = candidates
-        .filter { it.status.equals("suggested", ignoreCase = true) }
-        .filterNot { it.recommendationKey in excludedKeys }
-        .filterNot { homeRecommendationIdentity(it) in excludedIdentities }
-        .filter { findLibraryAlbumForHomeRecommendation(it, state.albums) == null }
-    return eligible.firstOrNull { tidalAlbumIdFromHomeRecommendation(it) != null }
-        ?: eligible.firstOrNull()
-}
-
-private fun prependHomeRecommendation(
-    recommendations: List<AlbumRecommendationDto>,
-    replacement: AlbumRecommendationDto,
-): List<AlbumRecommendationDto> =
-    (listOf(replacement) + recommendations.filterNot { it.recommendationKey == replacement.recommendationKey })
-        .take(HOME_RECOMMENDATION_LIMIT)
-
-private fun replaceHomeRecommendation(
-    recommendations: List<AlbumRecommendationDto>,
-    playedRecommendationKey: String,
-    replacement: AlbumRecommendationDto?,
-): List<AlbumRecommendationDto> {
-    val index = recommendations.indexOfFirst { it.recommendationKey == playedRecommendationKey }
-    if (index < 0) {
-        return recommendations
-    }
-    val updated = recommendations.toMutableList()
-    if (replacement == null) {
-        updated.removeAt(index)
-    } else {
-        updated[index] = replacement
-    }
-    return updated
-        .distinctBy { it.recommendationKey }
-        .take(HOME_RECOMMENDATION_LIMIT)
-}
-
-private fun homeRecommendationIdentity(recommendation: AlbumRecommendationDto): String =
-    recommendation.suggestedMusicbrainzReleaseGroupId
-        ?.takeIf { it.isNotBlank() }
-        ?.let { "release-group:$it" }
-        ?: recommendation.suggestedMusicbrainzReleaseId
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "release:$it" }
-        ?: "artist-title:${normalizeRecommendationMatchText(recommendation.suggestedArtist)}:" +
-            normalizeRecommendationMatchText(recommendation.suggestedTitle)
-
-private fun findLibraryAlbumForHomeRecommendation(
-    recommendation: AlbumRecommendationDto,
-    albums: List<AlbumSummaryDto>,
-): AlbumSummaryDto? {
-    recommendation.suggestedMusicbrainzReleaseId?.takeIf { it.isNotBlank() }?.let { releaseId ->
-        albums.firstOrNull { it.metadata?.musicbrainzReleaseId == releaseId }?.let { return it }
-    }
-    recommendation.suggestedMusicbrainzReleaseGroupId?.takeIf { it.isNotBlank() }?.let { releaseGroupId ->
-        albums.firstOrNull { it.metadata?.musicbrainzReleaseGroupId == releaseGroupId }?.let { return it }
-    }
-    recommendation.artworkUrl?.let(::albumIdFromRecommendationArtworkUrl)?.let { albumId ->
-        albums.firstOrNull { it.id == albumId }?.let { return it }
-    }
-
-    val recommendedArtist = normalizeRecommendationMatchText(recommendation.suggestedArtist)
-    val recommendedTitle = normalizeRecommendationMatchText(recommendation.suggestedTitle)
-    return albums.firstOrNull {
-        normalizeRecommendationMatchText(it.artist) == recommendedArtist &&
-            normalizeRecommendationMatchText(it.title) == recommendedTitle
-    }
-}
-
-private fun albumIdFromRecommendationArtworkUrl(url: String): String? =
-    url
-        .substringBefore('?')
-        .trimEnd('/')
-        .substringAfterLast('/')
-        .takeIf { url.contains("/artwork/album/") && it.isNotBlank() }
-
-private fun normalizeRecommendationMatchText(value: String): String =
-    value.trim().lowercase().replace(Regex("""\s+"""), " ")
-
-private fun tidalAlbumIdFromHomeRecommendation(recommendation: AlbumRecommendationDto): String? {
-    val url = recommendation.tidalUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null
-    val match = Regex("""^https?://(?:www\.)?(?:listen\.)?tidal\.com/(?:browse/)?album/([0-9]+)(?:[/?#].*)?$""")
-        .matchEntire(url)
-    return match?.groupValues?.getOrNull(1)
-}
-
 private sealed interface RendererGroupQuickAddMutation {
     data class CreateAdHocGroup(
         val sourceRendererLocation: String,
@@ -2494,7 +2401,6 @@ private const val PLAYBACK_EVENT_RECONNECTING_MESSAGE = "Reconnecting live playb
 private const val PLAYBACK_NOTIFICATION_UNAVAILABLE_MESSAGE =
     "Connected, but Android blocked the playback notification service."
 private const val PLAYBACK_EVENT_WARNING_THRESHOLD = 3
-private const val HOME_RECOMMENDATION_LIMIT = 6
 
 private data class Quintuple<A, B, C, D, E>(
     val first: A,
