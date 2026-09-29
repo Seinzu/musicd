@@ -69,7 +69,8 @@ class MusicdApiRecommendationsTest {
                 {"recommendations":[{
                   "recommendation_key":"k1","source":"llm","seed_album_id":"seed",
                   "suggested_artist":"Talk Talk","suggested_title":"Spirit of Eden",
-                  "status":"suggested","unknown_field":true
+                  "status":"suggested","dismiss_count":3,"last_dismissed_unix":1790000000,
+                  "unknown_field":true
                 }]}
                 """.trimIndent(),
             ),
@@ -84,5 +85,7 @@ class MusicdApiRecommendationsTest {
         assertEquals("true", url.queryParameter("exclude_library"))
         assertEquals("6", url.queryParameter("limit"))
         assertEquals(listOf("k1"), response.recommendations.map { it.recommendationKey })
+        assertEquals(3L, response.recommendations.single().dismissCount)
+        assertEquals(1790000000L, response.recommendations.single().lastDismissedUnix)
     }
 }

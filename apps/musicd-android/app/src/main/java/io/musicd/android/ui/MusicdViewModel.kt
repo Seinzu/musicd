@@ -95,6 +95,8 @@ data class MusicdUiState(
     val artists: List<ArtistSummaryDto> = emptyList(),
     val albums: List<AlbumSummaryDto> = emptyList(),
     val suppressedSpotlightAlbumIds: Set<String> = emptySet(),
+    /** Albums (by [homeRecommendationIdentity]) dismissed from the home screen this session. */
+    val dismissedHomeRecommendationIdentities: Set<String> = emptySet(),
     val homeRecommendations: List<AlbumRecommendationDto> = emptyList(),
     val tracks: List<TrackSummaryDto> = emptyList(),
     val selectedArtistDetail: ArtistDetailDto? = null,
@@ -331,6 +333,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             homeRecommendations = homeRecommendations,
                             tracks = emptyList(),
                             suppressedSpotlightAlbumIds = emptySet(),
+                            dismissedHomeRecommendationIdentities = emptySet(),
                             selectedRendererLocation = nowPlaying?.rendererLocation
                                 ?: chooseRendererLocation(
                                     currentSelection = it.selectedRendererLocation,
@@ -597,6 +600,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 nowPlaying = null,
                 albums = emptyList(),
                 suppressedSpotlightAlbumIds = emptySet(),
+                dismissedHomeRecommendationIdentities = emptySet(),
                 homeRecommendations = emptyList(),
                 tracks = emptyList(),
                 radioStations = emptyList(),
@@ -1771,12 +1775,18 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         if (baseUrl.isBlank()) {
             return
         }
+        // Dismissals are temporary: the album is hidden for this session only, and the server
+        // just counts the dismissal.
+        _uiState.update { state ->
+            state.copy(
+                dismissedHomeRecommendationIdentities =
+                    state.dismissedHomeRecommendationIdentities + homeRecommendationIdentity(recommendation),
+            )
+        }
+        refillHomeRecommendation(baseUrl, recommendation)
         viewModelScope.launch {
+            // Best effort: the suggestion is already hidden, so a failure here isn't shown.
             runCatching { repository.dismissRecommendation(baseUrl, recommendation.recommendationKey) }
-                .onSuccess { refillHomeRecommendation(baseUrl, recommendation) }
-                .onFailure { error ->
-                    _uiState.update { it.copy(errorMessage = connectionErrorMessage(error)) }
-                }
         }
     }
 
@@ -1833,6 +1843,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     candidates = seedRecommendations,
                     currentRecommendations = state.homeRecommendations,
                     libraryAlbums = state.albums,
+                    dismissedIdentities = state.dismissedHomeRecommendationIdentities,
                     extraExcludedKeys = emptySet(),
                 )
                 state.copy(
@@ -1876,11 +1887,13 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     candidates = seedCandidates,
                     currentRecommendations = state.homeRecommendations,
                     libraryAlbums = state.albums,
+                    dismissedIdentities = state.dismissedHomeRecommendationIdentities,
                     extraExcludedKeys = setOf(removedRecommendation.recommendationKey),
                 ) ?: chooseHomeRecommendationReplacement(
                     candidates = collectionCandidates,
                     currentRecommendations = state.homeRecommendations,
                     libraryAlbums = state.albums,
+                    dismissedIdentities = state.dismissedHomeRecommendationIdentities,
                     extraExcludedKeys = setOf(removedRecommendation.recommendationKey),
                 )
                 state.copy(

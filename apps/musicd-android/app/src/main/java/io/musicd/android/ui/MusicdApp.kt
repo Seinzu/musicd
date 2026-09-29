@@ -965,6 +965,9 @@ private fun HomeScreen(
         }
     }
 
+    val homeRecommendations = remember(state.homeRecommendations, state.dismissedHomeRecommendationIdentities) {
+        visibleHomeRecommendations(state.homeRecommendations, state.dismissedHomeRecommendationIdentities)
+    }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             ElevatedPanel {
@@ -1006,7 +1009,7 @@ private fun HomeScreen(
                 onPlayNextAlbum = { onPlayNextAlbum(album.id) },
             )
         }
-        if (state.homeRecommendations.isNotEmpty()) {
+        if (homeRecommendations.isNotEmpty()) {
             item {
                 Text(
                     "Something to add to your collection",
@@ -1014,7 +1017,7 @@ private fun HomeScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
             }
-            items(state.homeRecommendations, key = { "home-recommendation-${it.recommendationKey}" }) { recommendation ->
+            items(homeRecommendations, key = { "home-recommendation-${it.recommendationKey}" }) { recommendation ->
                 AlbumRecommendationRow(
                     baseUrl = state.baseUrl,
                     recommendation = recommendation,

@@ -7,21 +7,23 @@ internal const val HOME_RECOMMENDATION_LIMIT = 6
 
 /**
  * Picks the next suggestion to show on the home screen from [candidates]: it must still be
- * `suggested` (not dismissed), not already on screen (by key or album identity), and not
- * already in the library. Candidates playable on TIDAL are preferred.
+ * `suggested`, not already on screen (by key or album identity), not dismissed this session
+ * ([dismissedIdentities]) and not already in the library. Candidates playable on TIDAL are
+ * preferred.
  */
 internal fun chooseHomeRecommendationReplacement(
     candidates: List<AlbumRecommendationDto>,
     currentRecommendations: List<AlbumRecommendationDto>,
     libraryAlbums: List<AlbumSummaryDto>,
     extraExcludedKeys: Set<String>,
+    dismissedIdentities: Set<String> = emptySet(),
 ): AlbumRecommendationDto? {
     val excludedKeys = currentRecommendations
         .map { it.recommendationKey }
         .toSet() + extraExcludedKeys
     val excludedIdentities = currentRecommendations
         .map(::homeRecommendationIdentity)
-        .toSet()
+        .toSet() + dismissedIdentities
     val eligible = candidates
         .filter { it.status.equals("suggested", ignoreCase = true) }
         .filterNot { it.recommendationKey in excludedKeys }
@@ -30,6 +32,17 @@ internal fun chooseHomeRecommendationReplacement(
     return eligible.firstOrNull { tidalAlbumIdFromHomeRecommendation(it) != null }
         ?: eligible.firstOrNull()
 }
+
+/** The home suggestions to show, leaving out albums dismissed this session. */
+internal fun visibleHomeRecommendations(
+    recommendations: List<AlbumRecommendationDto>,
+    dismissedIdentities: Set<String>,
+): List<AlbumRecommendationDto> =
+    if (dismissedIdentities.isEmpty()) {
+        recommendations
+    } else {
+        recommendations.filterNot { homeRecommendationIdentity(it) in dismissedIdentities }
+    }
 
 internal fun prependHomeRecommendation(
     recommendations: List<AlbumRecommendationDto>,
