@@ -274,6 +274,7 @@ mod tests {
             tidal_session_path: PathBuf::from("/config/tidal/session.json"),
             tidal_audio_quality: "LOSSLESS".to_string(),
             auth_mode: AuthMode::Optional,
+            allowed_hosts: Vec::new(),
         }
     }
 

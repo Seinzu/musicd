@@ -3589,6 +3589,7 @@ mod tests {
                 tidal_session_path: config_path.join("tidal").join("session.json"),
                 tidal_audio_quality: "LOSSLESS".to_string(),
                 auth_mode: AuthMode::Optional,
+                allowed_hosts: Vec::new(),
             },
             database,
             library: arc_swap::ArcSwap::from_pointee(Library::build(

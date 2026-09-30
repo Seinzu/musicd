@@ -109,8 +109,10 @@ There are also mutation endpoints for queue editing, transport actions, internet
 
 ### Network safety
 
-Alongside [authentication](docs/authentication.md), `musicd` keeps itself from being used to reach other hosts and protects itself against malformed requests:
+Alongside [authentication](docs/authentication.md), `musicd` guards against other websites, against being used to reach other hosts and against malformed requests:
 
+- **Host check (DNS rebinding):** requests are answered only when the `Host` header is an IP address, `localhost`, a single-label name, a local name (`.local`, `.lan`, `.home`, `.home.arpa`, `.internal`, `.localdomain`), the host of `MUSICD_PUBLIC_BASE_URL`, or a name listed in `MUSICD_ALLOWED_HOSTS` (comma-separated). If you reach `musicd` through another DNS name, such as a reverse proxy or a Tailscale MagicDNS name, add it to `MUSICD_ALLOWED_HOSTS`.
+- **Cross-site writes:** requests that change state (every non-GET route, plus `GET /rescan-progress`, which starts a scan) are refused when a browser marks them as coming from another site (`Origin` or `Sec-Fetch-Site`). Origins whose host is in `MUSICD_ALLOWED_HOSTS` or `MUSICD_PUBLIC_BASE_URL` are accepted. The Android app and `musicdctl` send neither header and are unaffected.
 - **Renderer requests:** in `serve` mode, UPnP requests go only to private LAN addresses (RFC 1918, link-local, `100.64.0.0/10`, IPv6 unique-local and link-local) and do not follow redirects. Loopback, public and cloud-metadata addresses are refused, so point renderers at their LAN address.
 - **Request limits:** request lines and headers are capped at 64 KiB each and 100 headers, bodies at 16 MiB, each read times out after 30 seconds, and at most 512 connections are served at once.
 

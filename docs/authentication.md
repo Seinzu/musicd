@@ -127,6 +127,8 @@ In `optional` and `off` mode, stream and artwork URLs are open and unsigned. Web
 
 Actions that change state are `POST`-only. That includes the web UI's older form routes (`/play`, `/play-album`, `/transport/*`, `/queue/*`, `/rescan`), which now return `405` for `GET`. `SameSite=Strict` keeps other sites from sending the session cookie. One side effect: when you follow a link to `musicd` from another site, that first page load arrives without the cookie, so it may show the sign-in page.
 
+`SameSite=Strict` treats other ports on the same host as the same site, and doesn't help in `off` or `optional` mode, where most routes need no cookie. So `musicd` also refuses state-changing requests that the browser marks as cross-site (a foreign `Origin`, or `Sec-Fetch-Site: cross-site` or `same-site`). That covers every non-GET route, including `POST /login`, plus `GET /rescan-progress`. It also answers only `Host` names that can't be used for DNS rebinding. See [Network safety](../README.md#network-safety) and `MUSICD_ALLOWED_HOSTS`.
+
 ## Caveats
 
 `musicd` serves plain HTTP, so passwords, cookies and tokens cross the LAN unencrypted. Put a TLS-terminating reverse proxy in front if that matters for your network.

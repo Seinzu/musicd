@@ -126,6 +126,9 @@ pub struct AppConfig {
     pub tidal_session_path: PathBuf,
     pub tidal_audio_quality: String,
     pub auth_mode: AuthMode,
+    /// Extra host names the HTTP server answers to, beyond IP addresses and
+    /// local names (see `MUSICD_ALLOWED_HOSTS`).
+    pub allowed_hosts: Vec<String>,
 }
 
 impl AppConfig {
@@ -199,6 +202,9 @@ impl AppConfig {
                 .ok()
                 .map(|value| AuthMode::parse(&value))
                 .unwrap_or(AuthMode::Required),
+            allowed_hosts: std::env::var("MUSICD_ALLOWED_HOSTS")
+                .map(|value| parse_allowed_hosts(&value))
+                .unwrap_or_default(),
         }
     }
 
@@ -269,6 +275,14 @@ fn split_bind_address(bind_address: &str) -> (String, String) {
         .unwrap_or_else(|| ("0.0.0.0".to_string(), "7878".to_string()))
 }
 
+fn parse_allowed_hosts(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|host| host.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .collect()
+}
+
 fn is_unspecified_or_loopback_host(host: &str) -> bool {
     matches!(
         host.trim().to_ascii_lowercase().as_str(),
@@ -329,6 +343,7 @@ mod tests {
             tidal_session_path: PathBuf::from("/config/tidal/session.json"),
             tidal_audio_quality: "LOSSLESS".to_string(),
             auth_mode: AuthMode::Optional,
+            allowed_hosts: Vec::new(),
         };
 
         assert_eq!(config.resolved_base_url(), "http://192.168.1.20:8787");
