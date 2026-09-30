@@ -28,6 +28,7 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import io.musicd.android.MainActivity
 import io.musicd.android.data.LastfmRepository
+import io.musicd.android.data.MusicdHttp
 import io.musicd.android.data.MusicdRepository
 import io.musicd.android.data.PlaybackEventDto
 import kotlinx.coroutines.CoroutineScope
@@ -86,7 +87,7 @@ class MusicdPlaybackNotificationService : Service() {
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
-        localPlayer = ExoPlayer.Builder(this).build().apply {
+        localPlayer = MusicdHttp.playerBuilder(this).build().apply {
             setAudioAttributes(audioAttributes, true)
             setHandleAudioBecomingNoisy(true)
             addListener(

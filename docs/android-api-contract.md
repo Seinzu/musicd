@@ -42,6 +42,33 @@ Error responses use:
 }
 ```
 
+## Pairing endpoints
+
+When the server answers `401`, the app offers to pair. It saves the token it receives, keyed by server origin, and sends `Authorization: Bearer <token>` on every request to that server: API calls, the event stream, artwork, and local playback streams. See [authentication.md](authentication.md#pairing) for the full flow.
+
+### `POST /api/pair/start`
+
+Form fields: `name`, the device name shown to the admin (the app uses `feltsloth on <manufacturer> <model>`).
+
+Response (`201`):
+
+```json
+{"ok":true,"pairing_id":"<secret>","code":"FFSY-F5VK","expires_in":600,"poll_interval":2}
+```
+
+The app shows `code`, tells the user to enter it at `<base_url>/account`, and keeps `pairing_id` private.
+
+### `POST /api/pair/poll`
+
+Form fields: `pairing_id`
+
+Responses:
+
+- `{"ok":true,"status":"pending"}`
+- `{"ok":true,"status":"approved","token":"mdt_..."}`, returned once
+- `{"ok":true,"status":"denied"}`
+- `404` once the request has expired, is unknown or has already been collected
+
 ## Library endpoints
 
 ### `GET /api/tracks`

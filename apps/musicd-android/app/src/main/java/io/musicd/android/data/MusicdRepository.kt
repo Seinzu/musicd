@@ -12,7 +12,8 @@ import java.util.UUID
 
 class MusicdRepository(
     context: Context,
-    private val api: MusicdApi = MusicdApi(),
+    private val api: MusicdApi = MusicdApi(client = MusicdHttp.client(context)),
+    private val tokenStore: AuthTokenStore = MusicdHttp.tokenStore(context),
     private val discovery: MusicdDiscovery = MusicdDiscovery(context),
 ) : MusicSourceRepository {
     override val sourceKind: MusicSourceKind = MusicSourceKind.RemoteServer
@@ -97,6 +98,31 @@ class MusicdRepository(
     ): AlbumRecommendationsResponseDto = withContext(Dispatchers.IO) {
         api.getCollectionRecommendations(baseUrl.normalizeBaseUrl(), limit)
     }
+
+    fun hasAuthToken(baseUrl: String): Boolean =
+        serverOrigin(baseUrl)?.let(tokenStore::tokenFor) != null
+
+    fun saveAuthToken(baseUrl: String, token: String) {
+        serverOrigin(baseUrl)?.let { tokenStore.saveToken(it, token) }
+    }
+
+    fun clearAuthToken(baseUrl: String) {
+        serverOrigin(baseUrl)?.let(tokenStore::clearToken)
+    }
+
+    suspend fun startPairing(baseUrl: String, deviceName: String): PairingStartDto =
+        withContext(Dispatchers.IO) {
+            api.startPairing(baseUrl.normalizeBaseUrl(), deviceName)
+        }
+
+    suspend fun pollPairing(baseUrl: String, pairingId: String): PairingPollResult =
+        withContext(Dispatchers.IO) {
+            try {
+                pairingPollResult(api.pollPairing(baseUrl.normalizeBaseUrl(), pairingId))
+            } catch (error: MusicdApiException.Http) {
+                if (error.statusCode == 404) PairingPollResult.Gone else throw error
+            }
+        }
 
     suspend fun dismissRecommendation(
         baseUrl: String,
