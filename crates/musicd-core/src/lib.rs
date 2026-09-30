@@ -60,7 +60,7 @@ pub enum AuthMode {
     Off,
     /// Admin routes need a login or an admin token; everything else is open.
     Optional,
-    /// Every non-public route needs a login or a token.
+    /// Every non-public route needs a login or a token. The default.
     Required,
 }
 
@@ -73,11 +73,12 @@ impl AuthMode {
         }
     }
 
-    /// Unrecognised values fail closed to `Required` so a typo never opens the API.
+    /// Empty and unrecognised values fail closed to `Required`, so a typo
+    /// never opens the API.
     fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "off" | "disabled" | "none" => Self::Off,
-            "optional" | "" => Self::Optional,
+            "optional" => Self::Optional,
             _ => Self::Required,
         }
     }
@@ -197,7 +198,7 @@ impl AppConfig {
             auth_mode: std::env::var("MUSICD_AUTH")
                 .ok()
                 .map(|value| AuthMode::parse(&value))
-                .unwrap_or(AuthMode::Optional),
+                .unwrap_or(AuthMode::Required),
         }
     }
 
@@ -337,7 +338,7 @@ mod tests {
     fn parses_auth_modes_failing_closed_on_unknown_values() {
         assert_eq!(AuthMode::parse("off"), AuthMode::Off);
         assert_eq!(AuthMode::parse(" Optional "), AuthMode::Optional);
-        assert_eq!(AuthMode::parse(""), AuthMode::Optional);
+        assert_eq!(AuthMode::parse(""), AuthMode::Required);
         assert_eq!(AuthMode::parse("required"), AuthMode::Required);
         assert_eq!(AuthMode::parse("requried"), AuthMode::Required);
     }

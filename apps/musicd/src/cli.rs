@@ -98,6 +98,7 @@ fn run_serve() -> io::Result<()> {
     println!("Bind address: {}", config.bind_address);
     println!("HTTP base URL: {}", config.resolved_base_url());
     println!("Instance name: {}", config.instance_name);
+    println!("Auth mode: {}", config.auth_mode.label());
     println!("Indexed tracks: {track_count}");
     if let Some(renderer) = &config.default_renderer_location {
         println!("Default renderer: {renderer}");

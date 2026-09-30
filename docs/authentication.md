@@ -16,10 +16,21 @@ Changing the password signs out every other browser session.
 | Mode | Admin routes | Stream and artwork | Everything else |
 | --- | --- | --- | --- |
 | `off` | open | open | open |
-| `optional` (default) | web login or `admin` token | open | open |
-| `required` | web login or `admin` token | signed URL, web login or any token | web login or any token |
+| `optional` | web login or `admin` token | open | open |
+| `required` (default) | web login or `admin` token | signed URL, web login or any token | web login or any token |
 
-An unrecognised value is treated as `required`.
+An empty or unrecognised value is treated as `required`.
+
+### Upgrading from a version without auth
+
+`required` is now the default, so after upgrading:
+
+1. Sign in to the web UI as `admin` / `password` and choose a new password.
+2. Pair each Android device. The app offers this when it gets a `401`.
+3. Run `musicdctl pair` on each computer that uses the CLI.
+4. Scripts such as the recommender upload need a token from `/account`.
+
+To keep the old open behaviour while you do this, set `MUSICD_AUTH=optional` (only admin actions need a login) or `MUSICD_AUTH=off`.
 
 In every mode other than `off`, a request carrying an unknown or revoked bearer token gets `401`, even on routes that would otherwise be open.
 

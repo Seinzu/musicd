@@ -103,7 +103,7 @@ The service also exposes:
 - `GET /api/renderers/discover`
 - `GET /stream/track/<track_id>`
 
-Authentication is controlled by `MUSICD_AUTH` (`off`, `optional` (the default) or `required`). On first start the server creates a web user `admin` with the password `password`, and the first sign-in must change it. See [docs/authentication.md](docs/authentication.md) for the modes, the admin-only routes and API tokens.
+Authentication is controlled by `MUSICD_AUTH`: `required` (the default), `optional` or `off`. On first start the server creates a web user `admin` with the password `password`, and the first sign-in must change it. The Android app and `musicdctl` connect by pairing: they show a code, which you approve on the server's `/account` page. See [docs/authentication.md](docs/authentication.md) for the modes, the admin-only routes and API tokens.
 
 There are also mutation endpoints for queue editing, transport actions, internet radio playback, Android local renderer registration/session reporting, and manual album-art selection. The current app-facing contract is documented in [docs/android-api-contract.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-api-contract.md).
 
