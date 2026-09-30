@@ -50,6 +50,7 @@ use crate::views::{
 };
 
 use crate::assets;
+use crate::auth;
 use crate::mcp;
 
 use super::ResponseWriter;
@@ -61,6 +62,9 @@ pub(crate) fn handle_service_request(
     request: &HttpRequest,
     state: Arc<ServiceState>,
 ) -> io::Result<()> {
+    if !auth::authorize_request(writer, request, &state)? {
+        return Ok(());
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/") | ("HEAD", "/") => {
             let body = render_welcome_page(&state, request);
@@ -101,6 +105,27 @@ pub(crate) fn handle_service_request(
                 body.as_bytes(),
                 request.method == "HEAD",
             )
+        }
+        ("GET", "/login") => auth::handle_login_form_request(writer, request, &state),
+        ("POST", "/login") => auth::handle_login_request(writer, request, &state),
+        ("POST", "/logout") => auth::handle_logout_request(writer, request, &state),
+        ("GET", "/account/password") => {
+            auth::handle_change_password_form_request(writer, request, &state)
+        }
+        ("POST", "/account/password") => {
+            auth::handle_change_password_request(writer, request, &state)
+        }
+        ("GET" | "HEAD", "/logout") | ("HEAD", "/login") | ("HEAD", "/account/password") => {
+            respond_method_not_allowed(writer)
+        }
+        ("GET", "/api/auth/tokens") => {
+            auth::handle_api_tokens_list_request(writer, request, &state)
+        }
+        ("POST", "/api/auth/tokens") => {
+            auth::handle_api_tokens_create_request(writer, request, &state)
+        }
+        ("POST", "/api/auth/tokens/revoke") => {
+            auth::handle_api_tokens_revoke_request(writer, request, &state)
         }
         ("GET", "/health") | ("HEAD", "/health") => respond_text(
             writer,
@@ -557,37 +582,37 @@ pub(crate) fn handle_service_request(
                 request.method == "HEAD",
             )
         }
-        ("GET", "/play") => handle_play_request(writer, request, &state),
-        ("GET", "/play-album") => handle_play_album_request(writer, request, &state),
-        ("GET", "/transport/play") => handle_transport_play_request(writer, request, &state),
-        ("GET", "/transport/pause") => handle_transport_pause_request(writer, request, &state),
-        ("GET", "/transport/stop") => handle_transport_stop_request(writer, request, &state),
-        ("GET", "/transport/next") => handle_transport_next_request(writer, request, &state),
-        ("GET", "/transport/previous") => {
+        ("POST", "/play") => handle_play_request(writer, request, &state),
+        ("POST", "/play-album") => handle_play_album_request(writer, request, &state),
+        ("POST", "/transport/play") => handle_transport_play_request(writer, request, &state),
+        ("POST", "/transport/pause") => handle_transport_pause_request(writer, request, &state),
+        ("POST", "/transport/stop") => handle_transport_stop_request(writer, request, &state),
+        ("POST", "/transport/next") => handle_transport_next_request(writer, request, &state),
+        ("POST", "/transport/previous") => {
             handle_transport_previous_request(writer, request, &state)
         }
-        ("GET", "/queue/play-next-track") => {
+        ("POST", "/queue/play-next-track") => {
             handle_queue_play_next_track_request(writer, request, &state)
         }
-        ("GET", "/queue/play-next-album") => {
+        ("POST", "/queue/play-next-album") => {
             handle_queue_play_next_album_request(writer, request, &state)
         }
-        ("GET", "/queue/append-track") => {
+        ("POST", "/queue/append-track") => {
             handle_queue_append_track_request(writer, request, &state)
         }
-        ("GET", "/queue/append-album") => {
+        ("POST", "/queue/append-album") => {
             handle_queue_append_album_request(writer, request, &state)
         }
-        ("GET", "/queue/move-up") => handle_queue_move_up_request(writer, request, &state),
-        ("GET", "/queue/move-down") => handle_queue_move_down_request(writer, request, &state),
-        ("GET", "/queue/remove-entry") => {
+        ("POST", "/queue/move-up") => handle_queue_move_up_request(writer, request, &state),
+        ("POST", "/queue/move-down") => handle_queue_move_down_request(writer, request, &state),
+        ("POST", "/queue/remove-entry") => {
             handle_queue_remove_entry_request(writer, request, &state)
         }
-        ("GET", "/queue/clear") => handle_queue_clear_request(writer, request, &state),
-        ("GET", "/rescan") => handle_rescan_request(writer, request, &state),
+        ("POST", "/queue/clear") => handle_queue_clear_request(writer, request, &state),
+        ("POST", "/rescan") => handle_rescan_request(writer, request, &state),
         ("GET", "/rescan-progress") => handle_rescan_progress_request(writer, request, &state),
-        ("HEAD", "/play")
-        | ("HEAD", "/play-album")
+        ("GET" | "HEAD", "/play")
+        | ("GET" | "HEAD", "/play-album")
         | ("HEAD", "/api/play")
         | ("HEAD", "/api/play-album")
         | ("HEAD", "/api/radio/play")
@@ -606,20 +631,20 @@ pub(crate) fn handle_service_request(
         | ("HEAD", "/api/queue/move")
         | ("HEAD", "/api/queue/remove")
         | ("HEAD", "/api/queue/clear")
-        | ("HEAD", "/transport/play")
-        | ("HEAD", "/transport/pause")
-        | ("HEAD", "/transport/stop")
-        | ("HEAD", "/transport/next")
-        | ("HEAD", "/transport/previous")
-        | ("HEAD", "/queue/play-next-track")
-        | ("HEAD", "/queue/play-next-album")
-        | ("HEAD", "/queue/append-track")
-        | ("HEAD", "/queue/append-album")
-        | ("HEAD", "/queue/move-up")
-        | ("HEAD", "/queue/move-down")
-        | ("HEAD", "/queue/remove-entry")
-        | ("HEAD", "/queue/clear")
-        | ("HEAD", "/rescan") => respond_method_not_allowed(writer),
+        | ("GET" | "HEAD", "/transport/play")
+        | ("GET" | "HEAD", "/transport/pause")
+        | ("GET" | "HEAD", "/transport/stop")
+        | ("GET" | "HEAD", "/transport/next")
+        | ("GET" | "HEAD", "/transport/previous")
+        | ("GET" | "HEAD", "/queue/play-next-track")
+        | ("GET" | "HEAD", "/queue/play-next-album")
+        | ("GET" | "HEAD", "/queue/append-track")
+        | ("GET" | "HEAD", "/queue/append-album")
+        | ("GET" | "HEAD", "/queue/move-up")
+        | ("GET" | "HEAD", "/queue/move-down")
+        | ("GET" | "HEAD", "/queue/remove-entry")
+        | ("GET" | "HEAD", "/queue/clear")
+        | ("GET" | "HEAD", "/rescan") => respond_method_not_allowed(writer),
         _ if request.path.starts_with("/stream/track/") => {
             if request.method != "GET" && request.method != "HEAD" {
                 return respond_method_not_allowed(writer);

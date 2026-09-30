@@ -55,6 +55,7 @@ pub(crate) struct ServiceState {
     pub(crate) playback_health: PlaybackHealthMonitor,
     /// State for tracking concurrent rescans
     pub(crate) rescan_state: RescanState,
+    pub(crate) login_throttle: crate::auth::LoginThrottle,
 }
 
 #[derive(Debug)]
@@ -166,6 +167,7 @@ impl ServiceState {
 
     pub(crate) fn load(config: AppConfig) -> io::Result<Self> {
         let database = Database::open(&config.config_path)?;
+        crate::auth::ensure_default_admin(&database)?;
         let persisted_library = database.load_library(config.library_path.clone())?;
         let state = Self {
             config,
@@ -179,6 +181,7 @@ impl ServiceState {
             active_library_streams: AtomicUsize::new(0),
             playback_health: PlaybackHealthMonitor::default(),
             rescan_state: RescanState::new(),
+            login_throttle: crate::auth::LoginThrottle::default(),
         };
 
         let persisted_track_count = state.track_count();

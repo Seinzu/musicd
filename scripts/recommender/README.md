@@ -235,10 +235,12 @@ bun scripts/recommender/index.ts recommend \
   --output scripts/recommender/recommendations-import.json
 ```
 
-Upload it:
+Upload it. The import endpoint is admin-only, so pass an admin API token
+(see [docs/authentication.md](../../docs/authentication.md)):
 
 ```sh
 curl -sS -X POST http://localhost:8787/api/recommendations/import \
+  -H "Authorization: Bearer $MUSICD_ADMIN_TOKEN" \
   -H 'content-type: application/json' \
   --data-binary @scripts/recommender/recommendations-import.json
 ```
@@ -264,7 +266,8 @@ TIDAL_CLIENT_ID=... TIDAL_CLIENT_SECRET=... bun scripts/recommender/index.ts rec
 For a clean local testing slate, wipe uploaded recommendations first:
 
 ```sh
-curl -sS -X DELETE http://localhost:8787/api/recommendations
+curl -sS -X DELETE -H "Authorization: Bearer $MUSICD_ADMIN_TOKEN" \
+  http://localhost:8787/api/recommendations
 ```
 
 If you are using `run`, make sure the config contains:

@@ -62,14 +62,22 @@
     .metadata-table td {
       word-break: break-word;
     }
-    .actions a {
+    .actions form {
+      margin: 0;
+    }
+    .actions a,
+    .actions button {
       text-decoration: none;
       color: white;
       background: #1f1a17;
       padding: 0.75rem 1rem;
+      border: 0;
       border-radius: 999px;
+      font: inherit;
+      cursor: pointer;
     }
-    .actions a.secondary {
+    .actions a.secondary,
+    .actions button.secondary {
       color: #1f1a17;
       background: #eadfce;
     }

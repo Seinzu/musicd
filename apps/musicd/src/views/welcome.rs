@@ -8,6 +8,26 @@ use super::layout::{
     LayoutContext, PageTab, render_layout, render_now_playing_card, renderer_location_input,
 };
 
+fn render_rescan_controls(ctx: &LayoutContext, renderer_input_hidden: &str) -> String {
+    if !ctx.can_use_admin_actions() {
+        return format!(
+            r#"<p class="meta"><a class="text-link" href="{}">Sign in</a> to rescan the library.</p>"#,
+            html_escape(&ctx.sign_in_href())
+        );
+    }
+    format!(
+        r#"<form class="control-row" action="/rescan" method="post" id="rescan_form" data-progress-url="/rescan-progress">
+    {renderer_input_hidden}
+    <input type="hidden" name="return_to" value="/">
+    <button type="submit" id="rescan_button" class="secondary">Rescan Library</button>
+    <span id="rescan_status" class="visually-hidden" aria-live="polite"></span>
+  </form>
+  <div id="progress_bar_container">
+    <progress id="rescan_progress_bar" value="0" max="100" aria-label="Library rescan progress"></progress>
+  </div>"#
+    )
+}
+
 pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -> String {
     let ctx = LayoutContext::from_request(state, request);
     let library = state.library_snapshot();
@@ -55,15 +75,7 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
     <li><span class="stats-value">{artists}</span><span class="stats-label">Artists</span></li>
   </ul>
   <p class="meta">Library path: {library_path}</p>
-  <form class="control-row" action="/rescan" method="get" id="rescan_form" data-progress-url="/rescan-progress">
-    {renderer_input_hidden}
-    <input type="hidden" name="return_to" value="/">
-    <button type="submit" id="rescan_button" class="secondary">Rescan Library</button>
-    <span id="rescan_status" class="visually-hidden" aria-live="polite"></span>
-  </form>
-  <div id="progress_bar_container">
-    <progress id="rescan_progress_bar" value="0" max="100" aria-label="Library rescan progress"></progress>
-  </div>
+  {rescan_html}
 </section>"#,
         instance = html_escape(&ctx.instance_name),
         base_url = html_escape(&ctx.base_url),
@@ -71,7 +83,7 @@ pub(crate) fn render_welcome_page(state: &ServiceState, request: &HttpRequest) -
         albums = ctx.album_count,
         artists = ctx.artist_count,
         library_path = html_escape(&ctx.library_path),
-        renderer_input_hidden = renderer_input_hidden,
+        rescan_html = render_rescan_controls(&ctx, &renderer_input_hidden),
     );
 
     let body = format!(
@@ -200,18 +212,18 @@ fn render_spotlight(
     <p class="meta small">{tracks} tracks</p>
   </div>
   <div class="spotlight-actions">
-    <form class="inline-form" action="/play-album" method="get">
+    <form class="inline-form" action="/play-album" method="post">
       <input type="hidden" name="album_id" value="{album_id}">
       {renderer_input_hidden}
       <button type="submit">Play</button>
     </form>
-    <form class="inline-form" action="/queue/append-album" method="get">
+    <form class="inline-form" action="/queue/append-album" method="post">
       <input type="hidden" name="album_id" value="{album_id}">
       <input type="hidden" name="return_to" value="/">
       {renderer_input_hidden}
       <button type="submit" class="secondary">Queue</button>
     </form>
-    <form class="inline-form" action="/queue/play-next-album" method="get">
+    <form class="inline-form" action="/queue/play-next-album" method="post">
       <input type="hidden" name="album_id" value="{album_id}">
       <input type="hidden" name="return_to" value="/">
       {renderer_input_hidden}

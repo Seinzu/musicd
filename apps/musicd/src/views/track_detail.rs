@@ -166,8 +166,8 @@ pub(crate) fn render_track_detail_page(state: &ServiceState, request: &HttpReque
         <a href="/">Back to Library</a>
         <a class="secondary" href="/album/{}?renderer_location={}">View Album</a>
         <a class="secondary" href="/stream/track/{}" target="_blank" rel="noreferrer">Preview Stream</a>
-        <a class="secondary" href="{}">Queue Track</a>
-        <a href="{}">Play On Renderer</a>
+        <form method="post" action="{}"><button type="submit" class="secondary">Queue Track</button></form>
+        <form method="post" action="{}"><button type="submit">Play On Renderer</button></form>
         {}
       </div>
     </header>

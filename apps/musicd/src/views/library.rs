@@ -127,7 +127,7 @@ pub(crate) fn render_library_page(state: &ServiceState, request: &HttpRequest) -
   </div>
 </section>
 {library_empty}
-<form id="playback_form" action="/play" method="get" class="hidden-form">
+<form id="playback_form" action="/play" method="post" class="hidden-form">
   {renderer_input}
 </form>
 {artists_html}
@@ -425,18 +425,18 @@ fn render_album_row(
   <td data-label="Tracks">{tracks}</td>
   <td data-label="Likes">{like_button}</td>
   <td data-label="Actions" class="actions-cell">
-    <form class="inline-form" action="/play-album" method="get">
+    <form class="inline-form" action="/play-album" method="post">
       <input type="hidden" name="album_id" value="{album_id}">
       {renderer_input}
       <button type="submit">Play</button>
     </form>
-    <form class="inline-form" action="/queue/play-next-album" method="get">
+    <form class="inline-form" action="/queue/play-next-album" method="post">
       <input type="hidden" name="album_id" value="{album_id}">
       <input type="hidden" name="return_to" value="/library">
       {renderer_input}
       <button type="submit" class="secondary">Play Next</button>
     </form>
-    <form class="inline-form" action="/queue/append-album" method="get">
+    <form class="inline-form" action="/queue/append-album" method="post">
       <input type="hidden" name="album_id" value="{album_id}">
       <input type="hidden" name="return_to" value="/library">
       {renderer_input}
@@ -595,13 +595,13 @@ fn render_track_row(
   <td data-label="Album"><a class="album-link" href="/album/{album_id_encoded}?renderer_location={renderer_qs}">{album}</a></td>
   <td data-label="Likes">{like_button}</td>
   <td data-label="Actions" class="actions-cell">
-    <form class="inline-form" action="/queue/play-next-track" method="get">
+    <form class="inline-form" action="/queue/play-next-track" method="post">
       <input type="hidden" name="track_id" value="{track_id}">
       <input type="hidden" name="return_to" value="/library">
       {renderer_input}
       <button type="submit" class="secondary">Play Next</button>
     </form>
-    <form class="inline-form" action="/queue/append-track" method="get">
+    <form class="inline-form" action="/queue/append-track" method="post">
       <input type="hidden" name="track_id" value="{track_id}">
       <input type="hidden" name="return_to" value="/library">
       {renderer_input}

@@ -91,12 +91,12 @@ pub(crate) fn render_queue_fragment(
 
     let transport_row = format!(
         r#"<div class="transport-row">
-  <form class="inline-form" action="/transport/previous" method="get">{renderer_input}{return_to_input}<button type="submit" class="secondary">Previous</button></form>
-  <form class="inline-form" action="/transport/play" method="get">{renderer_input}{return_to_input}<button type="submit">Play</button></form>
-  <form class="inline-form" action="/transport/pause" method="get">{renderer_input}{return_to_input}<button type="submit" class="secondary">Pause</button></form>
-  <form class="inline-form" action="/transport/stop" method="get">{renderer_input}{return_to_input}<button type="submit" class="secondary">Stop</button></form>
-  <form class="inline-form" action="/transport/next" method="get">{renderer_input}{return_to_input}<button type="submit" class="secondary">Next</button></form>
-  <form class="inline-form" action="/queue/clear" method="get">{renderer_input}{return_to_input}<button type="submit" class="secondary danger">Clear Queue</button></form>
+  <form class="inline-form" action="/transport/previous" method="post">{renderer_input}{return_to_input}<button type="submit" class="secondary">Previous</button></form>
+  <form class="inline-form" action="/transport/play" method="post">{renderer_input}{return_to_input}<button type="submit">Play</button></form>
+  <form class="inline-form" action="/transport/pause" method="post">{renderer_input}{return_to_input}<button type="submit" class="secondary">Pause</button></form>
+  <form class="inline-form" action="/transport/stop" method="post">{renderer_input}{return_to_input}<button type="submit" class="secondary">Stop</button></form>
+  <form class="inline-form" action="/transport/next" method="post">{renderer_input}{return_to_input}<button type="submit" class="secondary">Next</button></form>
+  <form class="inline-form" action="/queue/clear" method="post">{renderer_input}{return_to_input}<button type="submit" class="secondary danger">Clear Queue</button></form>
 </div>"#,
         renderer_input = renderer_input,
         return_to_input = return_to_input,
@@ -138,18 +138,18 @@ pub(crate) fn render_queue_fragment(
             let mut actions = Vec::with_capacity(3);
             if previous_queue_entry_before(&queue, entry.id).is_some() {
                 actions.push(format!(
-                    "<form class=\"inline-form\" action=\"/queue/move-up\" method=\"get\"><input type=\"hidden\" name=\"entry_id\" value=\"{}\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"secondary\">↑</button></form>",
+                    "<form class=\"inline-form\" action=\"/queue/move-up\" method=\"post\"><input type=\"hidden\" name=\"entry_id\" value=\"{}\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"secondary\">↑</button></form>",
                     entry.id
                 ));
             }
             if next_queue_entry_after(&queue, entry.id).is_some() {
                 actions.push(format!(
-                    "<form class=\"inline-form\" action=\"/queue/move-down\" method=\"get\"><input type=\"hidden\" name=\"entry_id\" value=\"{}\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"secondary\">↓</button></form>",
+                    "<form class=\"inline-form\" action=\"/queue/move-down\" method=\"post\"><input type=\"hidden\" name=\"entry_id\" value=\"{}\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"secondary\">↓</button></form>",
                     entry.id
                 ));
             }
             actions.push(format!(
-                "<form class=\"inline-form\" action=\"/queue/remove-entry\" method=\"get\"><input type=\"hidden\" name=\"entry_id\" value=\"{}\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"secondary danger\">Remove</button></form>",
+                "<form class=\"inline-form\" action=\"/queue/remove-entry\" method=\"post\"><input type=\"hidden\" name=\"entry_id\" value=\"{}\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"secondary danger\">Remove</button></form>",
                 entry.id
             ));
             actions.join("")

@@ -5,8 +5,9 @@ use crate::http::HttpRequest;
 use crate::library::Library;
 use crate::service::ServiceState;
 use crate::types::LibraryTrack;
-use crate::util::{EscapeHtml, format_duration_seconds, html_escape};
+use crate::util::{EscapeHtml, format_duration_seconds, html_escape, url_encode};
 use crate::views::json::current_track_for_renderer;
+use musicd_core::AuthMode;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageTab {
@@ -60,6 +61,10 @@ pub(crate) struct LayoutContext {
     pub(crate) selected_renderer_label: String,
     pub(crate) message: Option<String>,
     pub(crate) error: Option<String>,
+    /// Whether this server asks browsers to sign in at all (`MUSICD_AUTH` is not `off`).
+    pub(crate) auth_enabled: bool,
+    pub(crate) signed_in_as: Option<String>,
+    pub(crate) request_target: String,
 }
 
 impl LayoutContext {
@@ -123,7 +128,20 @@ impl LayoutContext {
                 .get("error")
                 .cloned()
                 .filter(|s| !s.is_empty()),
+            auth_enabled: state.config.auth_mode != AuthMode::Off,
+            signed_in_as: crate::auth::signed_in_username(state, request),
+            request_target: request.target.clone(),
         }
+    }
+
+    /// Admin actions (such as rescanning) are available to signed-in users,
+    /// or to everyone when auth is off.
+    pub(crate) fn can_use_admin_actions(&self) -> bool {
+        !self.auth_enabled || self.signed_in_as.is_some()
+    }
+
+    pub(crate) fn sign_in_href(&self) -> String {
+        format!("/login?next={}", url_encode(&self.request_target))
     }
 }
 
@@ -161,6 +179,7 @@ pub(crate) fn render_layout(active: PageTab, body_html: &str, ctx: &LayoutContex
           <span class="renderer-chip-dot" aria-hidden="true"></span>
           <span class="renderer-chip-label">{renderer_chip_label_escaped}</span>
         </span>
+        {account_html}
       </div>
     </div>
   </header>
@@ -184,7 +203,26 @@ pub(crate) fn render_layout(active: PageTab, body_html: &str, ctx: &LayoutContex
         banners = banners,
         body_html = body_html,
         nav = nav,
+        account_html = render_account_actions(ctx),
     )
+}
+
+fn render_account_actions(ctx: &LayoutContext) -> String {
+    if !ctx.auth_enabled {
+        return String::new();
+    }
+    match ctx.signed_in_as.as_deref() {
+        Some(username) => format!(
+            "<a class=\"chip\" href=\"/account/password\" title=\"Account\">{}</a>\
+             <form class=\"inline-form\" action=\"/logout\" method=\"post\">\
+             <button type=\"submit\" class=\"secondary\">Sign out</button></form>",
+            EscapeHtml(username)
+        ),
+        None => format!(
+            "<a class=\"button-link secondary\" href=\"{}\">Sign in</a>",
+            EscapeHtml(&ctx.sign_in_href())
+        ),
+    }
 }
 
 fn render_banners(ctx: &LayoutContext) -> String {
@@ -356,11 +394,11 @@ pub(crate) fn render_now_playing_card(
     let is_playing = transport_state == "PLAYING";
     let primary_button = if is_playing {
         format!(
-            "<form class=\"inline-form\" action=\"/transport/pause\" method=\"get\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"icon-button primary\" aria-label=\"Pause\">⏸</button></form>"
+            "<form class=\"inline-form\" action=\"/transport/pause\" method=\"post\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"icon-button primary\" aria-label=\"Pause\">⏸</button></form>"
         )
     } else {
         format!(
-            "<form class=\"inline-form\" action=\"/transport/play\" method=\"get\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"icon-button primary\" aria-label=\"Play\">▶</button></form>"
+            "<form class=\"inline-form\" action=\"/transport/play\" method=\"post\">{renderer_input}{return_to_input}<button type=\"submit\" class=\"icon-button primary\" aria-label=\"Play\">▶</button></form>"
         )
     };
 
@@ -375,10 +413,10 @@ pub(crate) fn render_now_playing_card(
     <p class="now-playing-queue meta">{queue_summary}</p>
   </div>
   <div class="now-playing-controls">
-    <form class="inline-form" action="/transport/previous" method="get">{renderer_input}{return_to_input}<button type="submit" class="icon-button" aria-label="Previous">⏮</button></form>
+    <form class="inline-form" action="/transport/previous" method="post">{renderer_input}{return_to_input}<button type="submit" class="icon-button" aria-label="Previous">⏮</button></form>
     {primary_button}
-    <form class="inline-form" action="/transport/next" method="get">{renderer_input}{return_to_input}<button type="submit" class="icon-button" aria-label="Next">⏭</button></form>
-    <form class="inline-form" action="/transport/stop" method="get">{renderer_input}{return_to_input}<button type="submit" class="icon-button" aria-label="Stop">⏹</button></form>
+    <form class="inline-form" action="/transport/next" method="post">{renderer_input}{return_to_input}<button type="submit" class="icon-button" aria-label="Next">⏭</button></form>
+    <form class="inline-form" action="/transport/stop" method="post">{renderer_input}{return_to_input}<button type="submit" class="icon-button" aria-label="Stop">⏹</button></form>
   </div>
 </section>"#,
         variant = html_escape(variant_class),

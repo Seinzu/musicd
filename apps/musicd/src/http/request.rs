@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream};
 
 use crate::util::percent_decode;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct HttpRequest {
     pub(crate) method: String,
     pub(crate) target: String,
@@ -13,6 +13,9 @@ pub(crate) struct HttpRequest {
     pub(crate) form: HashMap<String, String>,
     pub(crate) range_header: Option<String>,
     pub(crate) content_type: Option<String>,
+    pub(crate) authorization: Option<String>,
+    pub(crate) cookie: Option<String>,
+    pub(crate) peer: Option<IpAddr>,
     pub(crate) body: Vec<u8>,
 }
 
@@ -31,6 +34,8 @@ pub(crate) fn read_http_request(
 
     let mut range_header = None;
     let mut content_type = None;
+    let mut authorization = None;
+    let mut cookie = None;
     let mut content_length = 0_usize;
     loop {
         let mut line = String::new();
@@ -46,6 +51,10 @@ pub(crate) fn read_http_request(
                 range_header = Some(value.trim().to_string());
             } else if name.eq_ignore_ascii_case("Content-Type") {
                 content_type = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("Authorization") {
+                authorization = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("Cookie") {
+                cookie = Some(value.trim().to_string());
             } else if name.eq_ignore_ascii_case("Content-Length") {
                 content_length = value.trim().parse::<usize>().unwrap_or(0);
             }
@@ -57,6 +66,11 @@ pub(crate) fn read_http_request(
         reader.read_exact(&mut body)?;
     }
     let form = parse_request_form(content_type.as_deref(), &body);
+    let peer = reader
+        .get_ref()
+        .peer_addr()
+        .ok()
+        .map(|address| address.ip());
 
     Ok(Some(HttpRequest {
         method,
@@ -66,6 +80,9 @@ pub(crate) fn read_http_request(
         form,
         range_header,
         content_type,
+        authorization,
+        cookie,
+        peer,
         body,
     }))
 }
