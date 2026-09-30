@@ -3,8 +3,10 @@ mod app;
 mod config;
 mod local_audio;
 
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::panic;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use crossterm::execute;
@@ -19,7 +21,7 @@ use musicd_upnp::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, PairingClient, PairingPoll};
 use crate::app::App;
 
 fn main() -> Result<()> {
@@ -34,6 +36,8 @@ fn main() -> Result<()> {
                 let config = config::load().unwrap_or_default();
                 return run_sm_search_command(&args[command_index + 1..], &config);
             }
+            "pair" => return run_pair_command(&args, &args[command_index + 1..]),
+            "unpair" => return run_unpair_command(&args),
             "help" => {
                 print_help();
                 return Ok(());
@@ -49,17 +53,7 @@ fn main() -> Result<()> {
     }
 
     let mut config = config::load().unwrap_or_default();
-    let mut server_url = config.server_url();
-
-    if let Some(server) = parse_flag(&args, "--server") {
-        config.server_url = Some(server);
-        config::save(&config)?;
-        server_url = config.server_url();
-    } else if let Ok(env) = std::env::var("MUSICD_URL") {
-        if !env.trim().is_empty() {
-            server_url = env;
-        }
-    }
+    let server_url = resolve_server_url(&args, &mut config)?;
 
     let had_client_id = config
         .client_id
@@ -69,7 +63,8 @@ fn main() -> Result<()> {
     if !had_client_id {
         config::save(&config)?;
     }
-    let api = ApiClient::new(&server_url, &client_id)?;
+    let token = config.api_token(&server_url);
+    let api = ApiClient::new(&server_url, &client_id, token.as_deref())?;
 
     install_panic_hook();
     let mut terminal = setup_terminal()?;
@@ -77,6 +72,113 @@ fn main() -> Result<()> {
     let res = app.run(&mut terminal);
     restore_terminal(&mut terminal)?;
     res
+}
+
+/// `--server` (remembered), then `MUSICD_URL`, then the saved server.
+fn resolve_server_url(args: &[String], config: &mut config::CliConfig) -> Result<String> {
+    if let Some(server) = parse_flag(args, "--server") {
+        config.server_url = Some(server);
+        config::save(config)?;
+        return Ok(config.server_url());
+    }
+    if let Ok(env) = std::env::var("MUSICD_URL")
+        && !env.trim().is_empty()
+    {
+        return Ok(env);
+    }
+    Ok(config.server_url())
+}
+
+fn run_pair_command(all_args: &[String], args: &[String]) -> Result<()> {
+    let mut name = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                print_pair_help();
+                return Ok(());
+            }
+            "--name" => name = Some(iter.next().context("--name needs a value")?.clone()),
+            other if other.starts_with("--name=") => {
+                name = Some(other["--name=".len()..].to_string());
+            }
+            other => bail!("unknown pair option: {other}"),
+        }
+    }
+    let name = name.unwrap_or_else(default_device_name);
+
+    let mut config = config::load().unwrap_or_default();
+    let server_url = resolve_server_url(all_args, &mut config)?;
+    let base_url = server_url.trim_end_matches('/');
+    let client = PairingClient::new(base_url)?;
+    let started = client.start(&name)?;
+
+    println!("Pairing with {base_url} as \"{name}\".");
+    println!("Open {base_url}/account, sign in, and enter this code:\n");
+    println!("    {}\n", started.code);
+    print!(
+        "Waiting for approval (the code expires in {} minutes; Ctrl-C to cancel)...",
+        started.expires_in.div_ceil(60)
+    );
+    io::stdout().flush().ok();
+
+    let interval = Duration::from_secs(started.poll_interval.max(1));
+    let deadline = Instant::now() + Duration::from_secs(started.expires_in + 5);
+    let token = loop {
+        if Instant::now() >= deadline {
+            println!();
+            bail!("the pairing code expired; run `musicdctl pair` again");
+        }
+        thread::sleep(interval);
+        match client.poll(&started.pairing_id)? {
+            PairingPoll::Pending => continue,
+            PairingPoll::Approved(token) => break token,
+            PairingPoll::Denied => {
+                println!();
+                bail!("pairing was denied");
+            }
+            PairingPoll::Gone => {
+                println!();
+                bail!("the pairing request expired or was cancelled; run `musicdctl pair` again");
+            }
+        }
+    };
+    println!(" approved.");
+
+    config.set_api_token(base_url, Some(token));
+    config::save(&config)?;
+    println!(
+        "Paired. The token is saved in {}.",
+        config::config_path()?.display()
+    );
+    Ok(())
+}
+
+fn run_unpair_command(all_args: &[String]) -> Result<()> {
+    let mut config = config::load().unwrap_or_default();
+    let server_url = resolve_server_url(all_args, &mut config)?;
+    let base_url = server_url.trim_end_matches('/');
+    if !config.tokens.contains_key(base_url) {
+        println!("No saved token for {base_url}.");
+        return Ok(());
+    }
+    config.set_api_token(base_url, None);
+    config::save(&config)?;
+    println!(
+        "Removed the saved token for {base_url}. Revoke it on {base_url}/account to disable it on the server too."
+    );
+    Ok(())
+}
+
+fn default_device_name() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|host| host.trim().to_string())
+        .filter(|host| !host.is_empty())
+        .map(|host| format!("musicdctl on {host}"))
+        .unwrap_or_else(|| "musicdctl".to_string())
 }
 
 fn first_command(args: &[String]) -> Option<(usize, &str)> {
@@ -798,18 +900,36 @@ fn print_help() {
         "musicdctl — TUI controller for the musicd service\n\n\
          USAGE:\n  \
            musicdctl [--server URL]\n  \
+           musicdctl pair [--name NAME]\n  \
+           musicdctl unpair\n  \
            musicdctl renderer-state [RENDERER_URL_OR_BASE_URL] [--raw] [--services] [--queue]\n  \
            musicdctl sm-search [RENDERER_URL_OR_BASE_URL] [--probe] [--search NAME] [--search-probe NAME] [--action ACTION] [--arg NAME=VALUE] [--raw]\n\n\
          OPTIONS:\n  \
            --server URL   musicd HTTP base URL (default http://127.0.0.1:7878)\n  \
            --help, -h     show this help\n\n\
          COMMANDS:\n  \
+           pair            pair this computer with the server (needed when it requires auth)\n  \
+           unpair          forget the saved token for the server\n  \
            renderer-state  query live UPnP AVTransport state from a renderer\n  \
            sm-search       inspect and call a CXN/StreamMagic SMSearch service\n\n\
          ENV:\n  \
-           MUSICD_URL     overrides the default server URL\n\n\
+           MUSICD_URL     overrides the default server URL\n  \
+           MUSICD_TOKEN   API token to use instead of the one saved by `pair`\n\n\
          CONFIG:\n  \
-           ~/.config/musicd/cli.toml — persists server URL and selected renderer"
+           ~/.config/musicd/cli.toml — persists server URL, selected renderer and API tokens"
+    );
+}
+
+fn print_pair_help() {
+    println!(
+        "musicdctl pair — pair this computer with a musicd server\n\n\
+         USAGE:\n  \
+           musicdctl [--server URL] pair [--name NAME]\n\n\
+         Shows a code to enter on the server's /account page. Once it's approved,\n\
+         the token is saved in the config file and used for every request.\n\n\
+         OPTIONS:\n  \
+           --name NAME  how this computer appears on the server (default: musicdctl on <hostname>)\n  \
+           --help, -h   show this help"
     );
 }
 
