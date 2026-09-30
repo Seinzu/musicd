@@ -118,6 +118,24 @@ pub(crate) fn handle_service_request(
         ("GET" | "HEAD", "/logout") | ("HEAD", "/login") | ("HEAD", "/account/password") => {
             respond_method_not_allowed(writer)
         }
+        ("GET", "/account") => auth::handle_account_page_request(writer, request, &state),
+        ("POST", "/account/tokens") => {
+            auth::handle_account_token_create_request(writer, request, &state)
+        }
+        ("POST", "/account/tokens/revoke") => {
+            auth::handle_account_token_revoke_request(writer, request, &state)
+        }
+        ("POST", "/account/pairing") => {
+            auth::handle_account_pairing_lookup_request(writer, request, &state)
+        }
+        ("POST", "/account/pairing/approve") => {
+            auth::handle_account_pairing_approve_request(writer, request, &state)
+        }
+        ("POST", "/account/pairing/deny") => {
+            auth::handle_account_pairing_deny_request(writer, request, &state)
+        }
+        ("POST", "/api/pair/start") => auth::handle_api_pair_start_request(writer, request, &state),
+        ("POST", "/api/pair/poll") => auth::handle_api_pair_poll_request(writer, request, &state),
         ("GET", "/api/auth/tokens") => {
             auth::handle_api_tokens_list_request(writer, request, &state)
         }

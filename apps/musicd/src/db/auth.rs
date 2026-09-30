@@ -45,6 +45,27 @@ fn api_token_from_row(row: &Row<'_>) -> rusqlite::Result<ApiTokenRecord> {
 }
 
 impl Database {
+    /// Returns the stored value for `key`, first storing `candidate` if the
+    /// key is unset. Used for server secrets that must survive restarts.
+    pub(crate) fn app_state_value_or_insert(
+        &self,
+        key: &str,
+        candidate: &str,
+    ) -> io::Result<String> {
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO app_state (key, value) VALUES (?1, ?2)",
+                params![key, candidate],
+            )
+            .map_err(db_error)?;
+        connection
+            .query_row("SELECT value FROM app_state WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .map_err(db_error)
+    }
+
     pub(crate) fn count_users(&self) -> io::Result<i64> {
         let connection = self.connection()?;
         connection
