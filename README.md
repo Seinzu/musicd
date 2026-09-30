@@ -109,8 +109,9 @@ There are also mutation endpoints for queue editing, transport actions, internet
 
 ### Network safety
 
-Alongside [authentication](docs/authentication.md), `musicd` protects itself against malformed requests:
+Alongside [authentication](docs/authentication.md), `musicd` keeps itself from being used to reach other hosts and protects itself against malformed requests:
 
+- **Renderer requests:** in `serve` mode, UPnP requests go only to private LAN addresses (RFC 1918, link-local, `100.64.0.0/10`, IPv6 unique-local and link-local) and do not follow redirects. Loopback, public and cloud-metadata addresses are refused, so point renderers at their LAN address.
 - **Request limits:** request lines and headers are capped at 64 KiB each and 100 headers, bodies at 16 MiB, each read times out after 30 seconds, and at most 512 connections are served at once.
 
 ## Android app
