@@ -1,7 +1,9 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use reqwest::blocking::Client;
+use anyhow::{Context, Result, bail};
+use reqwest::StatusCode;
+use reqwest::blocking::{Client, Response};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -94,9 +96,17 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn new(base_url: &str, client_id: &str) -> Result<Self> {
+    pub fn new(base_url: &str, client_id: &str, token: Option<&str>) -> Result<Self> {
+        let mut headers = HeaderMap::new();
+        if let Some(token) = token {
+            let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+                .context("API token contains characters that can't go in a header")?;
+            value.set_sensitive(true);
+            headers.insert(AUTHORIZATION, value);
+        }
         let http = Client::builder()
             .timeout(Duration::from_secs(10))
+            .default_headers(headers)
             .build()
             .context("building HTTP client")?;
         Ok(Self {
@@ -133,9 +143,8 @@ impl ApiClient {
             .post(&url)
             .form(&[("client_id", self.client_id.as_str())])
             .send()
-            .with_context(|| format!("POST {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response from {url}"))?;
+            .with_context(|| format!("POST {url}"))
+            .and_then(|res| check_status(res, &url))?;
         res.json::<Vec<Renderer>>()
             .with_context(|| format!("parsing JSON from {url}"))
     }
@@ -195,9 +204,8 @@ impl ApiClient {
                 ("client_id", self.client_id.as_str()),
             ])
             .send()
-            .with_context(|| format!("GET {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response from {url}"))?;
+            .with_context(|| format!("GET {url}"))
+            .and_then(|res| check_status(res, &url))?;
         res.json::<Queue>()
             .with_context(|| format!("parsing JSON from {url}"))
     }
@@ -291,9 +299,8 @@ impl ApiClient {
             .get(&url)
             .query(&[("client_id", self.client_id.as_str())])
             .send()
-            .with_context(|| format!("GET {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response from {url}"))?;
+            .with_context(|| format!("GET {url}"))
+            .and_then(|res| check_status(res, &url))?;
         res.json::<T>()
             .with_context(|| format!("parsing JSON from {url}"))
     }
@@ -307,9 +314,143 @@ impl ApiClient {
             .post(&url)
             .form(&form)
             .send()
-            .with_context(|| format!("POST {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response from {url}"))?;
+            .with_context(|| format!("POST {url}"))
+            .and_then(|res| check_status(res, &url))?;
         Ok(())
+    }
+}
+
+/// Like `error_for_status`, but explains auth failures.
+fn check_status(res: Response, url: &str) -> Result<Response> {
+    match res.status() {
+        StatusCode::UNAUTHORIZED => {
+            bail!(
+                "{url}: the server needs authentication. Run `musicdctl pair` to pair this computer"
+            )
+        }
+        StatusCode::FORBIDDEN => bail!("{url}: this device's token isn't allowed to do that"),
+        _ => res
+            .error_for_status()
+            .with_context(|| format!("response from {url}")),
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PairingStart {
+    pub pairing_id: String,
+    pub code: String,
+    pub expires_in: u64,
+    pub poll_interval: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairingPoll {
+    Pending,
+    Approved(String),
+    Denied,
+    /// Expired, unknown, or already collected.
+    Gone,
+}
+
+#[derive(Deserialize)]
+struct PairingPollBody {
+    status: String,
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// Unauthenticated calls used to obtain a token in the first place.
+pub struct PairingClient {
+    base_url: String,
+    http: Client,
+}
+
+impl PairingClient {
+    pub fn new(base_url: &str) -> Result<Self> {
+        let http = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .context("building HTTP client")?;
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            http,
+        })
+    }
+
+    pub fn start(&self, device_name: &str) -> Result<PairingStart> {
+        let url = format!("{}/api/pair/start", self.base_url);
+        let res = self
+            .http
+            .post(&url)
+            .form(&[("name", device_name)])
+            .send()
+            .with_context(|| format!("POST {url}"))?;
+        if res.status() == StatusCode::NOT_FOUND {
+            bail!(
+                "{} doesn't support pairing; update the server",
+                self.base_url
+            );
+        }
+        res.error_for_status()
+            .with_context(|| format!("response from {url}"))?
+            .json::<PairingStart>()
+            .with_context(|| format!("parsing JSON from {url}"))
+    }
+
+    pub fn poll(&self, pairing_id: &str) -> Result<PairingPoll> {
+        let url = format!("{}/api/pair/poll", self.base_url);
+        let res = self
+            .http
+            .post(&url)
+            .form(&[("pairing_id", pairing_id)])
+            .send()
+            .with_context(|| format!("POST {url}"))?;
+        if res.status() == StatusCode::NOT_FOUND {
+            return Ok(PairingPoll::Gone);
+        }
+        let body = res
+            .error_for_status()
+            .with_context(|| format!("response from {url}"))?
+            .json::<PairingPollBody>()
+            .with_context(|| format!("parsing JSON from {url}"))?;
+        Ok(parse_poll(body))
+    }
+}
+
+fn parse_poll(body: PairingPollBody) -> PairingPoll {
+    match (body.status.as_str(), body.token) {
+        ("approved", Some(token)) if !token.is_empty() => PairingPoll::Approved(token),
+        ("pending", _) => PairingPoll::Pending,
+        ("denied", _) => PairingPoll::Denied,
+        _ => PairingPoll::Gone,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PairingPoll, PairingPollBody, parse_poll};
+
+    fn body(json: &str) -> PairingPollBody {
+        serde_json::from_str(json).expect("valid JSON")
+    }
+
+    #[test]
+    fn parses_poll_responses() {
+        assert_eq!(
+            parse_poll(body(r#"{"ok":true,"status":"pending"}"#)),
+            PairingPoll::Pending
+        );
+        assert_eq!(
+            parse_poll(body(r#"{"ok":true,"status":"approved","token":"mdt_x"}"#)),
+            PairingPoll::Approved("mdt_x".to_string())
+        );
+        assert_eq!(
+            parse_poll(body(r#"{"ok":true,"status":"approved"}"#)),
+            PairingPoll::Gone
+        );
+        assert_eq!(
+            parse_poll(body(r#"{"ok":true,"status":"denied"}"#)),
+            PairingPoll::Denied
+        );
     }
 }
