@@ -24,6 +24,7 @@ import io.musicd.android.data.MusicdRepository
 import io.musicd.android.data.MusicSourceKind
 import io.musicd.android.data.MutationResponseDto
 import io.musicd.android.data.NowPlayingDto
+import io.musicd.android.data.PairingPollResult
 import io.musicd.android.data.PlaybackEventDto
 import io.musicd.android.data.QueueDto
 import io.musicd.android.data.RadioStationDto
@@ -32,6 +33,8 @@ import io.musicd.android.data.ServerInfoDto
 import io.musicd.android.data.TidalAlbumDto
 import io.musicd.android.data.TidalTrackDto
 import io.musicd.android.data.TrackSummaryDto
+import io.musicd.android.data.defaultPairingDeviceName
+import io.musicd.android.data.isAuthRequired
 import io.musicd.android.playback.LastfmScrobbler
 import io.musicd.android.playback.MusicdPlaybackNotificationService
 import kotlinx.coroutines.Job
@@ -42,6 +45,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.IOException
 
 enum class MusicdTab {
     Home,
@@ -124,6 +128,9 @@ data class MusicdUiState(
     val warningMessage: String? = null,
     val infoMessage: String? = null,
     val dismissedRendererHealthDetectedUnix: Long? = null,
+    val pairing: PairingUiState = PairingUiState.Idle,
+    /** Whether this phone holds a pairing token for the current server. */
+    val isPaired: Boolean = false,
 )
 
 class MusicdViewModel(application: Application) : AndroidViewModel(application) {
@@ -132,6 +139,7 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     private val localCompanionLastfmScrobbler = LastfmScrobbler(lastfmRepository, viewModelScope)
     private val localCompanionRepository = LocalCompanionRepository(application)
     private var playbackEventsJob: Job? = null
+    private var pairingJob: Job? = null
     private var playbackEventsKey: String? = null
     private var tracksLoadJob: Job? = null
     private var playbackEventFailureCount: Int = 0
@@ -347,6 +355,8 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                             errorMessage = null,
                             warningMessage = null,
                             infoMessage = "Connected to musicd.",
+                            pairing = PairingUiState.Idle,
+                            isPaired = repository.hasAuthToken(normalized),
                         )
                     }
                     if (uiState.value.selectedTab == MusicdTab.Library || uiState.value.searchQuery.isNotBlank()) {
@@ -355,15 +365,91 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                     syncPlaybackNotificationService()
                 },
                 onFailure = { error ->
+                    val needsPairing = isAuthRequired(error)
                     _uiState.update {
                         it.copy(
                             connected = wasConnected,
                             isConnecting = false,
                             isLoading = false,
-                            errorMessage = connectionErrorMessage(error),
+                            // The pairing panel explains a 401 better than an error line.
+                            errorMessage = if (needsPairing) null else connectionErrorMessage(error),
+                            pairing = if (needsPairing) {
+                                PairingUiState.Needed(normalized)
+                            } else {
+                                PairingUiState.Idle
+                            },
                         )
                     }
                 },
+            )
+        }
+    }
+
+    fun startPairing() {
+        val baseUrl = uiState.value.pairing.baseUrl ?: return
+        pairingJob?.cancel()
+        _uiState.update { it.copy(pairing = PairingUiState.Starting(baseUrl), errorMessage = null) }
+        pairingJob = viewModelScope.launch {
+            val result = try {
+                awaitPairingApproval(baseUrl)
+            } catch (error: IOException) {
+                _uiState.update {
+                    it.copy(pairing = PairingUiState.Failed(baseUrl, connectionErrorMessage(error)))
+                }
+                return@launch
+            }
+            if (result is PairingPollResult.Approved) {
+                repository.saveAuthToken(baseUrl, result.token)
+                _uiState.update { it.copy(pairing = PairingUiState.Idle, isPaired = true) }
+                connect(baseUrl)
+            } else {
+                _uiState.update { it.copy(pairing = pairingFailureState(baseUrl, result)) }
+            }
+        }
+    }
+
+    /** Starts a pairing request, shows its code, and polls until it resolves or expires. */
+    private suspend fun awaitPairingApproval(baseUrl: String): PairingPollResult {
+        val started = repository.startPairing(
+            baseUrl,
+            defaultPairingDeviceName(Build.MANUFACTURER.orEmpty(), Build.MODEL.orEmpty()),
+        )
+        val expiresAtMillis = System.currentTimeMillis() + started.expiresInSeconds * 1_000L
+        _uiState.update {
+            it.copy(
+                pairing = PairingUiState.WaitingForApproval(baseUrl, started.code, expiresAtMillis),
+            )
+        }
+        val pollIntervalMillis = started.pollIntervalSeconds.coerceAtLeast(1L) * 1_000L
+        while (true) {
+            delay(pollIntervalMillis)
+            if (System.currentTimeMillis() > expiresAtMillis) {
+                return PairingPollResult.Gone
+            }
+            val result = repository.pollPairing(baseUrl, started.pairingId)
+            if (result != PairingPollResult.Pending) {
+                return result
+            }
+        }
+    }
+
+    fun cancelPairing() {
+        pairingJob?.cancel()
+        pairingJob = null
+        _uiState.update { state ->
+            state.copy(pairing = state.pairing.baseUrl?.let(PairingUiState::Needed) ?: PairingUiState.Idle)
+        }
+    }
+
+    /** Drops this phone's saved token for the current server. */
+    fun forgetPairing() {
+        val baseUrl = uiState.value.baseUrl
+        if (baseUrl.isBlank()) return
+        repository.clearAuthToken(baseUrl)
+        _uiState.update {
+            it.copy(
+                isPaired = false,
+                infoMessage = "Removed this phone's pairing. Revoke it on the server's account page too.",
             )
         }
     }
@@ -582,6 +668,8 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnectServer() {
+        pairingJob?.cancel()
+        pairingJob = null
         stopPlaybackEventSubscription()
         MusicdPlaybackNotificationService.stop(getApplication())
         repository.saveSourceKind(MusicSourceKind.RemoteServer)
@@ -594,6 +682,8 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
                 baseUrl = "",
                 serverName = null,
                 serverInput = "",
+                pairing = PairingUiState.Idle,
+                isPaired = false,
                 showServerEditor = false,
                 selectedRendererLocation = "",
                 renderers = emptyList(),
