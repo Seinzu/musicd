@@ -84,6 +84,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
@@ -160,6 +161,9 @@ fun MusicdApp(viewModel: MusicdViewModel) {
             onOpenLocalCompanion = viewModel::openLocalCompanion,
             onDiscoverServers = { viewModel.discoverServers() },
             onSelectDiscoveredServer = viewModel::selectDiscoveredServer,
+            pairing = state.pairing,
+            onStartPairing = viewModel::startPairing,
+            onCancelPairing = viewModel::cancelPairing,
         )
         return
     }
@@ -183,6 +187,9 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onOpenLocalCompanion = viewModel::openLocalCompanion,
         onRetryConnection = viewModel::retryConnection,
         onDisconnectServer = viewModel::disconnectServer,
+        onStartPairing = viewModel::startPairing,
+        onCancelPairing = viewModel::cancelPairing,
+        onForgetPairing = viewModel::forgetPairing,
         onDiscoverServers = { viewModel.discoverServers() },
         onSelectDiscoveredServer = viewModel::selectDiscoveredServer,
         onOpenRendererPicker = { viewModel.toggleRendererPicker(true) },
@@ -264,6 +271,9 @@ private fun MusicdRoot(
     onOpenLocalCompanion: () -> Unit,
     onRetryConnection: () -> Unit,
     onDisconnectServer: () -> Unit,
+    onStartPairing: () -> Unit,
+    onCancelPairing: () -> Unit,
+    onForgetPairing: () -> Unit,
     onDiscoverServers: () -> Unit,
     onSelectDiscoveredServer: (String) -> Unit,
     onOpenRendererPicker: () -> Unit,
@@ -361,6 +371,11 @@ private fun MusicdRoot(
                 onDisconnect = onDisconnectServer,
                 onDiscoverServers = onDiscoverServers,
                 onSelectDiscoveredServer = onSelectDiscoveredServer,
+                pairing = state.pairing,
+                isPaired = state.isPaired,
+                onStartPairing = onStartPairing,
+                onCancelPairing = onCancelPairing,
+                onForgetPairing = onForgetPairing,
             )
         }
     }
@@ -739,6 +754,9 @@ private fun ServerSetupScreen(
     onOpenLocalCompanion: () -> Unit,
     onDiscoverServers: () -> Unit,
     onSelectDiscoveredServer: (String) -> Unit,
+    pairing: PairingUiState,
+    onStartPairing: () -> Unit,
+    onCancelPairing: () -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -775,6 +793,7 @@ private fun ServerSetupScreen(
                     Spacer(Modifier.height(8.dp))
                     Text(it, color = MaterialTheme.colorScheme.error)
                 }
+                PairingPanel(pairing = pairing, onStart = onStartPairing, onCancel = onCancelPairing)
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = onConnect, modifier = Modifier.fillMaxWidth(), enabled = !isConnecting) {
                     Text(if (isConnecting) "Connecting..." else "Connect")
@@ -2135,6 +2154,73 @@ private fun QueueScreen(
 }
 
 @Composable
+private fun PairingPanel(
+    pairing: PairingUiState,
+    onStart: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val baseUrl = pairing.baseUrl ?: return
+    Spacer(Modifier.height(12.dp))
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "Pair this phone",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(6.dp))
+            when (pairing) {
+                PairingUiState.Idle -> Unit
+                is PairingUiState.Needed -> {
+                    Text("This server only accepts paired devices. Pair this phone, then approve it from a browser signed in to musicd.")
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
+                        Text("Get a pairing code")
+                    }
+                }
+                is PairingUiState.Starting -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.size(10.dp))
+                        Text("Requesting a pairing code...")
+                    }
+                }
+                is PairingUiState.WaitingForApproval -> {
+                    Text("Open ${pairingApprovalUrl(baseUrl)} in a browser signed in to musicd and enter this code:")
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        pairing.code,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.size(10.dp))
+                        Text("Waiting for approval...", modifier = Modifier.weight(1f))
+                        TextButton(onClick = onCancel) { Text("Cancel") }
+                    }
+                }
+                is PairingUiState.Failed -> {
+                    Text(pairing.message, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
+                        Text("Try again")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ServerEditorSheet(
     serverInput: String,
     serverName: String?,
@@ -2162,6 +2248,11 @@ private fun ServerEditorSheet(
     onDisconnect: () -> Unit,
     onDiscoverServers: () -> Unit,
     onSelectDiscoveredServer: (String) -> Unit,
+    pairing: PairingUiState,
+    isPaired: Boolean,
+    onStartPairing: () -> Unit,
+    onCancelPairing: () -> Unit,
+    onForgetPairing: () -> Unit,
 ) {
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
         Text("Server", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
@@ -2203,6 +2294,7 @@ private fun ServerEditorSheet(
             Spacer(Modifier.height(10.dp))
             Text(it, color = MaterialTheme.colorScheme.error)
         }
+        PairingPanel(pairing = pairing, onStart = onStartPairing, onCancel = onCancelPairing)
         Spacer(Modifier.height(16.dp))
         Button(onClick = onConnect, enabled = !isConnecting, modifier = Modifier.fillMaxWidth()) {
             Text(if (isConnecting) "Connecting..." else "Save and reconnect")
@@ -2241,6 +2333,11 @@ private fun ServerEditorSheet(
             onDisconnect = onDisconnectLastfm,
         )
         Spacer(Modifier.height(8.dp))
+        if (isPaired && !isLocalCompanion) {
+            TextButton(onClick = onForgetPairing, modifier = Modifier.fillMaxWidth()) {
+                Text("Forget pairing")
+            }
+        }
         TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
             Text("Disconnect")
         }
