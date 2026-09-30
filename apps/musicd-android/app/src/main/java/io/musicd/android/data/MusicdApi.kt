@@ -337,6 +337,20 @@ data class LikeResponseDto(
 )
 
 @Serializable
+data class PairingStartDto(
+    @SerialName("pairing_id") val pairingId: String,
+    val code: String,
+    @SerialName("expires_in") val expiresInSeconds: Long = 600L,
+    @SerialName("poll_interval") val pollIntervalSeconds: Long = 2L,
+)
+
+@Serializable
+data class PairingPollDto(
+    val status: String,
+    val token: String? = null,
+)
+
+@Serializable
 private data class ErrorEnvelopeDto(
     val error: String? = null,
     val message: String? = null,
@@ -411,6 +425,16 @@ class MusicdApi(
     ): MutationResponseDto = post(
         "$baseUrl/api/recommendations/dismiss",
         mapOf("recommendation_key" to recommendationKey),
+    )
+
+    suspend fun startPairing(baseUrl: String, deviceName: String): PairingStartDto = post(
+        "$baseUrl/api/pair/start",
+        mapOf("name" to deviceName),
+    )
+
+    suspend fun pollPairing(baseUrl: String, pairingId: String): PairingPollDto = post(
+        "$baseUrl/api/pair/poll",
+        mapOf("pairing_id" to pairingId),
     )
 
     suspend fun searchRadioStations(
@@ -1037,6 +1061,7 @@ private fun parseApiError(json: Json, body: String): String? =
 private fun friendlyHttpMessage(statusCode: Int, serverMessage: String?): String =
     when (statusCode) {
         400 -> serverMessage ?: "musicd rejected that request."
+        401 -> "This server needs this phone to be paired."
         403 -> if (serverMessage?.contains("pairing", ignoreCase = true) == true) {
             "The local companion pairing is stale. Re-select local companion mode or reset pairing in the companion app."
         } else {

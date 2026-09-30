@@ -92,6 +92,10 @@ Pairing lets a device get a `client` token without anyone typing a token:
 
 Pairing requests are held in memory, so a restart cancels any that are pending. At most 32 can be pending at once; beyond that, `start` returns `429`.
 
+### Android app
+
+When a server answers `401`, the connection screen shows **Pair this phone**. It requests a code, shows it together with the server's `/account` URL, and polls until the request is approved, denied or expires, then reconnects. The token is stored per server origin in a file under the app's `noBackupFilesDir`, so it isn't included in cloud backups. It's added only to requests for that origin: API calls, the event stream, Coil artwork and ExoPlayer streams. **Forget pairing** in the server sheet deletes the stored token.
+
 ### `musicdctl`
 
 ```bash

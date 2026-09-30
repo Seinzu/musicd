@@ -14,6 +14,7 @@
     <uses-permission android:name="io.musicd.android.companion.permission.PAIR" />
 
     <application
+        android:name=".MusicdApplication"
         android:allowBackup="true"
         android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
