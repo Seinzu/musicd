@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use arc_swap::ArcSwap;
-use musicd_core::AppConfig;
+use musicd_core::{AppConfig, AuthMode};
 
 use crate::db::Database;
 use crate::library::{
@@ -56,6 +56,8 @@ pub(crate) struct ServiceState {
     /// State for tracking concurrent rescans
     pub(crate) rescan_state: RescanState,
     pub(crate) login_throttle: crate::auth::LoginThrottle,
+    pub(crate) pairings: crate::auth::PairingRegistry,
+    pub(crate) url_signer: crate::auth::UrlSigner,
 }
 
 #[derive(Debug)]
@@ -165,9 +167,21 @@ impl ServiceState {
             .clone()
     }
 
+    /// A stream or artwork URL to hand to a renderer. When every route needs
+    /// credentials, the URL carries a signature instead, since renderers
+    /// can't authenticate.
+    pub(crate) fn renderer_media_url(&self, url: String) -> String {
+        if self.config.auth_mode == AuthMode::Required {
+            self.url_signer.sign_url(&url)
+        } else {
+            url
+        }
+    }
+
     pub(crate) fn load(config: AppConfig) -> io::Result<Self> {
         let database = Database::open(&config.config_path)?;
         crate::auth::ensure_default_admin(&database)?;
+        let url_signer = crate::auth::load_url_signer(&database)?;
         let persisted_library = database.load_library(config.library_path.clone())?;
         let state = Self {
             config,
@@ -182,6 +196,8 @@ impl ServiceState {
             playback_health: PlaybackHealthMonitor::default(),
             rescan_state: RescanState::new(),
             login_throttle: crate::auth::LoginThrottle::default(),
+            pairings: crate::auth::PairingRegistry::default(),
+            url_signer,
         };
 
         let persisted_track_count = state.track_count();

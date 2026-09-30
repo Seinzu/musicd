@@ -3545,6 +3545,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn renderer_media_urls_are_signed_only_when_auth_is_required() {
+        let track = sample_track("a", Some(1), Some(1), "Track 1");
+        let mut state = sample_state(vec![track.clone()]);
+        assert_eq!(
+            state.stream_resource_for_track(&track).stream_url,
+            "http://192.168.1.10:7878/stream/track/a"
+        );
+
+        state.config.auth_mode = AuthMode::Required;
+        let signed = state.stream_resource_for_track(&track).stream_url;
+        let (url, signature) = signed.split_once("?sig=").expect("signed url");
+        assert_eq!(url, "http://192.168.1.10:7878/stream/track/a");
+        assert!(state.url_signer.verify("/stream/track/a", signature));
+        assert_eq!(state.stream_resource_for_track(&track).stream_url, signed);
+    }
+
     fn sample_state(tracks: Vec<LibraryTrack>) -> ServiceState {
         let config_path = temp_config_path("service-state");
         let database = Database::open(&config_path).expect("database should open");
@@ -3588,6 +3605,8 @@ mod tests {
             playback_health: crate::service::PlaybackHealthMonitor::default(),
             rescan_state: crate::service::RescanState::new(),
             login_throttle: crate::auth::LoginThrottle::default(),
+            pairings: crate::auth::PairingRegistry::default(),
+            url_signer: crate::auth::UrlSigner::new(b"test-signing-key"),
         }
     }
 

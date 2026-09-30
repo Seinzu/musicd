@@ -466,11 +466,11 @@ impl ServiceState {
     }
 
     fn tidal_proxy_stream_url(&self, track_id: &str) -> String {
-        format!(
+        self.renderer_media_url(format!(
             "{}/stream/tidal/{}",
             self.config.resolved_base_url().trim_end_matches('/'),
             url_encode(track_id)
-        )
+        ))
     }
 
     fn resolve_tidal_track(&self, track_id: &str) -> io::Result<TidalResolvedTrack> {
