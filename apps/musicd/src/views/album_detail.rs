@@ -58,7 +58,7 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
                 url_encode(&album.id)
             );
             format!(
-                "<tr><td data-label=\"Position\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td><td data-label=\"Likes\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><a href=\"{}\">Play Track</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Play Next</a> <span class=\"muted-sep\">|</span> <a href=\"{}\">Queue</a> <span class=\"muted-sep\">|</span> <a href=\"/track/{}?renderer_location={}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
+                "<tr><td data-label=\"Position\">{}</td><td data-label=\"Title\">{}</td><td data-label=\"Artist\">{}</td><td data-label=\"Likes\">{}</td><td data-label=\"Actions\" class=\"actions-cell\"><form class=\"inline-form\" action=\"{}\" method=\"post\"><button type=\"submit\">Play Track</button></form> <form class=\"inline-form\" action=\"{}\" method=\"post\"><button type=\"submit\" class=\"secondary\">Play Next</button></form> <form class=\"inline-form\" action=\"{}\" method=\"post\"><button type=\"submit\" class=\"secondary\">Queue</button></form> <a class=\"text-link\" href=\"/track/{}?renderer_location={}\" target=\"_blank\" rel=\"noreferrer\">Inspect</a></td></tr>",
                 html_escape(&format_track_position(track.disc_number, track.track_number)),
                 html_escape(&track.title),
                 html_escape(&track.artist),
@@ -89,7 +89,7 @@ pub(crate) fn render_album_detail_page(state: &ServiceState, request: &HttpReque
   </div>
   {}
   <div class="album-actions">
-    <form action="/play-album" method="get">
+    <form action="/play-album" method="post">
       {renderer_input}
       <input type="hidden" name="album_id" value="{}">
       <label for="renderer_location" style="display:block; font-weight:600; margin-bottom:0.5rem;">Renderer LOCATION</label>

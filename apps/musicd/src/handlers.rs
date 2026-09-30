@@ -30,12 +30,10 @@ pub(crate) fn handle_play_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let Some(track_id) = request.query.get("track_id") else {
+    let Some(track_id) = request_value(request, "track_id") else {
         return redirect_home(
             writer,
             Some(&renderer_location),
@@ -91,12 +89,10 @@ pub(crate) fn handle_play_album_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let Some(album_id) = request.query.get("album_id").map(String::as_str) else {
+    let Some(album_id) = request_value(request, "album_id") else {
         return redirect_home(
             writer,
             Some(&renderer_location),
@@ -165,17 +161,11 @@ pub(crate) fn handle_queue_append_track_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
-    let Some(track_id) = request.query.get("track_id").map(String::as_str) else {
+    let return_to = request_value(request, "return_to").unwrap_or("/");
+    let Some(track_id) = request_value(request, "track_id") else {
         return redirect_to_path(
             writer,
             return_to,
@@ -233,17 +223,11 @@ pub(crate) fn handle_queue_play_next_track_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
-    let Some(track_id) = request.query.get("track_id").map(String::as_str) else {
+    let return_to = request_value(request, "return_to").unwrap_or("/");
+    let Some(track_id) = request_value(request, "track_id") else {
         return redirect_to_path(
             writer,
             return_to,
@@ -300,16 +284,10 @@ pub(crate) fn handle_transport_play_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
+    let return_to = request_value(request, "return_to").unwrap_or("/");
 
     if renderer_location.is_empty() {
         return redirect_to_path(
@@ -344,16 +322,10 @@ pub(crate) fn handle_transport_pause_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
+    let return_to = request_value(request, "return_to").unwrap_or("/");
 
     if renderer_location.is_empty() {
         return redirect_to_path(
@@ -388,16 +360,10 @@ pub(crate) fn handle_transport_stop_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
+    let return_to = request_value(request, "return_to").unwrap_or("/");
 
     if renderer_location.is_empty() {
         return redirect_to_path(
@@ -432,16 +398,10 @@ pub(crate) fn handle_transport_next_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
+    let return_to = request_value(request, "return_to").unwrap_or("/");
 
     if renderer_location.is_empty() {
         return redirect_to_path(
@@ -476,16 +436,10 @@ pub(crate) fn handle_transport_previous_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
+    let return_to = request_value(request, "return_to").unwrap_or("/");
 
     if renderer_location.is_empty() {
         return redirect_to_path(
@@ -520,17 +474,11 @@ pub(crate) fn handle_queue_append_album_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
-    let Some(album_id) = request.query.get("album_id").map(String::as_str) else {
+    let return_to = request_value(request, "return_to").unwrap_or("/");
+    let Some(album_id) = request_value(request, "album_id") else {
         return redirect_to_path(
             writer,
             return_to,
@@ -588,17 +536,11 @@ pub(crate) fn handle_queue_play_next_album_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
-    let Some(album_id) = request.query.get("album_id").map(String::as_str) else {
+    let return_to = request_value(request, "return_to").unwrap_or("/");
+    let Some(album_id) = request_value(request, "album_id") else {
         return redirect_to_path(
             writer,
             return_to,
@@ -691,20 +633,12 @@ pub(crate) fn handle_queue_entry_mutation_request(
     action_label: &str,
     apply: impl Fn(&ServiceState, &str, i64) -> io::Result<PlaybackQueue>,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
-    let Some(entry_id) = request
-        .query
-        .get("entry_id")
-        .and_then(|value| value.parse::<i64>().ok())
+    let return_to = request_value(request, "return_to").unwrap_or("/");
+    let Some(entry_id) =
+        request_value(request, "entry_id").and_then(|value| value.parse::<i64>().ok())
     else {
         return redirect_to_path(
             writer,
@@ -752,16 +686,10 @@ pub(crate) fn handle_queue_clear_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request
-        .query
-        .get("renderer_location")
+    let renderer_location = request_value(request, "renderer_location")
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
-    let return_to = request
-        .query
-        .get("return_to")
-        .map(String::as_str)
-        .unwrap_or("/");
+    let return_to = request_value(request, "return_to").unwrap_or("/");
 
     if renderer_location.is_empty() {
         return redirect_to_path(
@@ -796,7 +724,7 @@ pub(crate) fn handle_rescan_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request.query.get("renderer_location").map(String::as_str);
+    let renderer_location = request_value(request, "renderer_location");
     match state.start_rescan() {
         Ok(track_count) => redirect_home(
             writer,
@@ -826,7 +754,7 @@ pub(crate) fn handle_rescan_progress_request(
     request: &HttpRequest,
     state: &ServiceState,
 ) -> io::Result<()> {
-    let renderer_location = request.query.get("renderer_location").map(String::as_str);
+    let renderer_location = request_value(request, "renderer_location");
     respond_sse_scan_progress(writer, state, renderer_location)
 }
 

@@ -11,6 +11,7 @@ It is intentionally narrower and more action-oriented than the browser UI routes
 - Read endpoints use `GET`
 - Mutation endpoints use `POST`
 - For now, `POST` bodies should be sent as `application/x-www-form-urlencoded`
+- Send `Authorization: Bearer <token>` when the app has a token. It's required when the server runs with `MUSICD_AUTH=required`, and an invalid or revoked token gets `401` in any mode. `/stream/*` and `/artwork/*` don't need it. See [authentication.md](authentication.md)
 
 Example form body:
 

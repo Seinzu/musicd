@@ -247,7 +247,7 @@ mod tests {
         MUSICD_SERVER_ST, build_ssdp_response, matches_musicd_search_target,
         parse_musicd_ssdp_response, render_musicd_device_description_xml,
     };
-    use musicd_core::{AppConfig, LibraryWatchMode};
+    use musicd_core::{AppConfig, AuthMode, LibraryWatchMode};
     use std::path::PathBuf;
 
     fn config() -> AppConfig {
@@ -273,6 +273,7 @@ mod tests {
             tidal_helper_command: None,
             tidal_session_path: PathBuf::from("/config/tidal/session.json"),
             tidal_audio_quality: "LOSSLESS".to_string(),
+            auth_mode: AuthMode::Optional,
         }
     }
 

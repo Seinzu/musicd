@@ -53,6 +53,36 @@ impl LibraryWatchMode {
     }
 }
 
+/// How strictly the HTTP API enforces authentication (`MUSICD_AUTH`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    /// No checks at all; every route is open.
+    Off,
+    /// Admin routes need a login or an admin token; everything else is open.
+    Optional,
+    /// Every non-public route needs a login or a token.
+    Required,
+}
+
+impl AuthMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Optional => "optional",
+            Self::Required => "required",
+        }
+    }
+
+    /// Unrecognised values fail closed to `Required` so a typo never opens the API.
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "disabled" | "none" => Self::Off,
+            "optional" | "" => Self::Optional,
+            _ => Self::Required,
+        }
+    }
+}
+
 impl RendererProtocol {
     pub fn label(self) -> &'static str {
         match self {
@@ -94,6 +124,7 @@ pub struct AppConfig {
     pub tidal_helper_command: Option<String>,
     pub tidal_session_path: PathBuf,
     pub tidal_audio_quality: String,
+    pub auth_mode: AuthMode,
 }
 
 impl AppConfig {
@@ -163,6 +194,10 @@ impl AppConfig {
                 .map(|value| value.trim().to_ascii_uppercase())
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| "LOSSLESS".to_string()),
+            auth_mode: std::env::var("MUSICD_AUTH")
+                .ok()
+                .map(|value| AuthMode::parse(&value))
+                .unwrap_or(AuthMode::Optional),
         }
     }
 
@@ -257,7 +292,7 @@ fn format_host_for_url(host: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, LibraryWatchMode, resolve_public_base_url};
+    use super::{AppConfig, AuthMode, LibraryWatchMode, resolve_public_base_url};
     use std::path::PathBuf;
 
     #[test]
@@ -292,9 +327,19 @@ mod tests {
             tidal_helper_command: None,
             tidal_session_path: PathBuf::from("/config/tidal/session.json"),
             tidal_audio_quality: "LOSSLESS".to_string(),
+            auth_mode: AuthMode::Optional,
         };
 
         assert_eq!(config.resolved_base_url(), "http://192.168.1.20:8787");
+    }
+
+    #[test]
+    fn parses_auth_modes_failing_closed_on_unknown_values() {
+        assert_eq!(AuthMode::parse("off"), AuthMode::Off);
+        assert_eq!(AuthMode::parse(" Optional "), AuthMode::Optional);
+        assert_eq!(AuthMode::parse(""), AuthMode::Optional);
+        assert_eq!(AuthMode::parse("required"), AuthMode::Required);
+        assert_eq!(AuthMode::parse("requried"), AuthMode::Required);
     }
 
     #[test]

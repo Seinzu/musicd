@@ -1,5 +1,6 @@
 mod artwork;
 mod assets;
+mod auth;
 mod cli;
 mod db;
 mod discovery;
@@ -50,7 +51,7 @@ mod tests {
     };
     use crate::views::json::current_track_for_renderer;
     use crate::views::{render_library_page, render_library_rows_json};
-    use musicd_core::{AppConfig, LibraryWatchMode};
+    use musicd_core::{AppConfig, AuthMode, LibraryWatchMode};
     use musicd_upnp::{
         PositionInfo, RendererCapabilities, StreamResource, TransportInfo, TransportSnapshot,
     };
@@ -3063,7 +3064,7 @@ mod tests {
             form: HashMap::new(),
             range_header: None,
             content_type: None,
-            body: Vec::new(),
+            ..HttpRequest::default()
         };
 
         let html = render_library_page(&state, &request);
@@ -3098,7 +3099,7 @@ mod tests {
             form: HashMap::new(),
             range_header: None,
             content_type: None,
-            body: Vec::new(),
+            ..HttpRequest::default()
         };
 
         let html = render_library_page(&state, &request);
@@ -3117,7 +3118,7 @@ mod tests {
             form: HashMap::new(),
             range_header: None,
             content_type: None,
-            body: Vec::new(),
+            ..HttpRequest::default()
         };
 
         let json = render_library_rows_json(&state, &request);
@@ -3570,6 +3571,7 @@ mod tests {
                 tidal_helper_command: None,
                 tidal_session_path: config_path.join("tidal").join("session.json"),
                 tidal_audio_quality: "LOSSLESS".to_string(),
+                auth_mode: AuthMode::Optional,
             },
             database,
             library: arc_swap::ArcSwap::from_pointee(Library::build(
@@ -3585,6 +3587,7 @@ mod tests {
             active_library_streams: AtomicUsize::new(0),
             playback_health: crate::service::PlaybackHealthMonitor::default(),
             rescan_state: crate::service::RescanState::new(),
+            login_throttle: crate::auth::LoginThrottle::default(),
         }
     }
 

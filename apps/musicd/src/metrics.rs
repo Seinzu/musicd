@@ -561,9 +561,12 @@ pub fn route_template(path: &str) -> String {
 
 const KNOWN_ROUTES: &[&str] = &[
     "/",
+    "/account/password",
     "/api/albums",
     "/api/albums/artwork/select",
     "/api/artists",
+    "/api/auth/tokens",
+    "/api/auth/tokens/revoke",
     "/api/events",
     "/api/like",
     "/api/now-playing",
@@ -614,6 +617,8 @@ const KNOWN_ROUTES: &[&str] = &[
     "/api/transport/retry",
     "/api/transport/stop",
     "/health",
+    "/login",
+    "/logout",
     "/metrics",
     "/play",
     "/play-album",

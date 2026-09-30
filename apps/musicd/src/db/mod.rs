@@ -7,6 +7,9 @@ use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, OptionalExtension};
 
+pub(crate) use auth::ApiTokenRecord;
+
+mod auth;
 mod groups;
 mod library;
 mod likes;
@@ -231,6 +234,34 @@ impl Database {
                     updated_unix INTEGER NOT NULL,
                     dismiss_count INTEGER NOT NULL DEFAULT 0,
                     last_dismissed_unix INTEGER
+                );
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    must_change_password INTEGER NOT NULL DEFAULT 0,
+                    created_unix INTEGER NOT NULL,
+                    updated_unix INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS web_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    created_unix INTEGER NOT NULL,
+                    last_seen_unix INTEGER NOT NULL,
+                    expires_unix INTEGER NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS api_tokens (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    scope TEXT NOT NULL,
+                    created_unix INTEGER NOT NULL,
+                    last_used_unix INTEGER,
+                    revoked_unix INTEGER
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_track_play_history_track_id
