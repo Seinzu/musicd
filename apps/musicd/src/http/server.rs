@@ -2,19 +2,26 @@ use std::io::{self, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::metrics;
 use crate::service::ServiceState;
 
 use super::ResponseWriter;
-use super::request::{HttpRequest, read_http_request};
+use super::request::{HttpRequest, read_http_request, request_rejection};
 use super::response::{
     is_expected_client_disconnect, respond_not_found, respond_text, respond_with_file,
 };
 
 const RESPONSE_BUFFER_BYTES: usize = 64 * 1024;
+/// How long a client may take to send each read of its request. Responses
+/// are not limited, since renderers stop reading streams while paused.
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Most connections handled at once. Each one holds a thread, and streams and
+/// event feeds stay open, so this is well above normal use.
+const MAX_CONNECTIONS: usize = 512;
 
 #[derive(Debug, Clone)]
 pub(crate) enum ServerMode {
@@ -24,13 +31,21 @@ pub(crate) enum ServerMode {
 
 pub(crate) fn serve_tcp(bind_address: &str, mode: ServerMode) -> io::Result<()> {
     let listener = TcpListener::bind(bind_address)?;
+    let open_connections = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
+            Ok(mut stream) => {
+                let Some(slot) = ConnectionSlot::acquire(&open_connections) else {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                };
                 let mode = mode.clone();
                 thread::spawn(move || {
+                    let _slot = slot;
                     if let Err(error) = handle_client(stream, mode) {
-                        if !is_expected_client_disconnect(&error) {
+                        if !is_expected_client_disconnect(&error) && !is_read_timeout(&error) {
                             eprintln!("request failed: {error}");
                         }
                     }
@@ -42,16 +57,65 @@ pub(crate) fn serve_tcp(bind_address: &str, mode: ServerMode) -> io::Result<()> 
     Ok(())
 }
 
+/// Counts an open connection until dropped.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl ConnectionSlot {
+    fn acquire(open_connections: &Arc<AtomicUsize>) -> Option<Self> {
+        let previous = open_connections.fetch_add(1, Ordering::SeqCst);
+        if previous >= MAX_CONNECTIONS {
+            open_connections.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Self(Arc::clone(open_connections)))
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn is_read_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
 fn handle_client(stream: TcpStream, mode: ServerMode) -> io::Result<()> {
     let peer = stream.peer_addr().ok();
+    stream.set_read_timeout(Some(REQUEST_READ_TIMEOUT))?;
     let mut writer: ResponseWriter =
         BufWriter::with_capacity(RESPONSE_BUFFER_BYTES, stream.try_clone()?);
     let mut reader = BufReader::new(stream);
 
-    let request = match read_http_request(&mut reader)? {
-        Some(request) => request,
-        None => return Ok(()),
+    let mut request = match read_http_request(&mut reader) {
+        Ok(Some(request)) => request,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            let Some(rejection) = request_rejection(&error) else {
+                return Err(error);
+            };
+            eprintln!(
+                "{} -> rejected request: {rejection}",
+                peer.map(|peer| peer.to_string())
+                    .unwrap_or_else(|| "unknown-peer".to_string())
+            );
+            let _ = respond_text(
+                &mut writer,
+                rejection.status,
+                "text/plain; charset=utf-8",
+                rejection.message.as_bytes(),
+                false,
+            );
+            let _ = writer.flush();
+            return Ok(());
+        }
     };
+
+    request.peer = peer.map(|peer| peer.ip());
 
     if let Some(peer) = peer {
         eprintln!("{peer} -> {} {}", request.method, request.target);

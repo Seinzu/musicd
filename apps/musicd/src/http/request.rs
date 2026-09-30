@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Read};
-use std::net::{IpAddr, TcpStream};
+use std::fmt;
+use std::io::{self, BufRead, Read};
+use std::net::IpAddr;
 
 use crate::util::percent_decode;
 
@@ -19,13 +20,47 @@ pub(crate) struct HttpRequest {
     pub(crate) body: Vec<u8>,
 }
 
-pub(crate) fn read_http_request(
-    reader: &mut BufReader<TcpStream>,
-) -> io::Result<Option<HttpRequest>> {
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
-        return Ok(None);
+/// Longest request line or header line accepted, including the line ending.
+pub(crate) const MAX_LINE_BYTES: usize = 64 * 1024;
+/// Most header lines accepted in one request.
+pub(crate) const MAX_HEADER_COUNT: usize = 100;
+/// Largest request body accepted. Recommendation imports are the biggest
+/// bodies clients send, and they stay well under this.
+pub(crate) const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// A request the server refuses to read any further, with the status to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestRejected {
+    pub(crate) status: &'static str,
+    pub(crate) message: &'static str,
+}
+
+impl fmt::Display for RequestRejected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.status, self.message)
     }
+}
+
+impl std::error::Error for RequestRejected {}
+
+fn reject(status: &'static str, message: &'static str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        RequestRejected { status, message },
+    )
+}
+
+pub(crate) fn request_rejection(error: &io::Error) -> Option<RequestRejected> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<RequestRejected>())
+        .copied()
+}
+
+pub(crate) fn read_http_request<R: BufRead>(reader: &mut R) -> io::Result<Option<HttpRequest>> {
+    let Some(request_line) = read_bounded_line(reader, "414 URI Too Long")? else {
+        return Ok(None);
+    };
 
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
@@ -37,40 +72,48 @@ pub(crate) fn read_http_request(
     let mut authorization = None;
     let mut cookie = None;
     let mut content_length = 0_usize;
+    let mut header_count = 0_usize;
     loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        let Some(line) = read_bounded_line(reader, "431 Request Header Fields Too Large")? else {
             break;
-        }
+        };
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             break;
         }
+        header_count += 1;
+        if header_count > MAX_HEADER_COUNT {
+            return Err(reject(
+                "431 Request Header Fields Too Large",
+                "too many request headers",
+            ));
+        }
         if let Some((name, value)) = trimmed.split_once(':') {
+            let value = value.trim();
             if name.eq_ignore_ascii_case("Range") {
-                range_header = Some(value.trim().to_string());
+                range_header = Some(value.to_string());
             } else if name.eq_ignore_ascii_case("Content-Type") {
-                content_type = Some(value.trim().to_string());
+                content_type = Some(value.to_string());
             } else if name.eq_ignore_ascii_case("Authorization") {
-                authorization = Some(value.trim().to_string());
+                authorization = Some(value.to_string());
             } else if name.eq_ignore_ascii_case("Cookie") {
-                cookie = Some(value.trim().to_string());
+                cookie = Some(value.to_string());
             } else if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().unwrap_or(0);
+                content_length = value
+                    .parse::<usize>()
+                    .map_err(|_| reject("400 Bad Request", "invalid Content-Length"))?;
             }
         }
     }
 
+    if content_length > MAX_BODY_BYTES {
+        return Err(reject("413 Content Too Large", "request body is too large"));
+    }
     let mut body = vec![0_u8; content_length];
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
     let form = parse_request_form(content_type.as_deref(), &body);
-    let peer = reader
-        .get_ref()
-        .peer_addr()
-        .ok()
-        .map(|address| address.ip());
 
     Ok(Some(HttpRequest {
         method,
@@ -82,9 +125,31 @@ pub(crate) fn read_http_request(
         content_type,
         authorization,
         cookie,
-        peer,
+        // The caller knows the socket and fills this in.
+        peer: None,
         body,
     }))
+}
+
+/// Reads one line of at most `MAX_LINE_BYTES`, or `None` at end of stream.
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    too_long_status: &'static str,
+) -> io::Result<Option<String>> {
+    let mut line = Vec::new();
+    reader
+        .by_ref()
+        .take(MAX_LINE_BYTES as u64 + 1)
+        .read_until(b'\n', &mut line)?;
+    if line.is_empty() {
+        return Ok(None);
+    }
+    if line.len() > MAX_LINE_BYTES {
+        return Err(reject(too_long_status, "request line is too long"));
+    }
+    String::from_utf8(line)
+        .map(Some)
+        .map_err(|_| reject("400 Bad Request", "request line is not valid UTF-8"))
 }
 
 pub(crate) fn split_target_and_query(target: &str) -> (String, HashMap<String, String>) {
@@ -168,4 +233,70 @@ pub(crate) fn parse_range_header(value: &str, total_len: u64) -> Option<(u64, u6
     }
 
     Some((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_BODY_BYTES, MAX_HEADER_COUNT, MAX_LINE_BYTES, read_http_request, request_rejection,
+    };
+    use std::io::Cursor;
+
+    fn rejection_status(raw: Vec<u8>) -> &'static str {
+        let error = read_http_request(&mut Cursor::new(raw)).unwrap_err();
+        request_rejection(&error)
+            .expect("request should be rejected")
+            .status
+    }
+
+    #[test]
+    fn reads_body_within_limits() {
+        let raw = b"POST /api/play HTTP/1.1\r\nHost: 192.168.1.20:8787\r\nAuthorization: Bearer mdt_abc\r\nCookie: musicd_session=s1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\n\r\ntrack_id=a1";
+        let request = read_http_request(&mut Cursor::new(raw.to_vec()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.form.get("track_id").map(String::as_str), Some("a1"));
+        assert_eq!(request.authorization.as_deref(), Some("Bearer mdt_abc"));
+        assert_eq!(request.cookie.as_deref(), Some("musicd_session=s1"));
+        assert_eq!(request.peer, None);
+    }
+
+    #[test]
+    fn rejects_oversized_content_length_before_allocating() {
+        let raw = b"POST /api/play HTTP/1.1\r\nContent-Length: 1000000000000\r\n\r\n".to_vec();
+        assert_eq!(rejection_status(raw), "413 Content Too Large");
+        let raw = format!(
+            "POST /api/play HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY_BYTES + 1
+        );
+        assert_eq!(rejection_status(raw.into_bytes()), "413 Content Too Large");
+    }
+
+    #[test]
+    fn rejects_invalid_content_length() {
+        let raw = b"POST /api/play HTTP/1.1\r\nContent-Length: lots\r\n\r\n".to_vec();
+        assert_eq!(rejection_status(raw), "400 Bad Request");
+    }
+
+    #[test]
+    fn rejects_overlong_lines_and_too_many_headers() {
+        let raw = format!("GET /{} HTTP/1.1\r\n\r\n", "a".repeat(MAX_LINE_BYTES));
+        assert_eq!(rejection_status(raw.into_bytes()), "414 URI Too Long");
+
+        let raw = format!(
+            "GET / HTTP/1.1\r\nX-Big: {}\r\n\r\n",
+            "a".repeat(MAX_LINE_BYTES)
+        );
+        assert_eq!(
+            rejection_status(raw.into_bytes()),
+            "431 Request Header Fields Too Large"
+        );
+
+        let headers = "X-Filler: 1\r\n".repeat(MAX_HEADER_COUNT + 1);
+        let raw = format!("GET / HTTP/1.1\r\n{headers}\r\n");
+        assert_eq!(
+            rejection_status(raw.into_bytes()),
+            "431 Request Header Fields Too Large"
+        );
+    }
 }
