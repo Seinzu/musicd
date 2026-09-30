@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 use reqwest::Method;
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::redirect;
+
+mod target_policy;
+
+pub use target_policy::{check_lan_target, restrict_requests_to_lan};
 
 const MEDIA_RENDERER_ST: &str = "urn:schemas-upnp-org:device:MediaRenderer:1";
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
@@ -1418,6 +1423,8 @@ fn shared_client() -> &'static Client {
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(8))
             .pool_idle_timeout(Some(Duration::from_secs(60)))
+            // Redirects would let a device description send requests anywhere.
+            .redirect(redirect::Policy::none())
             .build()
             .expect("failed to build reqwest client for upnp")
     })
@@ -1457,6 +1464,8 @@ fn http_request(
         })?;
         header_map.append(name, value);
     }
+
+    target_policy::check_request_target(url)?;
 
     let mut request = shared_client().request(method, url).headers(header_map);
     if let Some(body) = body {

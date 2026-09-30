@@ -83,6 +83,9 @@ pub(crate) fn run() -> io::Result<()> {
 }
 
 fn run_serve() -> io::Result<()> {
+    // Renderer URLs arrive from API clients and SSDP replies, so keep the
+    // server's UPnP requests on the local network.
+    musicd_upnp::restrict_requests_to_lan();
     let config = AppConfig::from_env();
     let state = Arc::new(ServiceState::load(config.clone())?);
     state.install_metrics(Arc::new(metrics::Metrics::new(Arc::downgrade(&state))));
