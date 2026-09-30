@@ -107,6 +107,12 @@ Authentication is controlled by `MUSICD_AUTH`: `required` (the default), `option
 
 There are also mutation endpoints for queue editing, transport actions, internet radio playback, Android local renderer registration/session reporting, and manual album-art selection. The current app-facing contract is documented in [docs/android-api-contract.md](/Users/andrewrumble/Documents/Codex/2026-04-28-i-m-looking-to-make-an/docs/android-api-contract.md).
 
+### Network safety
+
+Alongside [authentication](docs/authentication.md), `musicd` protects itself against malformed requests:
+
+- **Request limits:** request lines and headers are capped at 64 KiB each and 100 headers, bodies at 16 MiB, each read times out after 30 seconds, and at most 512 connections are served at once.
+
 ## Android app
 
 The Android app now goes well beyond a scaffold. It currently includes:
