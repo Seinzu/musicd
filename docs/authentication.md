@@ -3,7 +3,7 @@
 `musicd` has two kinds of credentials:
 
 - **Web logins.** A username and password, which give the browser a session cookie (`musicd_session`: `HttpOnly`, `SameSite=Strict`, 30-day sliding expiry). Web users can do everything, admin actions included.
-- **API tokens.** Bearer tokens (`Authorization: Bearer mdt_...`) with a scope of `admin` or `client`. `client` covers everything the Android app and `musicdctl` need; `admin` also covers the admin-only routes below. The server stores only a SHA-256 hash of each token, so a token is shown once, when it's created.
+- **API tokens.** Bearer tokens (`Authorization: Bearer mdt_...`) with a scope of `admin` or `client`. `client` covers everything the Android app and `musicdctl` need; `admin` also covers the admin-only routes below. The server stores only a SHA-256 hash of each token, so a token is shown once, when it's created. Devices get `client` tokens by [pairing](#pairing); you can also create and revoke tokens on the `/account` page.
 
 ## First start
 
@@ -13,25 +13,27 @@ Changing the password signs out every other browser session.
 
 ## Modes (`MUSICD_AUTH`)
 
-| Mode | Admin routes | Everything else |
-| --- | --- | --- |
-| `off` | open | open |
-| `optional` (default) | web login or `admin` token | open |
-| `required` | web login or `admin` token | web login or any token |
+| Mode | Admin routes | Stream and artwork | Everything else |
+| --- | --- | --- | --- |
+| `off` | open | open | open |
+| `optional` (default) | web login or `admin` token | open | open |
+| `required` | web login or `admin` token | signed URL, web login or any token | web login or any token |
 
 An unrecognised value is treated as `required`.
 
 In every mode other than `off`, a request carrying an unknown or revoked bearer token gets `401`, even on routes that would otherwise be open.
 
-Unauthenticated browser page loads and form posts are redirected to `/login?next=...`. `/api/*`, `/mcp` and the web UI's own fetch endpoints get `401` with `WWW-Authenticate: Bearer` instead. A client token on an admin route gets `403`.
+Unauthenticated browser page loads and form posts are redirected to `/login?next=...`. `/api/*`, `/mcp`, `/stream/*`, `/artwork/*` and the web UI's own fetch endpoints get `401` with `WWW-Authenticate: Bearer` instead. A client token on an admin route gets `403`.
 
 ## Route classes
 
 **Public** (never need credentials):
 
 - `/health`, `/description.xml`, `/metrics`, `/assets/*`
-- `/stream/*` and `/artwork/*`. UPnP renderers fetch these and can't send credentials. Signed URLs are planned.
 - `/login`, `/logout`, `/account/password`. The password page checks for a session itself.
+- `POST /api/pair/start`, `POST /api/pair/poll`
+
+**Media:** `/stream/*` and `/artwork/*`. These are treated like standard routes, except that a valid `sig` query parameter also grants access (see [Signed media URLs](#signed-media-urls)).
 
 **Admin:**
 
@@ -39,6 +41,7 @@ Unauthenticated browser page loads and form posts are redirected to `/login?next
 - `POST /api/tidal/auth-url`, `POST /api/tidal/complete-auth`
 - `POST /api/recommendations/import`, `DELETE /api/recommendations`
 - `/api/auth/tokens*`
+- `/account` and everything under `/account/` except `/account/password`
 
 **Standard:** everything else.
 
@@ -67,17 +70,33 @@ Unauthenticated browser page loads and form posts are redirected to `/login?next
 
 - `POST /api/auth/tokens/revoke` with `id` returns `404` if there's no active token with that id.
 
-The web UI page for managing tokens hasn't been built yet. Until then, you can mint a token from the command line. Change the default password in a browser first, then run:
+In the browser, the `/account` page does the same: it lists tokens, creates them (showing the secret once) and revokes them. Your username in the app bar links to it. An admin token can also call these endpoints (`-H "Authorization: Bearer $MUSICD_ADMIN_TOKEN"`).
 
-```bash
-curl -sS -c /tmp/musicd.cookies -d "username=admin" --data-urlencode "password=$MUSICD_PASSWORD" \
-  http://musicd.local:7878/login -o /dev/null
-curl -sS -b /tmp/musicd.cookies -d "name=recommender&scope=admin" \
-  http://musicd.local:7878/api/auth/tokens
-rm /tmp/musicd.cookies
-```
+### Pairing
 
-An existing admin token can also mint new ones (`-H "Authorization: Bearer $MUSICD_ADMIN_TOKEN"`).
+Pairing lets a device get a `client` token without anyone typing a token:
+
+1. The device calls `POST /api/pair/start` with `name` (1-100 characters, shown to the admin and used as the token's name). The response is `201`:
+
+   ```json
+   {"ok":true,"pairing_id":"<64 hex chars>","code":"FFSY-F5VK","expires_in":600,"poll_interval":2}
+   ```
+
+   The device shows `code` and keeps `pairing_id` secret.
+2. Someone signed in enters the code on `/account`. Codes are case-insensitive and the dash is optional. The page shows the device's name and IP address, with **Approve** and **Deny** buttons.
+3. The device polls `POST /api/pair/poll` with `pairing_id` every `poll_interval` seconds:
+   - `{"ok":true,"status":"pending"}`
+   - `{"ok":true,"status":"approved","token":"mdt_..."}` is returned once; the request is then forgotten
+   - `{"ok":true,"status":"denied"}`
+   - `404` once the request is unknown, has expired (after 10 minutes) or has already been answered
+
+Pairing requests are held in memory, so a restart cancels any that are pending. At most 32 can be pending at once; beyond that, `start` returns `429`.
+
+## Signed media URLs
+
+UPnP renderers fetch stream and artwork URLs themselves and can't send credentials. In `required` mode, the URLs the server gives renderers (and reports back in session and queue data) carry `?sig=<hex>`: the first 128 bits of an HMAC-SHA256 of the URL path. Signatures don't expire. They have to stay stable because the queue tracker compares the URL a renderer reports with the one it generated. The key is created on first start and stored in the `app_state` table as `url_signing_key`. Delete that row and restart to rotate it, which invalidates every URL handed out so far.
+
+In `optional` and `off` mode, stream and artwork URLs are open and unsigned. Web pages that embed artwork rely on the session cookie instead of signatures.
 
 ## CSRF
 

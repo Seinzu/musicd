@@ -213,7 +213,7 @@ fn render_account_actions(ctx: &LayoutContext) -> String {
     }
     match ctx.signed_in_as.as_deref() {
         Some(username) => format!(
-            "<a class=\"chip\" href=\"/account/password\" title=\"Account\">{}</a>\
+            "<a class=\"chip\" href=\"/account\" title=\"Account\">{}</a>\
              <form class=\"inline-form\" action=\"/logout\" method=\"post\">\
              <button type=\"submit\" class=\"secondary\">Sign out</button></form>",
             EscapeHtml(username)

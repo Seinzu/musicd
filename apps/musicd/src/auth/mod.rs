@@ -1,7 +1,10 @@
 //! Authentication for the HTTP API: web logins (cookie sessions), bearer tokens,
 //! and the per-route access policy applied by the router.
 
+mod account;
 mod handlers;
+mod pairing;
+mod signing;
 
 use std::collections::HashMap;
 use std::io;
@@ -17,6 +20,15 @@ use crate::db::Database;
 use crate::http::{HttpRequest, ResponseWriter, api_error, write_response_owned};
 use crate::service::ServiceState;
 use crate::util::{now_unix_timestamp, url_encode};
+
+pub(crate) use account::{
+    handle_account_page_request, handle_account_pairing_approve_request,
+    handle_account_pairing_deny_request, handle_account_pairing_lookup_request,
+    handle_account_token_create_request, handle_account_token_revoke_request,
+    handle_api_pair_poll_request, handle_api_pair_start_request,
+};
+pub(crate) use pairing::PairingRegistry;
+pub(crate) use signing::UrlSigner;
 
 pub(crate) use handlers::{
     handle_api_tokens_create_request, handle_api_tokens_list_request,
@@ -114,6 +126,9 @@ pub(crate) enum RouteAccess {
     Public,
     /// Needs credentials only when auth is `required`.
     Standard,
+    /// Streams and artwork: like `Standard`, but a valid URL signature also
+    /// grants access, since renderers can't send credentials.
+    Media,
     /// Always needs a web login or an admin token.
     Admin,
 }
@@ -127,7 +142,6 @@ pub(crate) enum Decision {
 }
 
 pub(crate) fn route_access(method: &str, path: &str) -> RouteAccess {
-    const PUBLIC_PREFIXES: &[&str] = &["/assets/", "/stream/", "/artwork/"];
     const PUBLIC_ROUTES: &[&str] = &[
         "/health",
         "/description.xml",
@@ -135,6 +149,8 @@ pub(crate) fn route_access(method: &str, path: &str) -> RouteAccess {
         "/login",
         "/logout",
         "/account/password",
+        "/api/pair/start",
+        "/api/pair/poll",
     ];
     // Starting a library scan, linking Tidal, bulk recommendation changes and
     // credential management are admin-only.
@@ -146,12 +162,17 @@ pub(crate) fn route_access(method: &str, path: &str) -> RouteAccess {
         "/api/recommendations/import",
     ];
 
-    if PUBLIC_ROUTES.contains(&path) || PUBLIC_PREFIXES.iter().any(|p| path.starts_with(p)) {
+    if PUBLIC_ROUTES.contains(&path) || path.starts_with("/assets/") {
         return RouteAccess::Public;
+    }
+    if path.starts_with("/stream/") || path.starts_with("/artwork/") {
+        return RouteAccess::Media;
     }
     if ADMIN_ROUTES.contains(&path)
         || path == "/api/auth/tokens"
         || path.starts_with("/api/auth/tokens/")
+        || path == "/account"
+        || (path.starts_with("/account/") && path != "/account/password")
         || (method == "DELETE" && path == "/api/recommendations")
     {
         return RouteAccess::Admin;
@@ -166,7 +187,7 @@ pub(crate) fn decide(mode: AuthMode, access: RouteAccess, credentials: &Credenti
     let principal = match credentials {
         Credentials::InvalidBearer => return Decision::Unauthorized,
         Credentials::Anonymous => {
-            return if access == RouteAccess::Standard && mode == AuthMode::Optional {
+            return if access != RouteAccess::Admin && mode == AuthMode::Optional {
                 Decision::Allow
             } else {
                 Decision::Unauthorized
@@ -193,6 +214,14 @@ pub(crate) fn authorize_request(
     let mode = state.config.auth_mode;
     let access = route_access(&request.method, &request.path);
     if mode == AuthMode::Off || access == RouteAccess::Public {
+        return Ok(true);
+    }
+    if access == RouteAccess::Media
+        && request
+            .query
+            .get(signing::SIGNATURE_PARAM)
+            .is_some_and(|signature| state.url_signer.verify(&request.path, signature))
+    {
         return Ok(true);
     }
     let credentials = authenticate(&state.database, request)?;
@@ -245,7 +274,11 @@ pub(crate) fn authorize_request(
 /// and script clients get a status code instead.
 fn wants_html_response(request: &HttpRequest) -> bool {
     const DATA_ROUTES: &[&str] = &["/mcp", "/library/rows", "/queue/panel", "/rescan-progress"];
-    !request.path.starts_with("/api/") && !DATA_ROUTES.contains(&request.path.as_str())
+    const DATA_PREFIXES: &[&str] = &["/api/", "/stream/", "/artwork/"];
+    !DATA_PREFIXES
+        .iter()
+        .any(|prefix| request.path.starts_with(prefix))
+        && !DATA_ROUTES.contains(&request.path.as_str())
 }
 
 /// Where to send the browser after it signs in. Form posts go back to the
@@ -370,6 +403,12 @@ pub(crate) fn create_api_token(
     Ok((record, secret))
 }
 
+/// Loads the media URL signing key, creating it on first start.
+pub(crate) fn load_url_signer(database: &Database) -> io::Result<UrlSigner> {
+    let key = database.app_state_value_or_insert("url_signing_key", &random_secret()?)?;
+    Ok(UrlSigner::new(key.as_bytes()))
+}
+
 /// Seeds `admin`/`password` on first start; the first login must change it.
 pub(crate) fn ensure_default_admin(database: &Database) -> io::Result<()> {
     if database.count_users()? > 0 {
@@ -414,7 +453,7 @@ pub(crate) fn verify_password_against_dummy(password: &str) {
     }
 }
 
-fn random_secret() -> io::Result<String> {
+pub(crate) fn random_secret() -> io::Result<String> {
     random_hex(32)
 }
 
@@ -492,12 +531,20 @@ mod tests {
     #[test]
     fn classifies_routes() {
         assert_eq!(route_access("GET", "/health"), RouteAccess::Public);
-        assert_eq!(
-            route_access("GET", "/stream/track/abc"),
-            RouteAccess::Public
-        );
+        assert_eq!(route_access("GET", "/stream/track/abc"), RouteAccess::Media);
         assert_eq!(
             route_access("GET", "/artwork/album/abc"),
+            RouteAccess::Media
+        );
+        assert_eq!(route_access("POST", "/api/pair/start"), RouteAccess::Public);
+        assert_eq!(route_access("POST", "/api/pair/poll"), RouteAccess::Public);
+        assert_eq!(route_access("GET", "/account"), RouteAccess::Admin);
+        assert_eq!(
+            route_access("POST", "/account/pairing/approve"),
+            RouteAccess::Admin
+        );
+        assert_eq!(
+            route_access("GET", "/account/password"),
             RouteAccess::Public
         );
         assert_eq!(route_access("GET", "/assets/home.css"), RouteAccess::Public);
@@ -572,6 +619,10 @@ mod tests {
             decide(mode, RouteAccess::Standard, &Credentials::InvalidBearer),
             Decision::Unauthorized
         );
+        assert_eq!(
+            decide(mode, RouteAccess::Media, &Credentials::Anonymous),
+            Decision::Allow
+        );
     }
 
     #[test]
@@ -587,6 +638,14 @@ mod tests {
         );
         assert_eq!(
             decide(mode, RouteAccess::Public, &Credentials::Anonymous),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide(mode, RouteAccess::Media, &Credentials::Anonymous),
+            Decision::Unauthorized
+        );
+        assert_eq!(
+            decide(mode, RouteAccess::Media, &token(TokenScope::Client)),
             Decision::Allow
         );
     }
