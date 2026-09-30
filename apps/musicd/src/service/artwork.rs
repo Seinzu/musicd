@@ -34,11 +34,11 @@ impl ServiceState {
     pub(crate) fn artwork_url_for_track(&self, track: &LibraryTrack) -> Option<String> {
         self.relative_artwork_url_for_track(track)
             .map(|artwork_url| {
-                format!(
+                self.renderer_media_url(format!(
                     "{}/{}",
                     self.config.resolved_base_url().trim_end_matches('/'),
                     artwork_url.trim_start_matches('/')
-                )
+                ))
             })
     }
 
@@ -106,11 +106,11 @@ impl ServiceState {
 
     pub(crate) fn stream_resource_for_track(&self, track: &LibraryTrack) -> StreamResource {
         StreamResource {
-            stream_url: format!(
+            stream_url: self.renderer_media_url(format!(
                 "{}/stream/track/{}",
                 self.config.resolved_base_url().trim_end_matches('/'),
                 track.id
-            ),
+            )),
             mime_type: track.mime_type.clone(),
             title: track.title.clone(),
             artist: Some(track.artist.clone()),
