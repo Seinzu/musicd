@@ -10,6 +10,7 @@ use crate::metrics;
 use crate::service::ServiceState;
 
 use super::ResponseWriter;
+use super::guard::check_request;
 use super::request::{HttpRequest, read_http_request, request_rejection};
 use super::response::{
     is_expected_client_disconnect, respond_not_found, respond_text, respond_with_file,
@@ -130,9 +131,26 @@ fn handle_client(stream: TcpStream, mode: ServerMode) -> io::Result<()> {
         ServerMode::SingleFile(path) => {
             handle_single_file_request(&mut writer, &request, Arc::clone(path))
         }
-        ServerMode::Service(state) => {
-            super::router::handle_service_request(&mut writer, &request, Arc::clone(state))
-        }
+        ServerMode::Service(state) => match check_request(&request, &state.config) {
+            Ok(()) => {
+                super::router::handle_service_request(&mut writer, &request, Arc::clone(state))
+            }
+            Err(rejection) => {
+                eprintln!(
+                    "rejected {} {}: {}",
+                    request.method,
+                    request.path,
+                    rejection.message()
+                );
+                respond_text(
+                    &mut writer,
+                    "403 Forbidden",
+                    "text/plain; charset=utf-8",
+                    rejection.message().as_bytes(),
+                    request.method == "HEAD",
+                )
+            }
+        },
     };
 
     if let ServerMode::Service(state) = &mode {

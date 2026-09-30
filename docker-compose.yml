@@ -27,6 +27,7 @@ services:
       MUSICD_TIDAL_SESSION_PATH: "${MUSICD_TIDAL_SESSION_PATH:-/config/tidal/session.json}"
       MUSICD_TIDAL_AUDIO_QUALITY: "${MUSICD_TIDAL_AUDIO_QUALITY:-LOSSLESS}"
       MUSICD_AUTH: "${MUSICD_AUTH:-required}"
+      MUSICD_ALLOWED_HOSTS: "${MUSICD_ALLOWED_HOSTS:-}"
       RAYON_NUM_THREADS: "${RAYON_NUM_THREADS:-2}"
     volumes:
       - "${MUSICD_CONFIG_HOST_PATH:-./.musicd/config}:/config"

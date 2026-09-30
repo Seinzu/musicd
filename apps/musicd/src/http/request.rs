@@ -17,6 +17,8 @@ pub(crate) struct HttpRequest {
     pub(crate) authorization: Option<String>,
     pub(crate) cookie: Option<String>,
     pub(crate) peer: Option<IpAddr>,
+    /// Lower-cased names of the few headers the request guard needs.
+    pub(crate) headers: HashMap<String, String>,
     pub(crate) body: Vec<u8>,
 }
 
@@ -67,6 +69,7 @@ pub(crate) fn read_http_request<R: BufRead>(reader: &mut R) -> io::Result<Option
     let target = parts.next().unwrap_or("/").to_string();
     let (path, query) = split_target_and_query(&target);
 
+    let mut headers = HashMap::new();
     let mut range_header = None;
     let mut content_type = None;
     let mut authorization = None;
@@ -102,6 +105,8 @@ pub(crate) fn read_http_request<R: BufRead>(reader: &mut R) -> io::Result<Option
                 content_length = value
                     .parse::<usize>()
                     .map_err(|_| reject("400 Bad Request", "invalid Content-Length"))?;
+            } else if is_retained_header(name) {
+                headers.insert(name.trim().to_ascii_lowercase(), value.to_string());
             }
         }
     }
@@ -127,8 +132,16 @@ pub(crate) fn read_http_request<R: BufRead>(reader: &mut R) -> io::Result<Option
         cookie,
         // The caller knows the socket and fills this in.
         peer: None,
+        headers,
         body,
     }))
+}
+
+/// Headers kept on `HttpRequest::headers` for the request guard.
+fn is_retained_header(name: &str) -> bool {
+    ["Host", "Origin", "Sec-Fetch-Site"]
+        .iter()
+        .any(|retained| name.trim().eq_ignore_ascii_case(retained))
 }
 
 /// Reads one line of at most `MAX_LINE_BYTES`, or `None` at end of stream.
@@ -150,6 +163,15 @@ fn read_bounded_line<R: BufRead>(
     String::from_utf8(line)
         .map(Some)
         .map_err(|_| reject("400 Bad Request", "request line is not valid UTF-8"))
+}
+
+impl HttpRequest {
+    /// Returns a header kept by the parser (`host`, `origin`, `sec-fetch-site`).
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
 }
 
 pub(crate) fn split_target_and_query(target: &str) -> (String, HashMap<String, String>) {
@@ -250,8 +272,8 @@ mod tests {
     }
 
     #[test]
-    fn reads_body_within_limits() {
-        let raw = b"POST /api/play HTTP/1.1\r\nHost: 192.168.1.20:8787\r\nAuthorization: Bearer mdt_abc\r\nCookie: musicd_session=s1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\n\r\ntrack_id=a1";
+    fn reads_body_and_retained_headers() {
+        let raw = b"POST /api/play HTTP/1.1\r\nHost: 192.168.1.20:8787\r\nOrigin: http://192.168.1.20:8787\r\nSec-Fetch-Site: same-origin\r\nX-Other: ignored\r\nAuthorization: Bearer mdt_abc\r\nCookie: musicd_session=s1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 11\r\n\r\ntrack_id=a1";
         let request = read_http_request(&mut Cursor::new(raw.to_vec()))
             .unwrap()
             .unwrap();
@@ -259,6 +281,10 @@ mod tests {
         assert_eq!(request.authorization.as_deref(), Some("Bearer mdt_abc"));
         assert_eq!(request.cookie.as_deref(), Some("musicd_session=s1"));
         assert_eq!(request.peer, None);
+        assert_eq!(request.header("Host"), Some("192.168.1.20:8787"));
+        assert_eq!(request.header("origin"), Some("http://192.168.1.20:8787"));
+        assert_eq!(request.header("sec-fetch-site"), Some("same-origin"));
+        assert_eq!(request.header("x-other"), None);
     }
 
     #[test]
