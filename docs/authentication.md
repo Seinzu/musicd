@@ -92,6 +92,16 @@ Pairing lets a device get a `client` token without anyone typing a token:
 
 Pairing requests are held in memory, so a restart cancels any that are pending. At most 32 can be pending at once; beyond that, `start` returns `429`.
 
+### `musicdctl`
+
+```bash
+musicdctl --server http://musicd.local:7878 pair [--name "Office laptop"]
+```
+
+This prints a code and waits until it's approved or denied. The token is saved per server in `~/.config/musicd/cli.toml`, which is written with mode `600`, and every request sends it after that. `MUSICD_TOKEN` overrides the saved token. `musicdctl unpair` forgets the saved token; revoke it on `/account` to disable it on the server too. When the server answers `401`, the CLI suggests running `musicdctl pair`.
+
+Local playback in the CLI (`cli-local://` renderers) uses the stream URL the server reports. In `required` mode that URL is signed, so external players such as `mpv` don't need the token.
+
 ## Signed media URLs
 
 UPnP renderers fetch stream and artwork URLs themselves and can't send credentials. In `required` mode, the URLs the server gives renderers (and reports back in session and queue data) carry `?sig=<hex>`: the first 128 bits of an HMAC-SHA256 of the URL path. Signatures don't expire. They have to stay stable because the queue tracker compares the URL a renderer reports with the one it generated. The key is created on first start and stored in the `app_state` table as `url_signing_key`. Delete that row and restart to rotate it, which invalidates every URL handed out so far.
