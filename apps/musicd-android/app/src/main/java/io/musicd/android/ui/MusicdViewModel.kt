@@ -98,6 +98,7 @@ data class MusicdUiState(
     val nowPlaying: NowPlayingDto? = null,
     val artists: List<ArtistSummaryDto> = emptyList(),
     val albums: List<AlbumSummaryDto> = emptyList(),
+    /** Library spotlight albums played or dismissed this session. */
     val suppressedSpotlightAlbumIds: Set<String> = emptySet(),
     /** Albums (by [homeRecommendationIdentity]) dismissed from the home screen this session. */
     val dismissedHomeRecommendationIdentities: Set<String> = emptySet(),
@@ -1877,6 +1878,14 @@ class MusicdViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             // Best effort: the suggestion is already hidden, so a failure here isn't shown.
             runCatching { repository.dismissRecommendation(baseUrl, recommendation.recommendationKey) }
+        }
+    }
+
+    fun dismissSpotlightAlbum(albumId: String) {
+        // Like dismissed suggestions, the album is hidden from the spotlight (and replaced by
+        // the next pick) for this session only.
+        _uiState.update { state ->
+            state.copy(suppressedSpotlightAlbumIds = state.suppressedSpotlightAlbumIds + albumId)
         }
     }
 

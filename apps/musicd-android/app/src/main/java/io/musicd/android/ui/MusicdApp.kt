@@ -116,7 +116,6 @@ import java.time.LocalTime
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
-import kotlin.random.Random
 
 private data class LibrarySearchResults(
     val artists: List<ArtistSummaryDto>,
@@ -220,6 +219,7 @@ fun MusicdApp(viewModel: MusicdViewModel) {
         onPlayTidalAlbum = viewModel::playTidalAlbum,
         onPlayHomeRecommendation = viewModel::playHomeRecommendation,
         onDismissHomeRecommendation = viewModel::dismissHomeRecommendation,
+        onDismissSpotlightAlbum = viewModel::dismissSpotlightAlbum,
         onAppendTidalAlbum = viewModel::appendTidalAlbum,
         onPlayNextTidalAlbum = viewModel::playNextTidalAlbum,
         onPlayTidalTrack = viewModel::playTidalTrack,
@@ -304,6 +304,7 @@ private fun MusicdRoot(
     onPlayTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayHomeRecommendation: (AlbumRecommendationDto, TidalAlbumDto) -> Unit,
     onDismissHomeRecommendation: (AlbumRecommendationDto) -> Unit,
+    onDismissSpotlightAlbum: (String) -> Unit,
     onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayTidalTrack: (TidalTrackDto) -> Unit,
@@ -589,6 +590,7 @@ private fun MusicdRoot(
                     onPlayNextAlbum = onPlayNextAlbum,
                     onPlayHomeRecommendation = onPlayHomeRecommendation,
                     onDismissHomeRecommendation = onDismissHomeRecommendation,
+                    onDismissSpotlightAlbum = onDismissSpotlightAlbum,
                     onAppendTidalAlbum = onAppendTidalAlbum,
                     onPlayNextTidalAlbum = onPlayNextTidalAlbum,
                     onOpenRendererPicker = onOpenRendererPicker,
@@ -935,6 +937,7 @@ private fun HomeScreen(
     onPlayNextAlbum: (String) -> Unit,
     onPlayHomeRecommendation: (AlbumRecommendationDto, TidalAlbumDto) -> Unit,
     onDismissHomeRecommendation: (AlbumRecommendationDto) -> Unit,
+    onDismissSpotlightAlbum: (String) -> Unit,
     onAppendTidalAlbum: (TidalAlbumDto) -> Unit,
     onPlayNextTidalAlbum: (TidalAlbumDto) -> Unit,
     onOpenRendererPicker: () -> Unit,
@@ -943,45 +946,7 @@ private fun HomeScreen(
 ) {
     val spotlightDay = LocalDate.now()
     val spotlightAlbums = remember(state.albums, state.suppressedSpotlightAlbumIds, spotlightDay) {
-        val eligibleAlbums = state.albums.filter { it.trackCount > 3 }
-        val orderedAlbums = if (eligibleAlbums.isEmpty()) {
-            state.albums
-        } else {
-            val dailySeed = eligibleAlbums
-                .map { it.id }
-                .sorted()
-                .joinToString("|")
-                .plus("|")
-                .plus(spotlightDay.toString())
-                .hashCode()
-            eligibleAlbums.shuffled(Random(dailySeed))
-        }
-        val maxCount = minOf(5, orderedAlbums.size)
-        val minCount = minOf(3, maxCount)
-        val targetCount = if (eligibleAlbums.isEmpty() || minCount == maxCount) {
-            maxCount
-        } else {
-            val countSeed = eligibleAlbums
-                .map { it.id }
-                .sorted()
-                .joinToString("|")
-                .plus("|")
-                .plus(spotlightDay.toString())
-                .hashCode()
-            Random(countSeed).nextInt(minCount, maxCount + 1)
-        }
-        val initialAlbums = orderedAlbums.take(targetCount)
-        val replacementAlbums = orderedAlbums
-            .drop(targetCount)
-            .filterNot { it.id in state.suppressedSpotlightAlbumIds }
-            .iterator()
-        initialAlbums.mapNotNull { album ->
-            if (album.id in state.suppressedSpotlightAlbumIds) {
-                if (replacementAlbums.hasNext()) replacementAlbums.next() else null
-            } else {
-                album
-            }
-        }
+        homeSpotlightAlbums(state.albums, state.suppressedSpotlightAlbumIds, spotlightDay)
     }
 
     val homeRecommendations = remember(state.homeRecommendations, state.dismissedHomeRecommendationIdentities) {
@@ -1026,6 +991,7 @@ private fun HomeScreen(
                 onLikeAlbum = { onLikeAlbum(album.id) },
                 onAppendAlbum = { onAppendAlbum(album.id) },
                 onPlayNextAlbum = { onPlayNextAlbum(album.id) },
+                onDismiss = { onDismissSpotlightAlbum(album.id) },
             )
         }
         if (homeRecommendations.isNotEmpty()) {
@@ -3354,6 +3320,7 @@ private fun AlbumRow(
     onAppendAlbum: () -> Unit,
     onPlayNextAlbum: () -> Unit,
     highlightQuery: String? = null,
+    onDismiss: (() -> Unit)? = null,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(
@@ -3370,22 +3337,35 @@ private fun AlbumRow(
                 fallbackText = album.title,
             )
             Column(modifier = Modifier.weight(1f)) {
-                HighlightedText(
-                    text = album.title,
-                    query = highlightQuery,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(2.dp))
-                HighlightedText(
-                    text = album.artist,
-                    query = highlightQuery,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        HighlightedText(
+                            text = album.title,
+                            query = highlightQuery,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        HighlightedText(
+                            text = album.artist,
+                            query = highlightQuery,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    onDismiss?.let { dismiss ->
+                        IconButton(onClick = dismiss) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Dismiss from spotlight")
+                        }
+                    }
+                }
                 Spacer(Modifier.height(2.dp))
                 Text(
                     "${album.trackCount} tracks",
