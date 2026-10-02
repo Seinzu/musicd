@@ -1491,9 +1491,12 @@ private fun LibraryScreen(
                     labels = state.albums.map { it.title },
                     firstRowItemIndex = 2,
                 )
+                LibraryBrowseMode.New -> emptyList()
             }
         }
     }
+    val newAlbums = remember(state.albums) { newestAlbums(state.albums) }
+    val newAlbumsNowMillis = remember(state.albums) { System.currentTimeMillis() }
 
     state.selectedAlbumDetail?.let { album ->
         AlbumDetailScreen(
@@ -1559,6 +1562,11 @@ private fun LibraryScreen(
                         onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.Albums) },
                         label = { Text("Albums") },
                     )
+                    FilterChip(
+                        selected = state.libraryBrowseMode == LibraryBrowseMode.New,
+                        onClick = { onSelectLibraryBrowseMode(LibraryBrowseMode.New) },
+                        label = { Text("New") },
+                    )
                 }
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
@@ -1573,6 +1581,8 @@ private fun LibraryScreen(
                 Text(
                     if (!isSearching && state.libraryBrowseMode == LibraryBrowseMode.Artists) {
                         "Browse artists, then drill into their albums."
+                    } else if (!isSearching && state.libraryBrowseMode == LibraryBrowseMode.New) {
+                        "The $NEWEST_ALBUM_COUNT latest additions to the library, newest first."
                     } else if (!isSearching) {
                         "Browse albums or search for a specific track."
                     } else {
@@ -1709,6 +1719,41 @@ private fun LibraryScreen(
                         onOpenArtist = { onOpenArtist(artist.id) },
                         onOpenAlbum = { onOpenAlbum(artist.firstAlbumId) },
                         highlightQuery = null,
+                    )
+                }
+                item {
+                    Spacer(Modifier.height(24.dp))
+                }
+            } else if (state.libraryBrowseMode == LibraryBrowseMode.New) {
+                item {
+                    Text("New", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                }
+                if (newAlbums.isEmpty()) {
+                    item {
+                        Text(
+                            when {
+                                state.albums.isEmpty() -> "No albums in the library yet."
+                                state.sourceKind == MusicSourceKind.LocalCompanion ->
+                                    "The local library doesn't record when albums were added."
+                                else -> "This server doesn't report when albums were added. Update musicd to see new additions."
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                items(newAlbums, key = { "new-album-${it.id}" }) { album ->
+                    AlbumRow(
+                        baseUrl = state.baseUrl,
+                        album = album,
+                        onOpenAlbum = { onOpenAlbum(album.id) },
+                        onOpenArtist = { onOpenArtistByName(album.artist) },
+                        onPlayAlbum = { onPlayAlbum(album.id) },
+                        onLikeAlbum = { onLikeAlbum(album.id) },
+                        onAppendAlbum = { onAppendAlbum(album.id) },
+                        onPlayNextAlbum = { onPlayNextAlbum(album.id) },
+                        detail = album.addedUnixMillis?.let { addedUnixMillis ->
+                            "${addedAgoLabel(addedUnixMillis, newAlbumsNowMillis)} · ${album.trackCount} tracks"
+                        },
                     )
                 }
                 item {
@@ -3321,6 +3366,7 @@ private fun AlbumRow(
     onPlayNextAlbum: () -> Unit,
     highlightQuery: String? = null,
     onDismiss: (() -> Unit)? = null,
+    detail: String? = null,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(
@@ -3368,7 +3414,7 @@ private fun AlbumRow(
                 }
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "${album.trackCount} tracks",
+                    detail ?: "${album.trackCount} tracks",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )

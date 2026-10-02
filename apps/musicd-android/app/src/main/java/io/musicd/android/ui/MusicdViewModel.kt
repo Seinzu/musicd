@@ -58,6 +58,7 @@ enum class MusicdTab {
 enum class LibraryBrowseMode {
     Artists,
     Albums,
+    New,
 }
 
 enum class LibrarySearchFacet {
