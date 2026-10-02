@@ -112,6 +112,7 @@ data class AlbumSummaryDto(
     val metadata: AlbumMetadataDto? = null,
     @SerialName("like_count") val likeCount: Long = 0L,
     @SerialName("liked_by_client") val likedByClient: Boolean = false,
+    @SerialName("added_unix_millis") val addedUnixMillis: Long? = null,
 )
 
 
