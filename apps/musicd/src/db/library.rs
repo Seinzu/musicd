@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 
@@ -9,7 +10,8 @@ use crate::types::{AlbumArtworkOverride, LibraryTrack, TrackArtwork, TrackMetada
 #[cfg(test)]
 use crate::types::{AlbumMetadata, AlbumSummary, ArtistSummary};
 
-use super::{Database, db_error};
+use super::{Database, db_error, table_is_empty};
+use crate::util::now_unix_timestamp;
 
 fn genres_json(genres: &[String]) -> Option<String> {
     if genres.is_empty() {
@@ -242,8 +244,29 @@ impl Database {
                     .map_err(db_error)?;
             }
         }
+        record_album_additions(&transaction)?;
         transaction.commit().map_err(db_error)?;
         Ok(())
+    }
+
+    /// When each album first appeared in the library, keyed by album id.
+    pub(crate) fn album_added_unix_millis(&self) -> io::Result<HashMap<String, i64>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT album_id, added_unix_millis FROM album_additions")
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(db_error)?;
+
+        let mut added = HashMap::new();
+        for row in rows {
+            let (album_id, added_unix_millis) = row.map_err(db_error)?;
+            added.insert(album_id, added_unix_millis);
+        }
+        Ok(added)
     }
 
     #[cfg(test)]
@@ -566,5 +589,33 @@ pub(super) fn rebuild_normalized_library_tables(connection: &Connection) -> io::
     }
 
     transaction.commit().map_err(db_error)?;
+    Ok(())
+}
+
+/// Records the first time each album in `albums` was seen. The first time the
+/// table is filled (a fresh install, or an existing library after upgrading)
+/// there is no scan history to go on, so each album is dated by its oldest
+/// file modification time instead of all of them landing at "now".
+pub(super) fn record_album_additions(connection: &Connection) -> io::Result<()> {
+    if table_is_empty(connection, "album_additions")? {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO album_additions (album_id, added_unix_millis)
+                 SELECT albums.id, COALESCE(MIN(tracks.modified_unix_millis), 0)
+                 FROM albums
+                 LEFT JOIN tracks ON tracks.album_id = albums.id
+                 GROUP BY albums.id",
+                [],
+            )
+            .map_err(db_error)?;
+    } else {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO album_additions (album_id, added_unix_millis)
+                 SELECT id, ?1 FROM albums",
+                [now_unix_timestamp().saturating_mul(1000)],
+            )
+            .map_err(db_error)?;
+    }
     Ok(())
 }

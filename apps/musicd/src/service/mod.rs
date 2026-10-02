@@ -440,6 +440,10 @@ impl ServiceState {
         self.database.item_like_counts("album").unwrap_or_default()
     }
 
+    pub(crate) fn album_added_unix_millis(&self) -> std::collections::HashMap<String, i64> {
+        self.database.album_added_unix_millis().unwrap_or_default()
+    }
+
     pub(crate) fn track_like_counts(&self) -> std::collections::HashMap<String, u64> {
         self.database.item_like_counts("track").unwrap_or_default()
     }

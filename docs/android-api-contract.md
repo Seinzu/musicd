@@ -116,6 +116,7 @@ Each item includes:
 - `track_count`
 - `first_track_id`
 - `artwork_url`
+- `added_unix_millis`: when the album first appeared in the library, in Unix milliseconds, or `null` if unknown. Albums already present when the server started tracking this are dated by their oldest file's modification time; later additions by the scan that found them. The app's Library "New" view lists the ten most recent.
 
 ### `GET /api/albums/<album_id>`
 

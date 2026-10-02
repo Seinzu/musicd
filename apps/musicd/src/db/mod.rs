@@ -101,6 +101,11 @@ impl Database {
                     metadata_source_track_id TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS album_additions (
+                    album_id TEXT PRIMARY KEY,
+                    added_unix_millis INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS artists (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -416,6 +421,7 @@ impl Database {
         if table_is_empty(&connection, "albums")? && !table_is_empty(&connection, "tracks")? {
             library::rebuild_normalized_library_tables(&connection)?;
         }
+        library::record_album_additions(&connection)?;
         Ok(())
     }
 
