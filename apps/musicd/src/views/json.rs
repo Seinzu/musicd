@@ -138,6 +138,7 @@ pub(crate) fn render_albums_json(state: &ServiceState, request: &HttpRequest) ->
     let client_id = request_value(request, "client_id");
     let like_counts = state.album_like_counts();
     let liked_album_ids = state.client_liked_album_ids(client_id);
+    let added_unix_millis = state.album_added_unix_millis();
 
     sorted_albums.sort_by(|a, b| {
         a.title
@@ -153,6 +154,7 @@ pub(crate) fn render_albums_json(state: &ServiceState, request: &HttpRequest) ->
                 album,
                 like_counts.get(&album.id).copied().unwrap_or(0),
                 liked_album_ids.contains(&album.id),
+                added_unix_millis.get(&album.id).copied(),
             )
         })
         .collect::<Vec<_>>()
@@ -216,16 +218,19 @@ pub(crate) fn render_album_detail_json(state: &ServiceState, request: &HttpReque
 }
 
 pub(crate) fn album_summary_json(album: &AlbumSummary) -> String {
-    album_summary_json_with_likes(album, 0, false)
+    album_summary_json_with_likes(album, 0, false, None)
 }
 
 pub(crate) fn album_summary_json_with_likes(
     album: &AlbumSummary,
     like_count: u64,
     liked_by_client: bool,
+    added_unix_millis: Option<i64>,
 ) -> String {
+    // Albums dated before the scanner recorded file times carry 0: unknown.
+    let added_unix_millis = added_unix_millis.filter(|millis| *millis > 0);
     format!(
-        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{},"like_count":{},"liked_by_client":{}}}"#,
+        r#"{{"id":"{}","title":"{}","artist":"{}","track_count":{},"first_track_id":"{}","artwork_url":"{}","metadata":{},"like_count":{},"liked_by_client":{},"added_unix_millis":{}}}"#,
         json_escape(&album.id),
         json_escape(&album.title),
         json_escape(&album.artist),
@@ -235,6 +240,7 @@ pub(crate) fn album_summary_json_with_likes(
         album_metadata_json(album),
         like_count,
         bool_json(liked_by_client),
+        added_unix_millis.map_or_else(|| "null".to_string(), |millis| millis.to_string()),
     )
 }
 
@@ -259,6 +265,7 @@ pub(crate) fn render_artist_detail_json(state: &ServiceState, request: &HttpRequ
     let client_id = request_value(request, "client_id");
     let like_counts = state.album_like_counts();
     let liked_album_ids = state.client_liked_album_ids(client_id);
+    let added_unix_millis = state.album_added_unix_millis();
     let albums_json = albums
         .into_iter()
         .map(|album| {
@@ -266,6 +273,7 @@ pub(crate) fn render_artist_detail_json(state: &ServiceState, request: &HttpRequ
                 &album,
                 like_counts.get(&album.id).copied().unwrap_or(0),
                 liked_album_ids.contains(&album.id),
+                added_unix_millis.get(&album.id).copied(),
             )
         })
         .collect::<Vec<_>>()

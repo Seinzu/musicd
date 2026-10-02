@@ -47,7 +47,7 @@ mod tests {
     };
     use crate::util::{
         cleanup_track_label, infer_artist_and_album, infer_disc_and_track_numbers,
-        should_skip_entry,
+        now_unix_timestamp, should_skip_entry,
     };
     use crate::views::json::current_track_for_renderer;
     use crate::views::{render_library_page, render_library_rows_json};
@@ -3252,6 +3252,58 @@ mod tests {
         assert_eq!(history[0].track_id, "track-24");
         assert_eq!(history[19].track_id, "track-05");
         assert!(history.windows(2).all(|window| window[0].id > window[1].id));
+
+        let _ = std::fs::remove_dir_all(config_path);
+    }
+
+    #[test]
+    fn records_when_albums_were_added() {
+        let config_path = temp_config_path("album-additions");
+        let database = Database::open(&config_path).expect("database should open");
+        let album_track = |id: &str, album: &str, modified_unix_millis: i64| {
+            let mut track = sample_track(id, Some(1), Some(1), id);
+            track.album = album.to_string();
+            track.album_id = stable_album_id(&track.album_artist, album);
+            track.modified_unix_millis = modified_unix_millis;
+            track
+        };
+        let first = album_track("track-1", "First", 5_000);
+        let first_retagged = album_track("track-2", "First", 9_000);
+        let second = album_track("track-3", "Second", 7_000);
+
+        // With no scan history, albums are dated by their oldest file.
+        let library = Library::build(
+            PathBuf::from("/music"),
+            vec![first.clone(), first_retagged.clone(), second.clone()],
+            &[],
+        );
+        database
+            .save_library(&library)
+            .expect("library should save");
+        let added = database
+            .album_added_unix_millis()
+            .expect("additions should load");
+        assert_eq!(added.get(&first.album_id), Some(&5_000));
+        assert_eq!(added.get(&second.album_id), Some(&7_000));
+
+        // Later scans date new albums by when they were found, and keep the
+        // dates of albums already seen.
+        let third = album_track("track-4", "Third", 1_000);
+        let before = now_unix_timestamp() * 1000;
+        let library = Library::build(
+            PathBuf::from("/music"),
+            vec![first.clone(), first_retagged, second.clone(), third.clone()],
+            &[],
+        );
+        database
+            .save_library(&library)
+            .expect("library should save");
+        let added = database
+            .album_added_unix_millis()
+            .expect("additions should load");
+        assert_eq!(added.get(&first.album_id), Some(&5_000));
+        assert_eq!(added.get(&second.album_id), Some(&7_000));
+        assert!(added[&third.album_id] >= before);
 
         let _ = std::fs::remove_dir_all(config_path);
     }
