@@ -2,26 +2,29 @@ package io.musicd.android.ui
 
 import io.musicd.android.data.AlbumSummaryDto
 
-internal const val NEWEST_ALBUM_COUNT = 10
-
 private const val MILLIS_PER_DAY = 24L * 60 * 60 * 1000
 
+/** How far back the Library "New" view looks: roughly three months. */
+internal const val NEW_ALBUM_WINDOW_DAYS = 90L
+
 /**
- * The [limit] albums most recently added to the library, newest first. Albums the server
- * doesn't have an addition time for (older servers, the local companion) are left out.
+ * Albums added to the library in the [NEW_ALBUM_WINDOW_DAYS] days before [nowUnixMillis], newest
+ * first. Albums the server doesn't have an addition time for (older servers, the local companion)
+ * are left out.
  */
-internal fun newestAlbums(
+internal fun recentlyAddedAlbums(
     albums: List<AlbumSummaryDto>,
-    limit: Int = NEWEST_ALBUM_COUNT,
-): List<AlbumSummaryDto> =
-    albums
-        .filter { (it.addedUnixMillis ?: 0L) > 0L }
+    nowUnixMillis: Long,
+): List<AlbumSummaryDto> {
+    val cutoff = nowUnixMillis - NEW_ALBUM_WINDOW_DAYS * MILLIS_PER_DAY
+    return albums
+        .filter { album -> album.addedUnixMillis.let { it != null && it > 0L && it >= cutoff } }
         .sortedWith(
             compareByDescending<AlbumSummaryDto> { it.addedUnixMillis }
                 .thenBy { it.title.lowercase() }
                 .thenBy { it.id },
         )
-        .take(limit)
+}
 
 /** A short "Added 3 days ago" label for an album added at [addedUnixMillis]. */
 internal fun addedAgoLabel(addedUnixMillis: Long, nowUnixMillis: Long): String {
