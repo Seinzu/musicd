@@ -1495,8 +1495,10 @@ private fun LibraryScreen(
             }
         }
     }
-    val newAlbums = remember(state.albums) { newestAlbums(state.albums) }
     val newAlbumsNowMillis = remember(state.albums) { System.currentTimeMillis() }
+    val newAlbums = remember(state.albums, newAlbumsNowMillis) {
+        recentlyAddedAlbums(state.albums, newAlbumsNowMillis)
+    }
 
     state.selectedAlbumDetail?.let { album ->
         AlbumDetailScreen(
@@ -1582,7 +1584,7 @@ private fun LibraryScreen(
                     if (!isSearching && state.libraryBrowseMode == LibraryBrowseMode.Artists) {
                         "Browse artists, then drill into their albums."
                     } else if (!isSearching && state.libraryBrowseMode == LibraryBrowseMode.New) {
-                        "The $NEWEST_ALBUM_COUNT latest additions to the library, newest first."
+                        "Albums added to the library in the last three months, newest first."
                     } else if (!isSearching) {
                         "Browse albums or search for a specific track."
                     } else {
@@ -1733,6 +1735,8 @@ private fun LibraryScreen(
                         Text(
                             when {
                                 state.albums.isEmpty() -> "No albums in the library yet."
+                                state.albums.any { (it.addedUnixMillis ?: 0L) > 0L } ->
+                                    "Nothing has been added in the last three months."
                                 state.sourceKind == MusicSourceKind.LocalCompanion ->
                                     "The local library doesn't record when albums were added."
                                 else -> "This server doesn't report when albums were added. Update musicd to see new additions."
