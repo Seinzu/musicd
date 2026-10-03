@@ -6,26 +6,33 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryNewestTest {
+    private val now = 1_000L * DAY
+
     @Test
-    fun newestAlbumsAreOrderedByAdditionNewestFirst() {
+    fun recentAlbumsAreOrderedByAdditionNewestFirst() {
         val albums = listOf(
-            album("old", addedUnixMillis = 1_000L),
-            album("newest", addedUnixMillis = 3_000L),
-            album("middle", addedUnixMillis = 2_000L),
+            album("old", addedUnixMillis = now - 30 * DAY),
+            album("newest", addedUnixMillis = now - DAY),
+            album("middle", addedUnixMillis = now - 10 * DAY),
         )
 
-        assertEquals(listOf("newest", "middle", "old"), newestAlbums(albums).map { it.id })
+        assertEquals(listOf("newest", "middle", "old"), recentlyAddedAlbums(albums, now).map { it.id })
     }
 
     @Test
-    fun newestAlbumsAreLimitedToTen() {
-        val albums = (1..15).map { album("album-$it", addedUnixMillis = it * 1_000L) }
+    fun everyAlbumFromTheLastThreeMonthsIsIncluded() {
+        val recent = (1..40).map { album("recent-$it", addedUnixMillis = now - it * DAY) }
+        val older = listOf(
+            album("just-outside", addedUnixMillis = now - 91 * DAY),
+            album("last-year", addedUnixMillis = now - 400 * DAY),
+        )
+        val edge = album("edge", addedUnixMillis = now - 90 * DAY)
 
-        val newest = newestAlbums(albums)
+        val result = recentlyAddedAlbums(recent + older + edge, now)
 
-        assertEquals(10, newest.size)
-        assertEquals("album-15", newest.first().id)
-        assertEquals("album-6", newest.last().id)
+        assertEquals(41, result.size)
+        assertEquals("recent-1", result.first().id)
+        assertEquals("edge", result.last().id)
     }
 
     @Test
@@ -33,27 +40,25 @@ class LibraryNewestTest {
         val albums = listOf(
             album("unknown", addedUnixMillis = null),
             album("zero", addedUnixMillis = 0L),
-            album("known", addedUnixMillis = 1_000L),
+            album("known", addedUnixMillis = now - DAY),
         )
 
-        assertEquals(listOf("known"), newestAlbums(albums).map { it.id })
-        assertTrue(newestAlbums(albums.take(2)).isEmpty())
+        assertEquals(listOf("known"), recentlyAddedAlbums(albums, now).map { it.id })
+        assertTrue(recentlyAddedAlbums(albums.take(2), now).isEmpty())
     }
 
     @Test
     fun albumsAddedTogetherAreOrderedByTitle() {
         val albums = listOf(
-            album("b", addedUnixMillis = 1_000L, title = "beta"),
-            album("a", addedUnixMillis = 1_000L, title = "Alpha"),
+            album("b", addedUnixMillis = now - DAY, title = "beta"),
+            album("a", addedUnixMillis = now - DAY, title = "Alpha"),
         )
 
-        assertEquals(listOf("a", "b"), newestAlbums(albums).map { it.id })
+        assertEquals(listOf("a", "b"), recentlyAddedAlbums(albums, now).map { it.id })
     }
 
     @Test
     fun addedAgoLabelUsesTheLargestWholeUnit() {
-        val now = 1_000L * DAY
-
         assertEquals("Added today", addedAgoLabel(now - DAY / 2, now))
         assertEquals("Added yesterday", addedAgoLabel(now - DAY, now))
         assertEquals("Added 6 days ago", addedAgoLabel(now - 6 * DAY, now))
